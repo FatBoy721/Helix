@@ -1,0 +1,483 @@
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import { AppState } from 'react-native';
+import { normalizeBaseUrl, WebcamInfo, wsUrl } from '../services/moonraker';
+import { notifyEvent } from '../services/notifications';
+import { Settings, useSettings } from './useSettings';
+
+export type ConnectionState = 'connecting' | 'connected' | 'disconnected';
+
+export interface ConsoleLine {
+  id: number;
+  time: number;
+  type: 'command' | 'response' | 'error';
+  text: string;
+}
+
+interface MoonrakerContextValue {
+  connection: ConnectionState;
+  klippyState: string;
+  activeUrl: string;
+  status: Record<string, any>;
+  consoleLines: ConsoleLine[];
+  macros: string[];
+  objectList: string[];
+  webcams: WebcamInfo[];
+  sendGcode: (script: string) => Promise<boolean>;
+  rpc: (method: string, params?: Record<string, any>) => Promise<any>;
+  reconnect: () => void;
+  clearConsole: () => void;
+}
+
+const MoonrakerContext = createContext<MoonrakerContextValue | null>(null);
+
+// stuff we always want from moonraker. extruder1-3 because the U1 is a
+// 4-head toolchanger, gcode_move because fluidd does it so why not
+const BASE_OBJECTS = [
+  'print_stats',
+  'heater_bed',
+  'virtual_sdcard',
+  'bed_mesh',
+  'display_status',
+  'toolhead',
+  'gcode_move',
+  'extruder',
+  'extruder1',
+  'extruder2',
+  'extruder3',
+  'fan',
+  'purifier',
+];
+const MAX_CONSOLE_LINES = 500;
+const WS_OPEN = 1;
+let lineIdCounter = 0;
+
+export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
+  const { settings, loaded } = useSettings();
+
+  const [connection, setConnection] = useState<ConnectionState>('disconnected');
+  const [klippyState, setKlippyState] = useState('unknown');
+  const [activeUrl, setActiveUrl] = useState('');
+  const [status, setStatus] = useState<Record<string, any>>({});
+  const [consoleLines, setConsoleLines] = useState<ConsoleLine[]>([]);
+  const [objectList, setObjectList] = useState<string[]>([]);
+  const [webcams, setWebcams] = useState<WebcamInfo[]>([]);
+
+  const wsRef = useRef<WebSocket | null>(null);
+  const statusRef = useRef<Record<string, any>>({});
+  const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reqIdRef = useRef(1);
+  const pendingRef = useRef(
+    new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void; timer: any }>()
+  );
+  const failCountRef = useRef(0);
+  const urlIndexRef = useRef(0);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const connectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const generationRef = useRef(0);
+  const settingsRef = useRef<Settings>(settings);
+  const prevPrintStateRef = useRef('');
+  const prevKlippyRef = useRef('unknown');
+  const sensorStateRef = useRef<Record<string, boolean>>({});
+
+  settingsRef.current = settings;
+
+  const addLine = useCallback((type: ConsoleLine['type'], text: string) => {
+    const line: ConsoleLine = { id: ++lineIdCounter, time: Date.now(), type, text };
+    setConsoleLines((prev) => {
+      const next = prev.length >= MAX_CONSOLE_LINES ? prev.slice(prev.length - MAX_CONSOLE_LINES + 1) : prev.slice();
+      next.push(line);
+      return next;
+    });
+  }, []);
+
+  // moonraker pushes status updates every ~250ms which murders RN re-renders,
+  // so batch them and flush at most every 400ms. felt laggy at 1000.
+  const flushStatus = useCallback(() => {
+    if (flushTimerRef.current) return;
+    flushTimerRef.current = setTimeout(() => {
+      flushTimerRef.current = null;
+      setStatus({ ...statusRef.current });
+    }, 400);
+  }, []);
+
+  const rpc = useCallback((method: string, params?: Record<string, any>): Promise<any> => {
+    return new Promise((resolve, reject) => {
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== WS_OPEN) {
+        reject(new Error('Not connected to printer'));
+        return;
+      }
+      const id = reqIdRef.current++;
+      const timer = setTimeout(() => {
+        pendingRef.current.delete(id);
+        reject(new Error(`${method} timed out`));
+      }, 30000);
+      pendingRef.current.set(id, { resolve, reject, timer });
+      ws.send(JSON.stringify({ jsonrpc: '2.0', method, params: params ?? {}, id }));
+    });
+  }, []);
+
+  const checkTransitions = useCallback(() => {
+    const s = statusRef.current;
+    const ps = s.print_stats ?? {};
+    const state: string = ps.state ?? '';
+    const prev = prevPrintStateRef.current;
+
+    if (prev && state !== prev) {
+      const fname = ps.filename || 'print';
+      if (state === 'complete') {
+        notifyEvent(settingsRef.current, 'complete', 'Print complete', `${fname} finished`);
+      } else if (state === 'error') {
+        notifyEvent(
+          settingsRef.current,
+          'failed',
+          'Print failed',
+          `${fname}: ${ps.message || 'unknown error'}`
+        );
+      }
+    }
+    prevPrintStateRef.current = state;
+
+    for (const key of Object.keys(s)) {
+      if (/^filament_(switch|motion)_sensor /.test(key)) {
+        const detected = !!s[key]?.filament_detected;
+        const prevDet = sensorStateRef.current[key];
+        if (prevDet === true && !detected && (state === 'printing' || prev === 'printing')) {
+          const name = key.replace(/^filament_(switch|motion)_sensor\s*/, '');
+          notifyEvent(settingsRef.current, 'runout', 'Filament runout', `Sensor: ${name}`);
+        }
+        sensorStateRef.current[key] = detected;
+      }
+    }
+  }, []);
+
+  const handleGcodeResponse = useCallback(
+    (msg: string) => {
+      addLine(msg.startsWith('!!') ? 'error' : 'response', msg);
+      // swap detection is regex-on-console-output which is admittedly jank,
+      // but multiACE doesn't emit a proper event for it. loose on purpose.
+      if (
+        /ace/i.test(msg) &&
+        /(complete|done|finished|success)/i.test(msg) &&
+        /(swap|change|load|unload|toolchange)/i.test(msg)
+      ) {
+        notifyEvent(settingsRef.current, 'swap', 'Filament swap complete', msg.trim());
+      }
+    },
+    [addLine]
+  );
+
+  const initPrinter = useCallback(
+    async (gen: number) => {
+      try {
+        const info = await rpc('server.info');
+        if (gen !== generationRef.current) return;
+        const kstate: string = info?.klippy_state ?? 'unknown';
+        setKlippyState(kstate);
+        if (kstate !== 'ready') {
+          setTimeout(() => {
+            if (gen === generationRef.current) initPrinter(gen);
+          }, 3000);
+          return;
+        }
+
+        const list = await rpc('printer.objects.list');
+        if (gen !== generationRef.current) return;
+        const objects: string[] = list?.objects ?? [];
+        setObjectList(objects);
+        prevKlippyRef.current = 'ready';
+
+        // webcams can change when cameras get plugged in — refresh per connect
+        rpc('server.webcams.list')
+          .then((r: any) => {
+            if (gen === generationRef.current && Array.isArray(r?.webcams)) {
+              setWebcams(r.webcams.filter((w: WebcamInfo) => w.enabled !== false));
+            }
+          })
+          .catch(() => {});
+
+        const subs: Record<string, null> = {};
+        for (const name of BASE_OBJECTS) if (objects.includes(name)) subs[name] = null;
+        for (const name of objects) {
+          if (/^filament_(switch|motion)_sensor /.test(name)) subs[name] = null;
+          if (name === 'ace' || /^ace[\s_\d]/i.test(name)) subs[name] = null;
+          if (/^(led|neopixel|dotstar) /.test(name)) subs[name] = null;
+          if (/^fan_generic /.test(name)) subs[name] = null;
+        }
+
+        const res = await rpc('printer.objects.subscribe', { objects: subs });
+        if (gen !== generationRef.current) return;
+        statusRef.current = res?.status ?? {};
+        prevPrintStateRef.current = statusRef.current.print_stats?.state ?? '';
+        sensorStateRef.current = {};
+        for (const key of Object.keys(statusRef.current)) {
+          if (/^filament_(switch|motion)_sensor /.test(key)) {
+            sensorStateRef.current[key] = !!statusRef.current[key]?.filament_detected;
+          }
+        }
+        setStatus({ ...statusRef.current });
+      } catch (e: any) {
+        if (gen !== generationRef.current) return;
+        addLine('error', `Printer init failed: ${e?.message ?? e}`);
+        setTimeout(() => {
+          if (gen === generationRef.current) initPrinter(gen);
+        }, 3000);
+      }
+    },
+    [rpc, addLine]
+  );
+
+  const getUrls = useCallback((): string[] => {
+    const urls: string[] = [];
+    const primary = normalizeBaseUrl(settingsRef.current.primaryUrl);
+    const tailscale = normalizeBaseUrl(settingsRef.current.tailscaleUrl);
+    if (primary) urls.push(primary);
+    if (tailscale && tailscale !== primary) urls.push(tailscale);
+    return urls;
+  }, []);
+
+  const connectRef = useRef<() => void>(() => {});
+
+  const scheduleReconnect = useCallback(() => {
+    failCountRef.current += 1;
+    const urls = getUrls();
+    // alternate LAN <-> tailscale on EVERY failure. used to be 2 strikes,
+    // but combined with the connect timeout below, alternating gets you
+    // connected in one round trip when only one of the two is reachable
+    if (urls.length > 1) {
+      urlIndexRef.current = (urlIndexRef.current + 1) % urls.length;
+    }
+    const delay = Math.min(1000 * Math.pow(2, Math.min(failCountRef.current, 3)), 8000);
+    if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+    reconnectTimerRef.current = setTimeout(() => connectRef.current(), delay);
+  }, [getUrls]);
+
+  const connect = useCallback(() => {
+    const gen = ++generationRef.current;
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+
+    const old = wsRef.current;
+    wsRef.current = null;
+    if (old) {
+      try {
+        old.close();
+      } catch {}
+    }
+    for (const [, p] of pendingRef.current) {
+      clearTimeout(p.timer);
+      p.reject(new Error('Connection reset'));
+    }
+    pendingRef.current.clear();
+
+    const urls = getUrls();
+    if (!urls.length) {
+      setConnection('disconnected');
+      return;
+    }
+    const url = urls[urlIndexRef.current % urls.length];
+    setActiveUrl(url);
+    setConnection('connecting');
+
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(wsUrl(url));
+    } catch {
+      scheduleReconnect();
+      return;
+    }
+    wsRef.current = ws;
+
+    // RN's WebSocket has NO connect timeout — dialing the LAN IP from
+    // cellular just hangs for minutes instead of failing, which blocked the
+    // tailscale failover from ever running. found this the annoying way.
+    if (connectTimeoutRef.current) clearTimeout(connectTimeoutRef.current);
+    connectTimeoutRef.current = setTimeout(() => {
+      if (gen === generationRef.current && ws.readyState !== WS_OPEN) {
+        try {
+          ws.close();
+        } catch {}
+      }
+    }, 6000);
+
+    ws.onopen = () => {
+      if (gen !== generationRef.current) return;
+      if (connectTimeoutRef.current) clearTimeout(connectTimeoutRef.current);
+      failCountRef.current = 0;
+      setConnection('connected');
+      addLine('response', `// Connected to ${url}`);
+      initPrinter(gen);
+    };
+
+    ws.onmessage = (ev) => {
+      if (gen !== generationRef.current) return;
+      let msg: any;
+      try {
+        msg = JSON.parse(String(ev.data));
+      } catch {
+        return;
+      }
+
+      if (msg.id != null && pendingRef.current.has(msg.id)) {
+        const p = pendingRef.current.get(msg.id)!;
+        pendingRef.current.delete(msg.id);
+        clearTimeout(p.timer);
+        if (msg.error) p.reject(new Error(msg.error.message ?? 'RPC error'));
+        else p.resolve(msg.result);
+        return;
+      }
+
+      switch (msg.method) {
+        case 'notify_status_update': {
+          const data = msg.params?.[0] ?? {};
+          for (const key of Object.keys(data)) {
+            statusRef.current[key] = { ...statusRef.current[key], ...data[key] };
+          }
+          checkTransitions();
+          flushStatus();
+          break;
+        }
+        case 'notify_gcode_response':
+          handleGcodeResponse(String(msg.params?.[0] ?? ''));
+          break;
+        case 'notify_klippy_ready':
+          setKlippyState('ready');
+          prevKlippyRef.current = 'ready';
+          initPrinter(gen);
+          break;
+        case 'notify_klippy_shutdown':
+          setKlippyState('shutdown');
+          // only alert on a real ready->shutdown transition, not startup noise
+          if (prevKlippyRef.current === 'ready') {
+            notifyEvent(
+              settingsRef.current,
+              'error',
+              'Printer error',
+              'Klipper shut down — check the printer'
+            );
+          }
+          prevKlippyRef.current = 'shutdown';
+          break;
+        case 'notify_klippy_disconnected':
+          setKlippyState('disconnected');
+          break;
+      }
+    };
+
+    ws.onerror = () => {
+      // onclose follows; handled there
+    };
+
+    ws.onclose = () => {
+      if (gen !== generationRef.current) return;
+      if (connectTimeoutRef.current) clearTimeout(connectTimeoutRef.current);
+      setConnection('disconnected');
+      setKlippyState('unknown');
+      for (const [, p] of pendingRef.current) {
+        clearTimeout(p.timer);
+        p.reject(new Error('Connection closed'));
+      }
+      pendingRef.current.clear();
+      scheduleReconnect();
+    };
+  }, [getUrls, scheduleReconnect, addLine, initPrinter, checkTransitions, flushStatus, handleGcodeResponse]);
+
+  connectRef.current = connect;
+
+  useEffect(() => {
+    if (!loaded) return;
+    urlIndexRef.current = 0;
+    failCountRef.current = 0;
+    connect();
+
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active' && (!wsRef.current || wsRef.current.readyState !== WS_OPEN)) {
+        failCountRef.current = 0;
+        connect();
+      }
+    });
+
+    return () => {
+      generationRef.current++;
+      sub.remove();
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      if (connectTimeoutRef.current) clearTimeout(connectTimeoutRef.current);
+      if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
+      try {
+        wsRef.current?.close();
+      } catch {}
+      wsRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaded, settings.primaryUrl, settings.tailscaleUrl]);
+
+  const sendGcode = useCallback(
+    async (script: string): Promise<boolean> => {
+      const cmd = script.trim();
+      if (!cmd) return false;
+      addLine('command', cmd);
+      try {
+        await rpc('printer.gcode.script', { script: cmd });
+        return true;
+      } catch (e: any) {
+        addLine('error', `!! ${e?.message ?? e}`);
+        return false;
+      }
+    },
+    [rpc, addLine]
+  );
+
+  const reconnect = useCallback(() => {
+    urlIndexRef.current = 0;
+    failCountRef.current = 0;
+    connect();
+  }, [connect]);
+
+  const clearConsole = useCallback(() => setConsoleLines([]), []);
+
+  const macros = useMemo(
+    () =>
+      objectList
+        .filter((o) => o.startsWith('gcode_macro '))
+        .map((o) => o.slice('gcode_macro '.length))
+        .filter((n) => !n.startsWith('_'))
+        .sort(),
+    [objectList]
+  );
+
+  const value = useMemo<MoonrakerContextValue>(
+    () => ({
+      connection,
+      klippyState,
+      activeUrl,
+      status,
+      consoleLines,
+      macros,
+      objectList,
+      webcams,
+      sendGcode,
+      rpc,
+      reconnect,
+      clearConsole,
+    }),
+    [connection, klippyState, activeUrl, status, consoleLines, macros, objectList, webcams, sendGcode, rpc, reconnect, clearConsole]
+  );
+
+  return <MoonrakerContext.Provider value={value}>{children}</MoonrakerContext.Provider>;
+}
+
+export function useMoonraker(): MoonrakerContextValue {
+  const ctx = useContext(MoonrakerContext);
+  if (!ctx) throw new Error('useMoonraker must be used inside MoonrakerProvider');
+  return ctx;
+}

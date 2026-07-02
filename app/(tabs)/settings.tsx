@@ -1,0 +1,654 @@
+import React, { useEffect, useState } from 'react';
+import {
+  Alert,
+  KeyboardAvoidingView,
+  Linking,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Switch,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from 'react-native';
+import Constants from 'expo-constants';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { DashboardSections, PrinterEntry, Settings, useSettings } from '../../hooks/useSettings';
+import { useMoonraker } from '../../hooks/useMoonraker';
+import { notifyLocal, sendNtfy } from '../../services/notifications';
+import { LANGUAGES, t } from '../../services/i18n';
+import { colors, spacing } from '../../constants/theme';
+
+const GITHUB_URL = 'https://github.com/FatBoy721';
+const BUG_URL = 'https://github.com/FatBoy721/Helix/issues/new';
+
+const ACCENTS = [
+  { name: 'Fluidd Blue', hex: '#2196f3' },
+  { name: 'Teal', hex: '#00bfa5' },
+  { name: 'Green', hex: '#4caf50' },
+  { name: 'Amber', hex: '#ffb300' },
+  { name: 'Orange', hex: '#ff7043' },
+  { name: 'Red', hex: '#ef5350' },
+  { name: 'Pink', hex: '#ec407a' },
+  { name: 'Purple', hex: '#ab47bc' },
+];
+
+const SECTION_LABELS: { key: keyof DashboardSections; label: string }[] = [
+  { key: 'progress', label: 'Progress' },
+  { key: 'actions', label: 'Quick actions' },
+  { key: 'estop', label: 'Emergency stop' },
+  { key: 'homeDock', label: 'Home & Dock' },
+  { key: 'controls', label: 'Controls' },
+  { key: 'temps', label: 'Temperatures' },
+  { key: 'camera', label: 'Camera' },
+];
+
+export default function SettingsScreen() {
+  const { settings, loaded, update } = useSettings();
+  const { connection, activeUrl, klippyState, reconnect } = useMoonraker();
+  const [draft, setDraft] = useState<Settings | null>(null);
+  const [addingPrinter, setAddingPrinter] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [newUrl, setNewUrl] = useState('');
+
+  useEffect(() => {
+    if (loaded && !draft) setDraft(settings);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaded]);
+
+  if (!draft) return <View style={styles.screen} />;
+
+  const set = (patch: Partial<Settings>) => setDraft({ ...draft, ...patch });
+
+  // Save button only appears when a draft-managed field actually differs
+  // from what's stored — it used to just sit there permanently
+  const DRAFT_KEYS: (keyof Settings)[] = [
+    'primaryUrl',
+    'tailscaleUrl',
+    'cameraUrl',
+    'ntfyServer',
+    'ntfyTopic',
+    'aceUnits',
+    'notifyPrintComplete',
+    'notifyPrintFailed',
+    'notifyFilamentRunout',
+    'notifySwapComplete',
+    'notifyPrinterError',
+  ];
+  const dirty = DRAFT_KEYS.some((k) => draft[k] !== settings[k]);
+
+  // theme + language apply instantly, no Save needed
+  const setLive = (patch: Partial<Settings>) => {
+    setDraft({ ...draft, ...patch });
+    update(patch);
+  };
+
+  const save = async () => {
+    // keep the active printer entry in sync with the edited URL fields
+    const printers = settings.printers.map((p) =>
+      p.id === settings.activePrinterId
+        ? { ...p, url: draft.primaryUrl, tailscaleUrl: draft.tailscaleUrl, cameraUrl: draft.cameraUrl }
+        : p
+    );
+    await update({ ...draft, printers, activePrinterId: settings.activePrinterId });
+    Alert.alert(t('Saved'), t('Settings applied. Connection will use the new URLs.'));
+  };
+
+  const switchPrinter = (p: PrinterEntry) => {
+    setDraft({ ...draft, primaryUrl: p.url, tailscaleUrl: p.tailscaleUrl, cameraUrl: p.cameraUrl });
+    update({
+      activePrinterId: p.id,
+      primaryUrl: p.url,
+      tailscaleUrl: p.tailscaleUrl,
+      cameraUrl: p.cameraUrl,
+    });
+  };
+
+  const removePrinter = (p: PrinterEntry) => {
+    if (settings.printers.length <= 1) return;
+    Alert.alert(t('Remove printer?'), p.name, [
+      { text: t('Cancel'), style: 'cancel' },
+      {
+        text: t('Remove'),
+        style: 'destructive',
+        onPress: () => {
+          const printers = settings.printers.filter((x) => x.id !== p.id);
+          const patch: Partial<Settings> = { printers };
+          if (settings.activePrinterId === p.id) {
+            const next = printers[0];
+            patch.activePrinterId = next.id;
+            patch.primaryUrl = next.url;
+            patch.tailscaleUrl = next.tailscaleUrl;
+            patch.cameraUrl = next.cameraUrl;
+            setDraft({
+              ...draft,
+              primaryUrl: next.url,
+              tailscaleUrl: next.tailscaleUrl,
+              cameraUrl: next.cameraUrl,
+            });
+          }
+          update(patch);
+        },
+      },
+    ]);
+  };
+
+  const testNtfy = async () => {
+    const ok = await sendNtfy(
+      draft.ntfyServer,
+      draft.ntfyTopic,
+      'U1 Control test',
+      'Push notifications are working.',
+      3,
+      'tada'
+    );
+    notifyLocal('U1 Control test', 'Local notification works.');
+    Alert.alert(ok ? 'Sent' : 'Failed', ok ? 'Check your ntfy client.' : 'Check server URL and topic.');
+  };
+
+  return (
+    <KeyboardAvoidingView
+      style={styles.screen}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+    >
+      <ScrollView contentContainerStyle={styles.content}>
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>{t('Connection')}</Text>
+          <Text style={styles.connInfo}>
+            {connection.toUpperCase()} — {activeUrl || 'no URL'} (klippy: {klippyState})
+          </Text>
+          <TouchableOpacity style={styles.smallBtn} onPress={reconnect}>
+            <Text style={styles.smallBtnText}>{t('Reconnect now')}</Text>
+          </TouchableOpacity>
+        </View>
+
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>{t('Printers')}</Text>
+          {settings.printers.map((p) => (
+            <View key={p.id} style={styles.printerRow}>
+              <TouchableOpacity style={styles.printerMain} onPress={() => switchPrinter(p)}>
+                <MaterialCommunityIcons
+                  name={
+                    p.id === settings.activePrinterId ? 'radiobox-marked' : 'radiobox-blank'
+                  }
+                  size={18}
+                  color={p.id === settings.activePrinterId ? colors.primary : colors.subtext}
+                />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.printerName}>{p.name}</Text>
+                  <Text style={styles.printerUrl} numberOfLines={1}>
+                    {p.url}
+                  </Text>
+                </View>
+              </TouchableOpacity>
+              {settings.printers.length > 1 && (
+                <TouchableOpacity onPress={() => removePrinter(p)}>
+                  <MaterialCommunityIcons name="trash-can-outline" size={18} color={colors.subtext} />
+                </TouchableOpacity>
+              )}
+            </View>
+          ))}
+          {addingPrinter ? (
+            <View style={styles.addForm}>
+              <TextInput
+                style={styles.fieldInput}
+                value={newName}
+                onChangeText={setNewName}
+                placeholder={t('Name')}
+                placeholderTextColor={colors.subtext}
+              />
+              <TextInput
+                style={styles.fieldInput}
+                value={newUrl}
+                onChangeText={setNewUrl}
+                placeholder="http://192.168.1.x:7125"
+                placeholderTextColor={colors.subtext}
+                autoCapitalize="none"
+                keyboardType="url"
+              />
+              <TouchableOpacity
+                style={[styles.smallBtn, { backgroundColor: colors.primary }]}
+                onPress={() => {
+                  if (!newUrl.trim()) return;
+                  const entry: PrinterEntry = {
+                    id: `p${Date.now()}`,
+                    name: newName.trim() || `Snapmaker ${settings.printers.length + 1}`,
+                    url: newUrl.trim(),
+                    tailscaleUrl: '',
+                    cameraUrl: '/webcam/webrtc',
+                  };
+                  update({ printers: [...settings.printers, entry] });
+                  setNewName('');
+                  setNewUrl('');
+                  setAddingPrinter(false);
+                }}
+              >
+                <Text style={[styles.smallBtnText, { color: '#fff' }]}>{t('Add printer')}</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <TouchableOpacity style={styles.smallBtn} onPress={() => setAddingPrinter(true)}>
+              <Text style={styles.smallBtnText}>+ {t('Add printer')}</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>{t('Dashboard sections')}</Text>
+          {SECTION_LABELS.map(({ key, label }) => (
+            <Toggle
+              key={key}
+              label={t(label)}
+              value={settings.dashboard[key]}
+              onChange={(v) => update({ dashboard: { ...settings.dashboard, [key]: v } })}
+            />
+          ))}
+        </View>
+
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>{t('Theme')}</Text>
+          <Text style={styles.fieldLabel}>{t('Accent color')}</Text>
+          <View style={styles.swatchRow}>
+            {ACCENTS.map((a) => (
+              <TouchableOpacity
+                key={a.hex}
+                style={[
+                  styles.swatch,
+                  { backgroundColor: a.hex },
+                  draft.accentColor === a.hex && styles.swatchActive,
+                ]}
+                onPress={() => setLive({ accentColor: a.hex })}
+              >
+                {draft.accentColor === a.hex && (
+                  <MaterialCommunityIcons name="check" size={16} color="#fff" />
+                )}
+              </TouchableOpacity>
+            ))}
+          </View>
+          <Text style={[styles.fieldLabel, { marginTop: spacing.md }]}>{t('Language')}</Text>
+          <View style={styles.langRow}>
+            {LANGUAGES.map((l) => (
+              <TouchableOpacity
+                key={l.code}
+                style={[
+                  styles.langChip,
+                  draft.language === l.code && { backgroundColor: colors.primary },
+                ]}
+                onPress={() => setLive({ language: l.code })}
+              >
+                <Text
+                  style={[styles.langText, draft.language === l.code && { color: '#fff' }]}
+                >
+                  {l.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </View>
+
+        <Field
+          label={t('Printer URL (LAN)')}
+          value={draft.primaryUrl}
+          onChange={(v) => set({ primaryUrl: v })}
+          placeholder="http://192.168.1.17:7125"
+        />
+        <Field
+          label="Printer URL (Tailscale, optional)"
+          value={draft.tailscaleUrl}
+          onChange={(v) => set({ tailscaleUrl: v })}
+          placeholder="http://100.x.y.z:7125"
+        />
+        <Text style={styles.note}>
+          App tries LAN first, then falls back to Tailscale automatically after 2 failed attempts.
+        </Text>
+        <Field
+          label="Camera stream (path or full URL)"
+          value={draft.cameraUrl}
+          onChange={(v) => set({ cameraUrl: v })}
+          placeholder="/webcam/webrtc"
+        />
+        <Text style={styles.note}>
+          /webcam/webrtc = realtime (default). /webcam/stream.mjpg = MJPEG fallback. Path form
+          follows the active printer host — works on LAN and Tailscale.
+        </Text>
+
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>{t('ACE units')}</Text>
+          <View style={styles.stepperRow}>
+            <TouchableOpacity
+              style={styles.stepBtn}
+              onPress={() => set({ aceUnits: Math.max(1, draft.aceUnits - 1) })}
+            >
+              <Text style={styles.stepText}>−</Text>
+            </TouchableOpacity>
+            <Text style={styles.stepValue}>{draft.aceUnits}</Text>
+            <TouchableOpacity
+              style={styles.stepBtn}
+              onPress={() => set({ aceUnits: Math.min(4, draft.aceUnits + 1) })}
+            >
+              <Text style={styles.stepText}>+</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        <Field
+          label="ntfy server"
+          value={draft.ntfyServer}
+          onChange={(v) => set({ ntfyServer: v })}
+          placeholder="https://ntfy.sh"
+        />
+        <Field
+          label="ntfy topic"
+          value={draft.ntfyTopic}
+          onChange={(v) => set({ ntfyTopic: v })}
+          placeholder="my-printer-topic"
+        />
+
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>{t('Notify on')}</Text>
+          <Toggle
+            label={t('Print complete')}
+            value={draft.notifyPrintComplete}
+            onChange={(v) => set({ notifyPrintComplete: v })}
+          />
+          <Toggle
+            label={t('Print failed')}
+            value={draft.notifyPrintFailed}
+            onChange={(v) => set({ notifyPrintFailed: v })}
+          />
+          <Toggle
+            label={t('Filament runout')}
+            value={draft.notifyFilamentRunout}
+            onChange={(v) => set({ notifyFilamentRunout: v })}
+          />
+          <Toggle
+            label={t('Filament swap complete')}
+            value={draft.notifySwapComplete}
+            onChange={(v) => set({ notifySwapComplete: v })}
+          />
+          <Toggle
+            label={t('Printer error')}
+            value={draft.notifyPrinterError}
+            onChange={(v) => set({ notifyPrinterError: v })}
+          />
+          <TouchableOpacity style={styles.smallBtn} onPress={testNtfy}>
+            <Text style={styles.smallBtnText}>{t('Send test notification')}</Text>
+          </TouchableOpacity>
+        </View>
+
+        {dirty && (
+          <TouchableOpacity
+            style={[styles.saveBtn, { backgroundColor: colors.primary }]}
+            onPress={save}
+          >
+            <Text style={styles.saveText}>{t('Save & Apply')}</Text>
+          </TouchableOpacity>
+        )}
+
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>{t('About')}</Text>
+          <TouchableOpacity
+            style={styles.linkRow}
+            onPress={() => Linking.openURL(GITHUB_URL).catch(() => {})}
+          >
+            <MaterialCommunityIcons name="github" size={20} color={colors.text} />
+            <Text style={styles.linkText}>{t('GitHub — FatBoy721')}</Text>
+            <MaterialCommunityIcons name="open-in-new" size={16} color={colors.subtext} />
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.linkRow}
+            onPress={() => {
+              const body = encodeURIComponent(
+                `**App version:** ${Constants.expoConfig?.version ?? '?'}\n**Platform:** ${Platform.OS}\n\n**What happened:**\n\n**Steps to reproduce:**\n`
+              );
+              Linking.openURL(`${BUG_URL}?title=${encodeURIComponent('[Bug] ')}&body=${body}`).catch(
+                () => {}
+              );
+            }}
+          >
+            <MaterialCommunityIcons name="bug-outline" size={20} color={colors.text} />
+            <Text style={styles.linkText}>{t('Report a bug')}</Text>
+            <MaterialCommunityIcons name="open-in-new" size={16} color={colors.subtext} />
+          </TouchableOpacity>
+          <Text style={styles.version}>
+            Helix v{Constants.expoConfig?.version ?? '1.0.0'}
+          </Text>
+        </View>
+      </ScrollView>
+    </KeyboardAvoidingView>
+  );
+}
+
+function Field({
+  label,
+  value,
+  onChange,
+  placeholder,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+}) {
+  return (
+    <View style={styles.field}>
+      <Text style={styles.fieldLabel}>{label}</Text>
+      <TextInput
+        style={styles.fieldInput}
+        value={value}
+        onChangeText={onChange}
+        placeholder={placeholder}
+        placeholderTextColor={colors.subtext}
+        autoCapitalize="none"
+        autoCorrect={false}
+        keyboardType="url"
+      />
+    </View>
+  );
+}
+
+function Toggle({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <View style={styles.toggleRow}>
+      <Text style={styles.toggleLabel}>{label}</Text>
+      <Switch
+        value={value}
+        onValueChange={onChange}
+        trackColor={{ false: colors.cardAlt, true: colors.primary }}
+        thumbColor="#fff"
+      />
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  screen: {
+    flex: 1,
+    backgroundColor: colors.bg,
+  },
+  content: {
+    padding: spacing.lg,
+    gap: spacing.md,
+    paddingBottom: spacing.xl * 2,
+  },
+  card: {
+    backgroundColor: colors.card,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.md,
+  },
+  cardTitle: {
+    color: colors.text,
+    fontSize: 14,
+    fontWeight: '700',
+    marginBottom: spacing.sm,
+  },
+  connInfo: {
+    color: colors.subtext,
+    fontSize: 12,
+    marginBottom: spacing.sm,
+  },
+  field: {
+    gap: 4,
+  },
+  fieldLabel: {
+    color: colors.subtext,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  fieldInput: {
+    backgroundColor: colors.card,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.border,
+    color: colors.text,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    fontSize: 14,
+  },
+  note: {
+    color: colors.subtext,
+    fontSize: 11,
+    fontStyle: 'italic',
+  },
+  stepperRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.lg,
+  },
+  stepBtn: {
+    backgroundColor: colors.cardAlt,
+    borderRadius: 8,
+    width: 40,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  stepText: {
+    color: colors.text,
+    fontSize: 20,
+    fontWeight: '700',
+  },
+  stepValue: {
+    color: colors.text,
+    fontSize: 18,
+    fontWeight: '700',
+    minWidth: 24,
+    textAlign: 'center',
+  },
+  toggleRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 4,
+  },
+  toggleLabel: {
+    color: colors.text,
+    fontSize: 14,
+  },
+  smallBtn: {
+    backgroundColor: colors.cardAlt,
+    borderRadius: 8,
+    paddingVertical: spacing.sm,
+    alignItems: 'center',
+    marginTop: spacing.sm,
+  },
+  smallBtnText: {
+    color: colors.text,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  printerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingVertical: spacing.sm,
+  },
+  printerMain: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  printerName: {
+    color: colors.text,
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  printerUrl: {
+    color: colors.subtext,
+    fontSize: 11,
+  },
+  addForm: {
+    gap: spacing.sm,
+    marginTop: spacing.sm,
+  },
+  swatchRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+  },
+  swatch: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  swatchActive: {
+    borderWidth: 2,
+    borderColor: '#fff',
+  },
+  langRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+  },
+  langChip: {
+    backgroundColor: colors.cardAlt,
+    borderRadius: 16,
+    paddingVertical: 6,
+    paddingHorizontal: 14,
+  },
+  langText: {
+    color: colors.text,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  linkRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingVertical: spacing.sm,
+  },
+  linkText: {
+    color: colors.text,
+    fontSize: 14,
+    flex: 1,
+  },
+  version: {
+    color: colors.subtext,
+    fontSize: 11,
+    marginTop: spacing.sm,
+  },
+  saveBtn: {
+    borderRadius: 10,
+    paddingVertical: spacing.lg,
+    alignItems: 'center',
+  },
+  saveText: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '800',
+  },
+});
