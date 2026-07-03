@@ -20,8 +20,8 @@ import { notifyLocal, sendNtfy } from '../../services/notifications';
 import { LANGUAGES, t } from '../../services/i18n';
 import { colors, spacing } from '../../constants/theme';
 
-const GITHUB_URL = 'https://github.com/FatBoy721';
-const BUG_URL = 'https://github.com/FatBoy721/Helix/issues/new';
+const REPO_URL = 'https://github.com/FatBoy721/Helix';
+const BUG_URL = `${REPO_URL}/issues/new`;
 
 const ACCENTS = [
   { name: 'Fluidd Blue', hex: '#2196f3' },
@@ -390,10 +390,10 @@ export default function SettingsScreen() {
           <Text style={styles.cardTitle}>{t('About')}</Text>
           <TouchableOpacity
             style={styles.linkRow}
-            onPress={() => Linking.openURL(GITHUB_URL).catch(() => {})}
+            onPress={() => Linking.openURL(REPO_URL).catch(() => {})}
           >
             <MaterialCommunityIcons name="github" size={20} color={colors.text} />
-            <Text style={styles.linkText}>{t('GitHub — FatBoy721')}</Text>
+            <Text style={styles.linkText}>GitHub - Helix</Text>
             <MaterialCommunityIcons name="open-in-new" size={16} color={colors.subtext} />
           </TouchableOpacity>
           <TouchableOpacity
