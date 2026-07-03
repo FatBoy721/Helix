@@ -37,6 +37,12 @@
       "expo-asset",
       "expo-font",
       "expo-media-library",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Helix uses the camera to scan Spoolman QR labels on your filament spools."
+        }
+      ],
       "./plugins/with-cleartext-traffic"
     ]
   }

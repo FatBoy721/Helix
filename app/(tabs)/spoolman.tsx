@@ -17,6 +17,8 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useMoonraker } from '../../hooks/useMoonraker';
 import { useSettings } from '../../hooks/useSettings';
 import { api, normalizeBaseUrl, restartMoonraker, uploadConfigFile } from '../../services/moonraker';
+import SpoolLabel from '../../components/SpoolLabel';
+import SpoolScanner from '../../components/SpoolScanner';
 import { t } from '../../services/i18n';
 import { colors, spacing } from '../../constants/theme';
 
@@ -78,6 +80,8 @@ export default function SpoolmanScreen() {
   const [configuring, setConfiguring] = useState(false);
   const [spoolForm, setSpoolForm] = useState<{ spool: Spool | null } | null>(null);
   const [filamentForm, setFilamentForm] = useState<{ filament: Filament | null } | null>(null);
+  const [labelSpool, setLabelSpool] = useState<Spool | null>(null);
+  const [scanning, setScanning] = useState(false);
 
   const proxy = useCallback(
     async (method: string, path: string, body?: any) => {
@@ -144,6 +148,16 @@ export default function SpoolmanScreen() {
     } finally {
       setConfiguring(false);
     }
+  };
+
+  const handleScanned = (id: number) => {
+    setScanning(false);
+    const spool = spools.find((s) => s.id === id);
+    if (!spool) {
+      Alert.alert(t('Error'), `${t('No spool with ID')} ${id}`);
+      return;
+    }
+    setActive(spool);
   };
 
   const setActive = (spool: Spool | null) => {
@@ -250,6 +264,10 @@ export default function SpoolmanScreen() {
                 <MaterialCommunityIcons name="plus" size={16} color={colors.text} />
                 <Text style={styles.toolBtnText}>{t('Add filament')}</Text>
               </TouchableOpacity>
+              <TouchableOpacity style={styles.toolBtn} onPress={() => setScanning(true)}>
+                <MaterialCommunityIcons name="qrcode-scan" size={16} color={colors.text} />
+                <Text style={styles.toolBtnText}>{t('Scan')}</Text>
+              </TouchableOpacity>
               <TouchableOpacity
                 style={styles.archToggle}
                 onPress={() => setShowArchived((v) => !v)}
@@ -276,6 +294,7 @@ export default function SpoolmanScreen() {
             active={item.id === activeId}
             onPress={() => setActive(item)}
             onEdit={() => setSpoolForm({ spool: item })}
+            onLabel={() => setLabelSpool(item)}
           />
         )}
       />
@@ -302,6 +321,16 @@ export default function SpoolmanScreen() {
           }}
         />
       )}
+      {labelSpool && (
+        <SpoolLabel
+          spoolId={labelSpool.id}
+          title={spoolTitle(labelSpool)}
+          material={labelSpool.filament?.material}
+          colorHex={labelSpool.filament?.color_hex}
+          onClose={() => setLabelSpool(null)}
+        />
+      )}
+      {scanning && <SpoolScanner onScanned={handleScanned} onClose={() => setScanning(false)} />}
     </View>
   );
 }
@@ -311,11 +340,13 @@ function SpoolRow({
   active,
   onPress,
   onEdit,
+  onLabel,
 }: {
   spool: Spool;
   active?: boolean;
   onPress: () => void;
   onEdit: () => void;
+  onLabel?: () => void;
 }) {
   const remaining = spool.remaining_weight;
   const net = spool.filament?.weight;
@@ -370,6 +401,11 @@ function SpoolRow({
         )}
       </View>
       {active && <MaterialCommunityIcons name="check-circle" size={20} color={colors.primary} />}
+      {onLabel && (
+        <TouchableOpacity style={styles.editBtn} onPress={onLabel}>
+          <MaterialCommunityIcons name="qrcode" size={18} color={colors.subtext} />
+        </TouchableOpacity>
+      )}
       <TouchableOpacity style={styles.editBtn} onPress={onEdit}>
         <MaterialCommunityIcons name="pencil-outline" size={18} color={colors.subtext} />
       </TouchableOpacity>

@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { api, HistoryJob, HistoryTotals, thumbnailUrl } from '../services/moonraker';
+import UsageChart from './UsageChart';
 import { t } from '../services/i18n';
 import { colors, spacing } from '../constants/theme';
 
@@ -105,6 +106,8 @@ export default function HistoryView({ base, connected }: { base: string; connect
   }, [connected, load]);
 
   const header = (
+    <>
+    <UsageChart jobs={jobs} />
     <View style={styles.statsCard}>
       <Text style={styles.statsTitle}>{t('Printer Stats')}</Text>
       {totals ? (
@@ -132,6 +135,7 @@ export default function HistoryView({ base, connected }: { base: string; connect
         <Text style={styles.empty}>{connected ? '…' : t('Not connected')}</Text>
       )}
     </View>
+    </>
   );
 
   const footer =
