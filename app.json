@@ -19,6 +19,9 @@
     },
     "android": {
       "package": "org.crabcore.u1control",
+      "permissions": [
+        "android.permission.POST_NOTIFICATIONS"
+      ],
       "usesCleartextTraffic": true,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",

@@ -16,7 +16,7 @@ import Constants from 'expo-constants';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { DashboardSections, PrinterEntry, Settings, useSettings } from '../../hooks/useSettings';
 import { useMoonraker } from '../../hooks/useMoonraker';
-import { notifyLocal, sendNtfy } from '../../services/notifications';
+import { generateNtfyTopic, notifyLocal, sendNtfy } from '../../services/notifications';
 import { LANGUAGES, t } from '../../services/i18n';
 import { colors, spacing } from '../../constants/theme';
 import { normalizeMoonrakerUrl } from '../../services/moonraker';
@@ -62,6 +62,16 @@ const SECTION_LABELS: { key: keyof DashboardSections; label: string }[] = [
   { key: 'camera', label: 'Camera' },
 ];
 
+const NOTIFICATION_MODES: {
+  value: Settings['notificationMode'];
+  label: string;
+  icon: React.ComponentProps<typeof MaterialCommunityIcons>['name'];
+}[] = [
+  { value: 'off', label: 'Off', icon: 'bell-off-outline' },
+  { value: 'local', label: 'Local only', icon: 'cellphone' },
+  { value: 'ntfy', label: 'ntfy', icon: 'broadcast' },
+];
+
 export default function SettingsScreen() {
   const { settings, loaded, update } = useSettings();
   const { connection, activeUrl, klippyState, reconnect } = useMoonraker();
@@ -87,14 +97,18 @@ export default function SettingsScreen() {
     'primaryUrl',
     'tailscaleUrl',
     'cameraUrl',
+    'notificationMode',
     'ntfyServer',
     'ntfyTopic',
     'aceUnits',
     'notifyPrintComplete',
     'notifyPrintFailed',
+    'notifyPrintPaused',
     'notifyFilamentRunout',
     'notifySwapComplete',
     'notifyPrinterError',
+    'notifyPrinterDisconnected',
+    'notifyTempWarning',
   ];
   const dirty = DRAFT_KEYS.some((k) => draft[k] !== settings[k]);
 
@@ -158,17 +172,45 @@ export default function SettingsScreen() {
     ]);
   };
 
-  const testNtfy = async () => {
-    const ok = await sendNtfy(
-      draft.ntfyServer,
-      draft.ntfyTopic,
-      'U1 Control test',
-      'Push notifications are working.',
-      3,
-      'tada'
-    );
-    notifyLocal('U1 Control test', 'Local notification works.');
-    Alert.alert(ok ? 'Sent' : 'Failed', ok ? 'Check your ntfy client.' : 'Check server URL and topic.');
+  const setNotificationMode = (mode: Settings['notificationMode']) => {
+    const patch: Partial<Settings> = { notificationMode: mode };
+    if (mode === 'ntfy') {
+      patch.ntfyServer = draft.ntfyServer.trim() || 'https://ntfy.sh';
+      if (!draft.ntfyTopic.trim()) patch.ntfyTopic = generateNtfyTopic();
+    }
+    set(patch);
+  };
+
+  const randomizeNtfyTopic = () => set({ ntfyTopic: generateNtfyTopic() });
+
+  const testNotifications = async () => {
+    if (draft.notificationMode === 'off') {
+      Alert.alert('Notifications off', 'Choose Local only or ntfy first.');
+      return;
+    }
+
+    if (draft.notificationMode === 'ntfy') {
+      const topic = draft.ntfyTopic.trim() || generateNtfyTopic();
+      const server = draft.ntfyServer.trim() || 'https://ntfy.sh';
+      const patch: Partial<Settings> = {};
+      if (topic !== draft.ntfyTopic.trim()) patch.ntfyTopic = topic;
+      if (server !== draft.ntfyServer.trim()) patch.ntfyServer = server;
+      if (Object.keys(patch).length) set(patch);
+
+      const ok = await sendNtfy(
+        server,
+        topic,
+        'Helix test',
+        'Printer alerts are working.',
+        3,
+        'printer'
+      );
+      Alert.alert(ok ? 'Sent' : 'Failed', ok ? 'Check ntfy.' : 'Check server URL and topic.');
+      return;
+    }
+
+    const ok = await notifyLocal('Helix test', 'Local printer alerts are working.');
+    Alert.alert(ok ? 'Sent' : 'Failed', ok ? 'Local notification works.' : 'Check notification permission.');
   };
 
   const checkForUpdates = async () => {
@@ -412,20 +454,62 @@ export default function SettingsScreen() {
           </View>
         </View>
 
-        <Field
-          label="ntfy server"
-          value={draft.ntfyServer}
-          onChange={(v) => set({ ntfyServer: v })}
-          placeholder="https://ntfy.sh"
-        />
-        <Field
-          label="ntfy topic"
-          value={draft.ntfyTopic}
-          onChange={(v) => set({ ntfyTopic: v })}
-          placeholder="my-printer-topic"
-        />
-
         <View style={styles.card}>
+          <Text style={styles.cardTitle}>{t('Notifications')}</Text>
+          <View style={styles.modeRow}>
+            {NOTIFICATION_MODES.map((mode) => {
+              const active = draft.notificationMode === mode.value;
+              return (
+                <TouchableOpacity
+                  key={mode.value}
+                  style={[styles.modeBtn, active && { backgroundColor: colors.primary }]}
+                  onPress={() => setNotificationMode(mode.value)}
+                >
+                  <MaterialCommunityIcons
+                    name={mode.icon}
+                    size={17}
+                    color={active ? '#fff' : colors.text}
+                  />
+                  <Text style={[styles.modeText, active && { color: '#fff' }]}>
+                    {t(mode.label)}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
+          {draft.notificationMode === 'ntfy' && (
+            <View style={styles.ntfyFields}>
+              <Text style={styles.fieldLabel}>ntfy server</Text>
+              <TextInput
+                style={styles.fieldInput}
+                value={draft.ntfyServer}
+                onChangeText={(v) => set({ ntfyServer: v })}
+                placeholder="https://ntfy.sh"
+                placeholderTextColor={colors.subtext}
+                autoCapitalize="none"
+                autoCorrect={false}
+                keyboardType="url"
+              />
+              <Text style={styles.fieldLabel}>ntfy topic</Text>
+              <View style={styles.topicRow}>
+                <TextInput
+                  style={[styles.fieldInput, styles.topicInput]}
+                  value={draft.ntfyTopic}
+                  onChangeText={(v) => set({ ntfyTopic: v })}
+                  placeholder="helix-random-topic"
+                  placeholderTextColor={colors.subtext}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+                <TouchableOpacity style={styles.iconBtn} onPress={randomizeNtfyTopic}>
+                  <MaterialCommunityIcons name="dice-5-outline" size={20} color={colors.text} />
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
+
+          <View style={styles.divider} />
           <Text style={styles.cardTitle}>{t('Notify on')}</Text>
           <Toggle
             label={t('Print complete')}
@@ -436,6 +520,11 @@ export default function SettingsScreen() {
             label={t('Print failed')}
             value={draft.notifyPrintFailed}
             onChange={(v) => set({ notifyPrintFailed: v })}
+          />
+          <Toggle
+            label={t('Print paused')}
+            value={draft.notifyPrintPaused}
+            onChange={(v) => set({ notifyPrintPaused: v })}
           />
           <Toggle
             label={t('Filament runout')}
@@ -452,7 +541,17 @@ export default function SettingsScreen() {
             value={draft.notifyPrinterError}
             onChange={(v) => set({ notifyPrinterError: v })}
           />
-          <TouchableOpacity style={styles.smallBtn} onPress={testNtfy}>
+          <Toggle
+            label={t('Printer disconnected')}
+            value={draft.notifyPrinterDisconnected}
+            onChange={(v) => set({ notifyPrinterDisconnected: v })}
+          />
+          <Toggle
+            label={t('Temperature warning')}
+            value={draft.notifyTempWarning}
+            onChange={(v) => set({ notifyTempWarning: v })}
+          />
+          <TouchableOpacity style={styles.smallBtn} onPress={testNotifications}>
             <Text style={styles.smallBtnText}>{t('Send test notification')}</Text>
           </TouchableOpacity>
         </View>
@@ -716,6 +815,51 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 13,
     fontWeight: '600',
+  },
+  modeRow: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+  },
+  modeBtn: {
+    flex: 1,
+    minHeight: 42,
+    borderRadius: 8,
+    backgroundColor: colors.cardAlt,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 6,
+    paddingHorizontal: 6,
+  },
+  modeText: {
+    color: colors.text,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  ntfyFields: {
+    gap: 6,
+    marginTop: spacing.md,
+  },
+  topicRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  topicInput: {
+    flex: 1,
+  },
+  iconBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 8,
+    backgroundColor: colors.cardAlt,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  divider: {
+    height: 1,
+    backgroundColor: colors.border,
+    marginVertical: spacing.md,
   },
   linkRow: {
     flexDirection: 'row',

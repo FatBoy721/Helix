@@ -47,8 +47,9 @@ Scan the QR code with Expo Go, or `npx expo run:android` for a native build.
   `ACE_SWITCH`, …).
 - **Remote screen** — view the printer's touchscreen (PAXX `remote_screen`
   feature, see below).
-- **Notifications** — ntfy push (self-hosted or ntfy.sh) + local fallback for
-  print done/failed, filament runout, swap complete, and printer errors.
+- **Notifications** — Off, Local only, and ntfy modes. ntfy defaults to
+  `https://ntfy.sh`, supports a generated topic, and can still point at a
+  self-hosted server.
 - **Connectivity** — LAN + Tailscale URLs with fast automatic failover
   (6s connect timeout, alternates per attempt). Camera/screen/timelapse URLs
   are host-relative so they follow whichever connection is active.
@@ -63,7 +64,7 @@ Scan the QR code with Expo Go, or `npx expo run:android` for a native build.
   a "gui" feed appears in the app automatically.
 - **USB camera**: enable in `extended/moonraker/03_usb_camera.cfg` — extra
   cameras registered in Moonraker show up in the app with zero config.
-- **Server-side notifications** (fire even with the app closed): drop a
+- **Server-side ntfy notifications** (fire even with the app closed): drop a
   Moonraker `[notifier]` config in `extended/moonraker/`, e.g.:
 
   ```ini
@@ -80,7 +81,8 @@ Scan the QR code with Expo Go, or `npx expo run:android` for a native build.
 - `npx expo export --platform android` — verify the bundle compiles
 - Architecture notes live in the source: `hooks/useMoonraker.tsx` is the
   WebSocket JSON-RPC client (auto-reconnect, URL failover, status merge),
-  `hooks/useACE.ts` wraps the multiACE object, `services/` holds REST + ntfy.
+  `hooks/useACE.ts` wraps the multiACE object, `services/` holds REST and
+  notification helpers.
 
 ## Contributing
 

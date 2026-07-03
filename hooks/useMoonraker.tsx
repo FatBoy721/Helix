@@ -57,7 +57,17 @@ const BASE_OBJECTS = [
 ];
 const MAX_CONSOLE_LINES = 500;
 const WS_OPEN = 1;
+const TEMP_WARNING_DELTA_C = 15;
+const TEMP_WARNING_RESET_DELTA_C = 5;
+const HEATER_KEY_RE = /^(heater_bed|extruder\d*|heater_generic\s+.+)$/;
 let lineIdCounter = 0;
+
+function heaterLabel(key: string): string {
+  if (key === 'heater_bed') return 'Bed';
+  if (key === 'extruder') return 'Extruder';
+  if (/^extruder\d+$/.test(key)) return `Extruder ${key.replace('extruder', '')}`;
+  return key.replace(/^heater_generic\s+/, '');
+}
 
 export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
   const { settings, loaded } = useSettings();
@@ -86,6 +96,9 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
   const prevPrintStateRef = useRef('');
   const prevKlippyRef = useRef('unknown');
   const sensorStateRef = useRef<Record<string, boolean>>({});
+  const tempWarningRef = useRef<Record<string, boolean>>({});
+  const connectedRef = useRef(false);
+  const disconnectNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   settingsRef.current = settings;
 
@@ -142,6 +155,8 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
           'Print failed',
           `${fname}: ${ps.message || 'unknown error'}`
         );
+      } else if (state === 'paused') {
+        notifyEvent(settingsRef.current, 'paused', 'Print paused', `${fname} is paused`);
       }
     }
     prevPrintStateRef.current = state;
@@ -155,6 +170,28 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
           notifyEvent(settingsRef.current, 'runout', 'Filament runout', `Sensor: ${name}`);
         }
         sensorStateRef.current[key] = detected;
+      }
+
+      if (HEATER_KEY_RE.test(key)) {
+        const temperature = Number(s[key]?.temperature);
+        const target = Number(s[key]?.target);
+        if (!Number.isFinite(temperature) || !Number.isFinite(target)) continue;
+
+        const active = target >= 40;
+        const warning = active && temperature >= target + TEMP_WARNING_DELTA_C;
+        const reset = !active || temperature <= target + TEMP_WARNING_RESET_DELTA_C;
+        const wasWarning = tempWarningRef.current[key] === true;
+
+        if (!wasWarning && warning) {
+          notifyEvent(
+            settingsRef.current,
+            'temp',
+            'Temperature warning',
+            `${heaterLabel(key)} is ${Math.round(temperature)}C with target ${Math.round(target)}C`
+          );
+        }
+
+        tempWarningRef.current[key] = warning || (wasWarning && !reset);
       }
     }
   }, []);
@@ -218,6 +255,7 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
         statusRef.current = res?.status ?? {};
         prevPrintStateRef.current = statusRef.current.print_stats?.state ?? '';
         sensorStateRef.current = {};
+        tempWarningRef.current = {};
         for (const key of Object.keys(statusRef.current)) {
           if (/^filament_(switch|motion)_sensor /.test(key)) {
             sensorStateRef.current[key] = !!statusRef.current[key]?.filament_detected;
@@ -282,6 +320,7 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
 
     const urls = getUrls();
     if (!urls.length) {
+      connectedRef.current = false;
       setConnection('disconnected');
       return;
     }
@@ -314,6 +353,11 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
     ws.onopen = () => {
       if (gen !== generationRef.current) return;
       if (connectTimeoutRef.current) clearTimeout(connectTimeoutRef.current);
+      if (disconnectNoticeTimerRef.current) {
+        clearTimeout(disconnectNoticeTimerRef.current);
+        disconnectNoticeTimerRef.current = null;
+      }
+      connectedRef.current = true;
       failCountRef.current = 0;
       setConnection('connected');
       addLine('response', `// Connected to ${url}`);
@@ -382,6 +426,8 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
     ws.onclose = () => {
       if (gen !== generationRef.current) return;
       if (connectTimeoutRef.current) clearTimeout(connectTimeoutRef.current);
+      const wasConnected = connectedRef.current;
+      connectedRef.current = false;
       setConnection('disconnected');
       setKlippyState('unknown');
       for (const [, p] of pendingRef.current) {
@@ -389,6 +435,19 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
         p.reject(new Error('Connection closed'));
       }
       pendingRef.current.clear();
+      if (wasConnected && !disconnectNoticeTimerRef.current) {
+        disconnectNoticeTimerRef.current = setTimeout(() => {
+          disconnectNoticeTimerRef.current = null;
+          if (!wsRef.current || wsRef.current.readyState !== WS_OPEN) {
+            notifyEvent(
+              settingsRef.current,
+              'disconnected',
+              'Printer disconnected',
+              `${url} stopped responding`
+            );
+          }
+        }, 12000);
+      }
       scheduleReconnect();
     };
   }, [getUrls, scheduleReconnect, addLine, initPrinter, checkTransitions, flushStatus, handleGcodeResponse]);
@@ -413,6 +472,7 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
       sub.remove();
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
       if (connectTimeoutRef.current) clearTimeout(connectTimeoutRef.current);
+      if (disconnectNoticeTimerRef.current) clearTimeout(disconnectNoticeTimerRef.current);
       if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
       try {
         wsRef.current?.close();

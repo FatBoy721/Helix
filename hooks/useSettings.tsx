@@ -22,6 +22,8 @@ export interface DashboardSections {
   camera: boolean;
 }
 
+export type NotificationMode = 'off' | 'local' | 'ntfy';
+
 export interface Settings {
   settingsVersion: number;
   primaryUrl: string;
@@ -30,13 +32,17 @@ export interface Settings {
   printers: PrinterEntry[];
   activePrinterId: string;
   dashboard: DashboardSections;
+  notificationMode: NotificationMode;
   ntfyServer: string;
   ntfyTopic: string;
   notifyPrintComplete: boolean;
   notifyPrintFailed: boolean;
+  notifyPrintPaused: boolean;
   notifyFilamentRunout: boolean;
   notifySwapComplete: boolean;
   notifyPrinterError: boolean;
+  notifyPrinterDisconnected: boolean;
+  notifyTempWarning: boolean;
   aceUnits: number;
   accentColor: string;
   language: string;
@@ -58,13 +64,17 @@ export const DEFAULT_SETTINGS: Settings = {
     temps: true,
     camera: true,
   },
+  notificationMode: 'local',
   ntfyServer: 'https://ntfy.sh',
   ntfyTopic: '',
   notifyPrintComplete: true,
   notifyPrintFailed: true,
+  notifyPrintPaused: true,
   notifyFilamentRunout: true,
   notifySwapComplete: true,
   notifyPrinterError: true,
+  notifyPrinterDisconnected: true,
+  notifyTempWarning: true,
   aceUnits: 1,
   accentColor: '#2196f3',
   language: 'en',
@@ -80,7 +90,12 @@ function applyAppearance(s: Settings) {
 }
 
 const STORAGE_KEY = 'u1control.settings.v1';
-const STORAGE_VERSION = 2;
+const STORAGE_VERSION = 3;
+
+function notificationMode(raw: unknown, ntfyTopic?: string): NotificationMode {
+  if (raw === 'off' || raw === 'local' || raw === 'ntfy') return raw;
+  return ntfyTopic?.trim() ? 'ntfy' : DEFAULT_SETTINGS.notificationMode;
+}
 
 function normalizePrinter(p: Partial<PrinterEntry>, index: number): PrinterEntry {
   return {
@@ -109,6 +124,7 @@ function migrateSettings(raw: Partial<Settings>): Settings {
     tailscaleUrl: normalizeMoonrakerUrl(parsed.tailscaleUrl || ''),
     cameraUrl: parsed.cameraUrl || DEFAULT_SETTINGS.cameraUrl,
     dashboard: { ...DEFAULT_SETTINGS.dashboard, ...(parsed.dashboard ?? {}) },
+    notificationMode: notificationMode(parsed.notificationMode, parsed.ntfyTopic),
     printers: Array.isArray(parsed.printers)
       ? parsed.printers.map((p, index) => normalizePrinter(p, index))
       : [],
