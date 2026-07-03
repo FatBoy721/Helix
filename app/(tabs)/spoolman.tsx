@@ -51,7 +51,21 @@ interface Spool {
   filament?: Filament;
 }
 
-const MATERIALS = ['PLA', 'PETG', 'ABS', 'ASA', 'TPU', 'PC', 'PA'];
+const MATERIALS = [
+  'PLA', 'PLA+', 'Silk PLA', 'Matte PLA', 'PLA-CF', 'Wood PLA',
+  'PETG', 'PETG-CF', 'PCTG',
+  'ABS', 'ASA', 'HIPS',
+  'TPU', 'TPE',
+  'PA', 'PA-CF', 'PA-GF', 'PC', 'PP', 'PVA', 'PVB',
+];
+
+// quick-pick brands — tapping one creates the vendor in Spoolman on save if
+// it doesn't exist yet. spoolman itself has no built-in vendor list.
+const PRESET_VENDORS = [
+  'Snapmaker', 'Bambu Lab', 'Polymaker', 'eSUN', 'SUNLU', 'Overture',
+  'Hatchbox', 'Prusament', 'Creality', 'Elegoo', 'Anycubic', 'Inland',
+  'Eryone', 'Kingroon', 'Duramic', '3DXTech',
+];
 const COLOR_PRESETS = [
   '161616', 'FFFFFF', 'FB0207', 'FF7043', 'FFB300', '4CAF50', '2196F3', '0000FF',
   'AB47BC', 'EC407A', '8D6E63', '9E9E9E',
@@ -615,6 +629,9 @@ function FilamentFormModal({
   const editing = !!filament;
   const [name, setName] = useState(filament?.name ?? '');
   const [material, setMaterial] = useState(filament?.material ?? 'PLA');
+  const [materialCustom, setMaterialCustom] = useState(
+    filament?.material && !MATERIALS.includes(filament.material) ? filament.material : ''
+  );
   const [colorHex, setColorHex] = useState((filament?.color_hex ?? '2196F3').replace('#', ''));
   const [vendorId, setVendorId] = useState<number | null>(filament?.vendor?.id ?? null);
   const [newVendor, setNewVendor] = useState('');
@@ -638,7 +655,7 @@ function FilamentFormModal({
       }
       const body: any = {
         name: name.trim(),
-        material: material.trim() || 'PLA',
+        material: materialCustom.trim() || material.trim() || 'PLA',
         color_hex: colorHex.replace('#', '') || '888888',
         weight: parseFloat(weight) || 1000,
         diameter: parseFloat(diameter) || 1.75,
@@ -667,13 +684,32 @@ function FilamentFormModal({
         {MATERIALS.map((m) => (
           <TouchableOpacity
             key={m}
-            style={[styles.pickChip, material === m && { backgroundColor: colors.primary }]}
-            onPress={() => setMaterial(m)}
+            style={[
+              styles.pickChip,
+              material === m && !materialCustom.trim() && { backgroundColor: colors.primary },
+            ]}
+            onPress={() => {
+              setMaterial(m);
+              setMaterialCustom('');
+            }}
           >
-            <Text style={[styles.pickChipText, material === m && { color: '#fff' }]}>{m}</Text>
+            <Text
+              style={[
+                styles.pickChipText,
+                material === m && !materialCustom.trim() && { color: '#fff' },
+              ]}
+            >
+              {m}
+            </Text>
           </TouchableOpacity>
         ))}
       </View>
+      <Field
+        label={t('Custom material')}
+        value={materialCustom}
+        onChange={setMaterialCustom}
+        placeholder="PEEK, PETG-GF, …"
+      />
 
       <Text style={styles.fieldLabel}>{t('Color')}</Text>
       <View style={styles.chipWrap}>
@@ -704,6 +740,27 @@ function FilamentFormModal({
           >
             <Text style={[styles.pickChipText, vendorId === v.id && { color: '#fff' }]}>
               {v.name}
+            </Text>
+          </TouchableOpacity>
+        ))}
+        {/* popular brands not in the DB yet — picking one creates it on save */}
+        {PRESET_VENDORS.filter(
+          (name) => !vendors.some((v) => v.name.toLowerCase() === name.toLowerCase())
+        ).map((name) => (
+          <TouchableOpacity
+            key={name}
+            style={[
+              styles.pickChip,
+              styles.presetChip,
+              newVendor === name && { backgroundColor: colors.primary, borderColor: colors.primary },
+            ]}
+            onPress={() => {
+              setNewVendor(newVendor === name ? '' : name);
+              setVendorId(null);
+            }}
+          >
+            <Text style={[styles.pickChipText, newVendor === name && { color: '#fff' }]}>
+              {name}
             </Text>
           </TouchableOpacity>
         ))}
@@ -953,6 +1010,11 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 12,
     fontWeight: '600',
+  },
+  presetChip: {
+    backgroundColor: 'transparent',
+    borderWidth: 1,
+    borderColor: colors.border,
   },
   chipDot: {
     width: 10,

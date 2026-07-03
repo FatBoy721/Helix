@@ -26,6 +26,7 @@ export function t(key: string): string {
 
 const DICT: Record<string, Record<string, string>> = {
   es: {
+    'Custom material': 'Material personalizado',
     Scan: 'Escanear', 'Spool label': 'Etiqueta de bobina', 'Save PNG': 'Guardar PNG', 'Share / Print': 'Compartir / Imprimir',
     'Label saved to your gallery — print it from there.': 'Etiqueta guardada en la galería — imprímela desde ahí.',
     'Photo library permission denied': 'Permiso de galería denegado', 'Camera access needed': 'Se necesita acceso a la cámara',
@@ -92,6 +93,7 @@ const DICT: Record<string, Record<string, string>> = {
       'La impresora reporta 0 unidades ACE conectadas. Si aún no instalaste multiACE, es normal — esta pestaña se activa al conectar una unidad.',
   },
   de: {
+    'Custom material': 'Eigenes Material',
     Scan: 'Scannen', 'Spool label': 'Spulen-Etikett', 'Save PNG': 'PNG speichern', 'Share / Print': 'Teilen / Drucken',
     'Label saved to your gallery — print it from there.': 'Etikett in der Galerie gespeichert — von dort drucken.',
     'Photo library permission denied': 'Galerie-Berechtigung verweigert', 'Camera access needed': 'Kamerazugriff erforderlich',
@@ -158,6 +160,7 @@ const DICT: Record<string, Record<string, string>> = {
       'Der Drucker meldet 0 verbundene ACE-Einheiten. Falls multiACE noch nicht installiert ist, ist das normal — dieser Tab aktiviert sich, sobald eine Einheit angeschlossen ist.',
   },
   fr: {
+    'Custom material': 'Matériau personnalisé',
     Scan: 'Scanner', 'Spool label': 'Étiquette de bobine', 'Save PNG': 'Enregistrer PNG', 'Share / Print': 'Partager / Imprimer',
     'Label saved to your gallery — print it from there.': 'Étiquette enregistrée dans la galerie — imprimez-la depuis là.',
     'Photo library permission denied': 'Permission galerie refusée', 'Camera access needed': 'Accès caméra requis',
@@ -224,6 +227,7 @@ const DICT: Record<string, Record<string, string>> = {
       "L'imprimante signale 0 unité ACE connectée. Si multiACE n'est pas encore installé, c'est normal — cet onglet s'active dès qu'une unité est branchée.",
   },
   zh: {
+    'Custom material': '自定义材料',
     Scan: '扫码', 'Spool label': '线轴标签', 'Save PNG': '保存 PNG', 'Share / Print': '分享 / 打印',
     'Label saved to your gallery — print it from there.': '标签已保存到相册——可从相册打印。',
     'Photo library permission denied': '相册权限被拒绝', 'Camera access needed': '需要相机权限',
