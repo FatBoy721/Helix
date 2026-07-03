@@ -13,6 +13,7 @@ import PrintProgress, { formatDuration } from '../../components/PrintProgress';
 import CameraFeed, { CameraStat } from '../../components/CameraFeed';
 import ControlsPanel from '../../components/ControlsPanel';
 import PrinterStrip from '../../components/PrinterStrip';
+import MacrosPanel from '../../components/MacrosPanel';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { t } from '../../services/i18n';
 import { colors, spacing } from '../../constants/theme';
@@ -334,6 +335,13 @@ export default function Dashboard() {
                 />
               </View>
             ))}
+        </>
+      )}
+
+      {show.macros && (
+        <>
+          <Text style={styles.sectionTitle}>{t('Macros')}</Text>
+          <MacrosPanel />
         </>
       )}
     </ScrollView>

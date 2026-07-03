@@ -38,8 +38,8 @@ export default function TabLayout() {
         options={{ title: t('Bed Mesh'), tabBarLabel: t('Mesh'), tabBarIcon: tabIcon('grid') }}
       />
       <Tabs.Screen
-        name="macros"
-        options={{ title: t('Macros'), tabBarLabel: t('Macros'), tabBarIcon: tabIcon('play-box-multiple') }}
+        name="spoolman"
+        options={{ title: 'Spoolman', tabBarLabel: 'Spools', tabBarIcon: tabIcon('paper-roll-outline') }}
       />
       <Tabs.Screen
         name="console"

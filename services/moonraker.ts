@@ -184,6 +184,32 @@ export const api = {
   metadata: (base: string, filename: string) =>
     request(base, `/server/files/metadata?filename=${encodeURIComponent(filename)}`),
 
+  spoolmanStatus: (base: string) => request(base, '/server/spoolman/status'),
+
+  spoolmanGetSpoolId: (base: string) =>
+    request<{ spool_id: number | null }>(base, '/server/spoolman/spool_id'),
+
+  spoolmanSetSpoolId: (base: string, spoolId: number | null) =>
+    request<{ spool_id: number | null }>(base, '/server/spoolman/spool_id', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ spool_id: spoolId }),
+    }),
+
+  // moonraker proxies arbitrary Spoolman API calls so the app never needs to
+  // know where the Spoolman server actually lives
+  spoolmanProxy: (base: string, method: string, path: string, query?: string) =>
+    request<{ response: any; error: any }>(base, '/server/spoolman/proxy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        request_method: method,
+        path,
+        ...(query ? { query } : {}),
+        use_v2_response: true,
+      }),
+    }),
+
   queryObjects: (base: string, objects: string[]) =>
     request(base, `/printer/objects/query?${objects.map((o) => encodeURIComponent(o)).join('&')}`),
 };

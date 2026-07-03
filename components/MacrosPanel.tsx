@@ -1,10 +1,9 @@
 import React, { useMemo, useState } from 'react';
-import { Alert, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
-import { useMoonraker } from '../../hooks/useMoonraker';
-import { useSettings } from '../../hooks/useSettings';
-import MacroButton from '../../components/MacroButton';
-import { t } from '../../services/i18n';
-import { colors, spacing } from '../../constants/theme';
+import { Alert, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useMoonraker } from '../hooks/useMoonraker';
+import MacroButton from './MacroButton';
+import { t } from '../services/i18n';
+import { colors, spacing } from '../constants/theme';
 
 // PAXX ships like 120 macros and dumping them in one wall scared everyone I
 // showed it to. buckets below, first match wins top to bottom. T4-T31 are
@@ -25,9 +24,9 @@ const CATEGORIES: { name: string; match: (m: string) => boolean }[] = [
   { name: 'Homing & Motion', match: (m) => /HOME|HOMING|PARK|SHAKE|MOVE/i.test(m) },
 ];
 
-export default function MacrosScreen() {
+// lives on the Home tab (toggleable section) since Spoolman took the tab slot
+export default function MacrosPanel() {
   const { macros, sendGcode, connection } = useMoonraker();
-  useSettings(); // re-render on language/theme change
   const [filter, setFilter] = useState('');
 
   const sections = useMemo(() => {
@@ -58,7 +57,7 @@ export default function MacrosScreen() {
   };
 
   return (
-    <View style={styles.screen}>
+    <View style={styles.wrap}>
       <TextInput
         style={styles.search}
         placeholder={t('Filter macros…')}
@@ -67,42 +66,36 @@ export default function MacrosScreen() {
         onChangeText={setFilter}
         autoCapitalize="none"
       />
-      <ScrollView contentContainerStyle={styles.scroll}>
-        {sections.map((section) => (
-          <View key={section.name}>
-            <View style={styles.sectionHeader}>
-              <Text style={[styles.sectionTitle, { color: colors.primary }]}>
-                {t(section.name)}
-              </Text>
-              <Text style={styles.sectionCount}>{section.macros.length}</Text>
-            </View>
-            <View style={styles.grid}>
-              {section.macros.map((name) => (
-                <MacroButton
-                  key={name}
-                  name={name}
-                  onPress={() => run(name)}
-                  disabled={connection !== 'connected'}
-                />
-              ))}
-            </View>
+      {sections.map((section) => (
+        <View key={section.name}>
+          <View style={styles.sectionHeader}>
+            <Text style={[styles.sectionTitle, { color: colors.primary }]}>{t(section.name)}</Text>
+            <Text style={styles.sectionCount}>{section.macros.length}</Text>
           </View>
-        ))}
-        {!sections.length && (
-          <Text style={styles.empty}>
-            {connection === 'connected' ? t('No macros found') : t('Not connected')}
-          </Text>
-        )}
-      </ScrollView>
+          <View style={styles.grid}>
+            {section.macros.map((name) => (
+              <MacroButton
+                key={name}
+                name={name}
+                onPress={() => run(name)}
+                disabled={connection !== 'connected'}
+              />
+            ))}
+          </View>
+        </View>
+      ))}
+      {!sections.length && (
+        <Text style={styles.empty}>
+          {connection === 'connected' ? t('No macros found') : t('Not connected')}
+        </Text>
+      )}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  screen: {
-    flex: 1,
-    backgroundColor: colors.bg,
-    padding: spacing.lg,
+  wrap: {
+    gap: spacing.sm,
   },
   search: {
     backgroundColor: colors.card,
@@ -112,12 +105,7 @@ const styles = StyleSheet.create({
     color: colors.text,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
-    marginBottom: spacing.md,
     fontSize: 14,
-  },
-  scroll: {
-    paddingBottom: spacing.xl,
-    gap: spacing.sm,
   },
   sectionHeader: {
     flexDirection: 'row',
@@ -144,6 +132,6 @@ const styles = StyleSheet.create({
     color: colors.subtext,
     textAlign: 'center',
     width: '100%',
-    marginTop: spacing.xl,
+    marginTop: spacing.md,
   },
 });

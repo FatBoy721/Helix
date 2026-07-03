@@ -20,6 +20,7 @@ export interface DashboardSections {
   controls: boolean;
   temps: boolean;
   camera: boolean;
+  macros: boolean;
 }
 
 export type NotificationMode = 'off' | 'local' | 'ntfy';
@@ -63,6 +64,7 @@ export const DEFAULT_SETTINGS: Settings = {
     controls: true,
     temps: true,
     camera: true,
+    macros: true,
   },
   notificationMode: 'local',
   ntfyServer: 'https://ntfy.sh',

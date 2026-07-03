@@ -60,6 +60,7 @@ const SECTION_LABELS: { key: keyof DashboardSections; label: string }[] = [
   { key: 'controls', label: 'Controls' },
   { key: 'temps', label: 'Temperatures' },
   { key: 'camera', label: 'Camera' },
+  { key: 'macros', label: 'Macros' },
 ];
 
 const NOTIFICATION_MODES: {

@@ -26,6 +26,9 @@ export function t(key: string): string {
 
 const DICT: Record<string, Record<string, string>> = {
   es: {
+    Spoolman: 'Spoolman', 'Active spool': 'Bobina activa', 'No spool active': 'Sin bobina activa',
+    'Set active spool?': '¿Fijar bobina activa?', left: 'restante', 'No spools in Spoolman yet': 'Aún no hay bobinas en Spoolman',
+    'Spoolman not configured': 'Spoolman no configurado', 'Spoolman server unreachable': 'Servidor Spoolman inaccesible',
     Home: 'Inicio', Mesh: 'Malla', Macros: 'Macros', Console: 'Consola', Files: 'Archivos',
     Settings: 'Ajustes', 'Bed Mesh': 'Malla de cama', History: 'Historial',
     Temperatures: 'Temperaturas', Camera: 'Cámara', 'EMERGENCY STOP': 'PARADA DE EMERGENCIA',
@@ -73,6 +76,9 @@ const DICT: Record<string, Record<string, string>> = {
       'La impresora reporta 0 unidades ACE conectadas. Si aún no instalaste multiACE, es normal — esta pestaña se activa al conectar una unidad.',
   },
   de: {
+    Spoolman: 'Spoolman', 'Active spool': 'Aktive Spule', 'No spool active': 'Keine Spule aktiv',
+    'Set active spool?': 'Aktive Spule setzen?', left: 'übrig', 'No spools in Spoolman yet': 'Noch keine Spulen in Spoolman',
+    'Spoolman not configured': 'Spoolman nicht konfiguriert', 'Spoolman server unreachable': 'Spoolman-Server nicht erreichbar',
     Home: 'Start', Mesh: 'Netz', Macros: 'Makros', Console: 'Konsole', Files: 'Dateien',
     Settings: 'Einstellungen', 'Bed Mesh': 'Bett-Netz', History: 'Verlauf',
     Temperatures: 'Temperaturen', Camera: 'Kamera', 'EMERGENCY STOP': 'NOT-HALT',
@@ -120,6 +126,9 @@ const DICT: Record<string, Record<string, string>> = {
       'Der Drucker meldet 0 verbundene ACE-Einheiten. Falls multiACE noch nicht installiert ist, ist das normal — dieser Tab aktiviert sich, sobald eine Einheit angeschlossen ist.',
   },
   fr: {
+    Spoolman: 'Spoolman', 'Active spool': 'Bobine active', 'No spool active': 'Aucune bobine active',
+    'Set active spool?': 'Définir la bobine active ?', left: 'restant', 'No spools in Spoolman yet': 'Pas encore de bobines dans Spoolman',
+    'Spoolman not configured': 'Spoolman non configuré', 'Spoolman server unreachable': 'Serveur Spoolman injoignable',
     Home: 'Accueil', Mesh: 'Maillage', Macros: 'Macros', Console: 'Console', Files: 'Fichiers',
     Settings: 'Réglages', 'Bed Mesh': 'Maillage du lit', History: 'Historique',
     Temperatures: 'Températures', Camera: 'Caméra', 'EMERGENCY STOP': 'ARRÊT D’URGENCE',
@@ -167,6 +176,9 @@ const DICT: Record<string, Record<string, string>> = {
       "L'imprimante signale 0 unité ACE connectée. Si multiACE n'est pas encore installé, c'est normal — cet onglet s'active dès qu'une unité est branchée.",
   },
   zh: {
+    Spoolman: 'Spoolman', 'Active spool': '当前线轴', 'No spool active': '无活动线轴',
+    'Set active spool?': '设为当前线轴？', left: '剩余', 'No spools in Spoolman yet': 'Spoolman 中还没有线轴',
+    'Spoolman not configured': '未配置 Spoolman', 'Spoolman server unreachable': '无法连接 Spoolman 服务器',
     Home: '主页', Mesh: '网格', Macros: '宏', Console: '控制台', Files: '文件',
     Settings: '设置', 'Bed Mesh': '热床网格', History: '历史',
     Temperatures: '温度', Camera: '摄像头', 'EMERGENCY STOP': '紧急停止',
