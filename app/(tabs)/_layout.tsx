@@ -39,7 +39,7 @@ export default function TabLayout() {
       />
       <Tabs.Screen
         name="spoolman"
-        options={{ title: 'Spoolman', tabBarLabel: 'Spools', tabBarIcon: tabIcon('paper-roll-outline') }}
+        options={{ title: 'Spoolman', tabBarLabel: 'Spoolman', tabBarIcon: tabIcon('paper-roll-outline') }}
       />
       <Tabs.Screen
         name="console"

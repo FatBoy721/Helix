@@ -26,6 +26,9 @@ export function t(key: string): string {
 
 const DICT: Record<string, Record<string, string>> = {
   es: {
+    'Enter your Spoolman server address and Helix will configure the printer for you.': 'Introduce la dirección de tu servidor Spoolman y Helix configurará la impresora por ti.',
+    'Configure printer': 'Configurar impresora', 'Configuring…': 'Configurando…',
+    'Moonraker is configured for Spoolman but the server is not responding. Check that the Spoolman container is running, or point the printer at a different address.': 'Moonraker está configurado para Spoolman pero el servidor no responde. Comprueba que el contenedor esté en marcha o apunta a otra dirección.',
     Spoolman: 'Spoolman', 'Active spool': 'Bobina activa', 'No spool active': 'Sin bobina activa',
     'Set active spool?': '¿Fijar bobina activa?', left: 'restante', 'No spools in Spoolman yet': 'Aún no hay bobinas en Spoolman',
     'Spoolman not configured': 'Spoolman no configurado', 'Spoolman server unreachable': 'Servidor Spoolman inaccesible',
@@ -76,6 +79,9 @@ const DICT: Record<string, Record<string, string>> = {
       'La impresora reporta 0 unidades ACE conectadas. Si aún no instalaste multiACE, es normal — esta pestaña se activa al conectar una unidad.',
   },
   de: {
+    'Enter your Spoolman server address and Helix will configure the printer for you.': 'Spoolman-Serveradresse eingeben — Helix konfiguriert den Drucker automatisch.',
+    'Configure printer': 'Drucker konfigurieren', 'Configuring…': 'Konfiguriere…',
+    'Moonraker is configured for Spoolman but the server is not responding. Check that the Spoolman container is running, or point the printer at a different address.': 'Moonraker ist für Spoolman konfiguriert, aber der Server antwortet nicht. Container prüfen oder andere Adresse eintragen.',
     Spoolman: 'Spoolman', 'Active spool': 'Aktive Spule', 'No spool active': 'Keine Spule aktiv',
     'Set active spool?': 'Aktive Spule setzen?', left: 'übrig', 'No spools in Spoolman yet': 'Noch keine Spulen in Spoolman',
     'Spoolman not configured': 'Spoolman nicht konfiguriert', 'Spoolman server unreachable': 'Spoolman-Server nicht erreichbar',
@@ -126,6 +132,9 @@ const DICT: Record<string, Record<string, string>> = {
       'Der Drucker meldet 0 verbundene ACE-Einheiten. Falls multiACE noch nicht installiert ist, ist das normal — dieser Tab aktiviert sich, sobald eine Einheit angeschlossen ist.',
   },
   fr: {
+    'Enter your Spoolman server address and Helix will configure the printer for you.': "Entrez l'adresse de votre serveur Spoolman et Helix configurera l'imprimante pour vous.",
+    'Configure printer': "Configurer l'imprimante", 'Configuring…': 'Configuration…',
+    'Moonraker is configured for Spoolman but the server is not responding. Check that the Spoolman container is running, or point the printer at a different address.': 'Moonraker est configuré pour Spoolman mais le serveur ne répond pas. Vérifiez le conteneur ou changez l’adresse.',
     Spoolman: 'Spoolman', 'Active spool': 'Bobine active', 'No spool active': 'Aucune bobine active',
     'Set active spool?': 'Définir la bobine active ?', left: 'restant', 'No spools in Spoolman yet': 'Pas encore de bobines dans Spoolman',
     'Spoolman not configured': 'Spoolman non configuré', 'Spoolman server unreachable': 'Serveur Spoolman injoignable',
@@ -176,6 +185,9 @@ const DICT: Record<string, Record<string, string>> = {
       "L'imprimante signale 0 unité ACE connectée. Si multiACE n'est pas encore installé, c'est normal — cet onglet s'active dès qu'une unité est branchée.",
   },
   zh: {
+    'Enter your Spoolman server address and Helix will configure the printer for you.': '输入 Spoolman 服务器地址，Helix 会自动为打印机完成配置。',
+    'Configure printer': '配置打印机', 'Configuring…': '配置中…',
+    'Moonraker is configured for Spoolman but the server is not responding. Check that the Spoolman container is running, or point the printer at a different address.': 'Moonraker 已配置 Spoolman，但服务器无响应。请检查容器是否运行，或改用其他地址。',
     Spoolman: 'Spoolman', 'Active spool': '当前线轴', 'No spool active': '无活动线轴',
     'Set active spool?': '设为当前线轴？', left: '剩余', 'No spools in Spoolman yet': 'Spoolman 中还没有线轴',
     'Spoolman not configured': '未配置 Spoolman', 'Spoolman server unreachable': '无法连接 Spoolman 服务器',

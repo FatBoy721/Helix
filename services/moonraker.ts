@@ -149,6 +149,32 @@ export interface HistoryTotals {
   longest_print: number;
 }
 
+// Writes a config file onto the printer through Moonraker's upload API.
+// PAXX ships [include extended/moonraker/*.cfg] stock, so dropping files
+// there is safe and survives firmware updates better than editing
+// moonraker.conf itself. RN's FormData needs a real file URI, hence the
+// temp-file dance through expo-file-system.
+export async function uploadConfigFile(
+  base: string,
+  dirPath: string,
+  filename: string,
+  content: string
+): Promise<void> {
+  const FileSystem = await import('expo-file-system/legacy');
+  const tmp = `${FileSystem.cacheDirectory}${filename}`;
+  await FileSystem.writeAsStringAsync(tmp, content);
+  const form = new FormData();
+  form.append('root', 'config');
+  form.append('path', dirPath);
+  form.append('file', { uri: tmp, name: filename, type: 'text/plain' } as any);
+  const res = await fetch(`${base}/server/files/upload`, { method: 'POST', body: form });
+  if (!res.ok) throw new Error(`Upload failed: HTTP ${res.status}`);
+}
+
+export async function restartMoonraker(base: string): Promise<void> {
+  await fetch(`${base}/server/restart`, { method: 'POST' }).catch(() => {});
+}
+
 export const api = {
   serverInfo: (base: string) => request(base, '/server/info'),
 
@@ -183,6 +209,8 @@ export const api = {
 
   metadata: (base: string, filename: string) =>
     request(base, `/server/files/metadata?filename=${encodeURIComponent(filename)}`),
+
+  serverConfig: (base: string) => request<{ config: any }>(base, '/server/config'),
 
   spoolmanStatus: (base: string) => request(base, '/server/spoolman/status'),
 

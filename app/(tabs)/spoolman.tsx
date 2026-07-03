@@ -5,13 +5,14 @@ import {
   RefreshControl,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useMoonraker } from '../../hooks/useMoonraker';
 import { useSettings } from '../../hooks/useSettings';
-import { api } from '../../services/moonraker';
+import { api, normalizeBaseUrl, restartMoonraker, uploadConfigFile } from '../../services/moonraker';
 import { t } from '../../services/i18n';
 import { colors, spacing } from '../../constants/theme';
 
@@ -41,6 +42,8 @@ export default function SpoolmanScreen() {
   const [activeId, setActiveId] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [unavailable, setUnavailable] = useState<'none' | 'no-component' | 'no-server'>('none');
+  const [serverInput, setServerInput] = useState('');
+  const [configuring, setConfiguring] = useState(false);
 
   const refresh = useCallback(async () => {
     if (!activeUrl) return;
@@ -62,10 +65,42 @@ export default function SpoolmanScreen() {
       // 404 = [spoolman] section missing from moonraker.conf entirely
       setUnavailable(String(e?.message ?? '').includes('404') ? 'no-component' : 'no-server');
       setSpools([]);
+      // prefill the setup field with whatever moonraker currently has
+      api
+        .serverConfig(activeUrl)
+        .then((c) => {
+          const cur = c?.config?.spoolman?.server;
+          if (cur) setServerInput(cur);
+        })
+        .catch(() => {});
     } finally {
       setLoading(false);
     }
   }, [activeUrl]);
+
+  // writes [spoolman] into the printer's moonraker config and restarts it —
+  // so users never have to SSH anywhere to hook up their Spoolman server
+  const configurePrinter = async () => {
+    const server = normalizeBaseUrl(serverInput);
+    if (!server) return;
+    setConfiguring(true);
+    try {
+      await uploadConfigFile(
+        activeUrl,
+        'extended/moonraker',
+        'spoolman.cfg',
+        `# Spoolman filament tracking (written by Helix)\n[spoolman]\nserver: ${server}\nsync_rate: 5\n`
+      );
+      await restartMoonraker(activeUrl);
+      // moonraker takes a few seconds to come back after a soft restart
+      await new Promise((r) => setTimeout(r, 8000));
+      await refresh();
+    } catch (e: any) {
+      Alert.alert(t('Error'), String(e?.message ?? e));
+    } finally {
+      setConfiguring(false);
+    }
+  };
 
   useEffect(() => {
     if (connection === 'connected') refresh();
@@ -100,9 +135,32 @@ export default function SpoolmanScreen() {
         </Text>
         <Text style={styles.emptyText}>
           {unavailable === 'no-component'
-            ? t("Add a [spoolman] section to the printer's moonraker.conf pointing at your Spoolman server, then restart Moonraker.")
-            : t('Moonraker is configured for Spoolman but the server is not responding. Check that the Spoolman container is running.')}
+            ? t('Enter your Spoolman server address and Helix will configure the printer for you.')
+            : t('Moonraker is configured for Spoolman but the server is not responding. Check that the Spoolman container is running, or point the printer at a different address.')}
         </Text>
+        <TextInput
+          style={styles.setupInput}
+          value={serverInput}
+          onChangeText={setServerInput}
+          placeholder="http://192.168.1.x:7912"
+          placeholderTextColor={colors.subtext}
+          autoCapitalize="none"
+          autoCorrect={false}
+          keyboardType="url"
+        />
+        <TouchableOpacity
+          style={[
+            styles.configureBtn,
+            { backgroundColor: colors.primary },
+            (configuring || !serverInput.trim()) && { opacity: 0.5 },
+          ]}
+          disabled={configuring || !serverInput.trim()}
+          onPress={configurePrinter}
+        >
+          <Text style={styles.configureText}>
+            {configuring ? t('Configuring…') : t('Configure printer')}
+          </Text>
+        </TouchableOpacity>
         <TouchableOpacity style={styles.retryBtn} onPress={refresh}>
           <Text style={styles.retryText}>{t('Retry')}</Text>
         </TouchableOpacity>
@@ -292,6 +350,30 @@ const styles = StyleSheet.create({
     fontSize: 13,
     textAlign: 'center',
     lineHeight: 18,
+  },
+  setupInput: {
+    alignSelf: 'stretch',
+    backgroundColor: colors.card,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.border,
+    color: colors.text,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    fontSize: 14,
+    marginTop: spacing.md,
+  },
+  configureBtn: {
+    alignSelf: 'stretch',
+    borderRadius: 8,
+    paddingVertical: spacing.md,
+    alignItems: 'center',
+    marginTop: spacing.sm,
+  },
+  configureText: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 14,
   },
   retryBtn: {
     marginTop: spacing.md,
