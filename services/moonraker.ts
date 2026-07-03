@@ -225,15 +225,22 @@ export const api = {
     }),
 
   // moonraker proxies arbitrary Spoolman API calls so the app never needs to
-  // know where the Spoolman server actually lives
-  spoolmanProxy: (base: string, method: string, path: string, query?: string) =>
+  // know where the Spoolman server actually lives. spoolman uses POST to
+  // create, PATCH to update, DELETE to remove (verified against 0.23).
+  spoolmanProxy: (
+    base: string,
+    method: string,
+    path: string,
+    opts?: { query?: string; body?: any }
+  ) =>
     request<{ response: any; error: any }>(base, '/server/spoolman/proxy', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         request_method: method,
         path,
-        ...(query ? { query } : {}),
+        ...(opts?.query ? { query: opts.query } : {}),
+        ...(opts?.body !== undefined ? { body: opts.body } : {}),
         use_v2_response: true,
       }),
     }),

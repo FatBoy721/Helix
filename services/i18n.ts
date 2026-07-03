@@ -26,6 +26,12 @@ export function t(key: string): string {
 
 const DICT: Record<string, Record<string, string>> = {
   es: {
+    'Add spool': 'Añadir bobina', 'Add filament': 'Añadir filamento', 'Edit spool': 'Editar bobina', 'Edit filament': 'Editar filamento',
+    Filament: 'Filamento', Vendor: 'Fabricante', 'New vendor': 'Nuevo fabricante', Material: 'Material', Color: 'Color',
+    'Net weight (g)': 'Peso neto (g)', 'Remaining (g)': 'Restante (g)', 'leave empty for a full spool': 'vacío = bobina llena',
+    Location: 'Ubicación', 'Lot number': 'Lote', Price: 'Precio', 'Diameter (mm)': 'Diámetro (mm)', 'Density (g/cm³)': 'Densidad (g/cm³)',
+    Archive: 'Archivar', Unarchive: 'Desarchivar', Delete: 'Eliminar', 'Delete spool?': '¿Eliminar bobina?', Save: 'Guardar', Archived: 'Archivada',
+    'Pick a filament first': 'Elige un filamento primero', 'Name is required': 'El nombre es obligatorio', 'No filaments yet — add one first': 'Sin filamentos — añade uno primero',
     'Enter your Spoolman server address and Helix will configure the printer for you.': 'Introduce la dirección de tu servidor Spoolman y Helix configurará la impresora por ti.',
     'Configure printer': 'Configurar impresora', 'Configuring…': 'Configurando…',
     'Moonraker is configured for Spoolman but the server is not responding. Check that the Spoolman container is running, or point the printer at a different address.': 'Moonraker está configurado para Spoolman pero el servidor no responde. Comprueba que el contenedor esté en marcha o apunta a otra dirección.',
@@ -79,6 +85,12 @@ const DICT: Record<string, Record<string, string>> = {
       'La impresora reporta 0 unidades ACE conectadas. Si aún no instalaste multiACE, es normal — esta pestaña se activa al conectar una unidad.',
   },
   de: {
+    'Add spool': 'Spule hinzufügen', 'Add filament': 'Filament hinzufügen', 'Edit spool': 'Spule bearbeiten', 'Edit filament': 'Filament bearbeiten',
+    Filament: 'Filament', Vendor: 'Hersteller', 'New vendor': 'Neuer Hersteller', Material: 'Material', Color: 'Farbe',
+    'Net weight (g)': 'Nettogewicht (g)', 'Remaining (g)': 'Restmenge (g)', 'leave empty for a full spool': 'leer = volle Spule',
+    Location: 'Ort', 'Lot number': 'Charge', Price: 'Preis', 'Diameter (mm)': 'Durchmesser (mm)', 'Density (g/cm³)': 'Dichte (g/cm³)',
+    Archive: 'Archivieren', Unarchive: 'Wiederherstellen', Delete: 'Löschen', 'Delete spool?': 'Spule löschen?', Save: 'Speichern', Archived: 'Archiviert',
+    'Pick a filament first': 'Zuerst ein Filament wählen', 'Name is required': 'Name ist erforderlich', 'No filaments yet — add one first': 'Noch keine Filamente — zuerst eines anlegen',
     'Enter your Spoolman server address and Helix will configure the printer for you.': 'Spoolman-Serveradresse eingeben — Helix konfiguriert den Drucker automatisch.',
     'Configure printer': 'Drucker konfigurieren', 'Configuring…': 'Konfiguriere…',
     'Moonraker is configured for Spoolman but the server is not responding. Check that the Spoolman container is running, or point the printer at a different address.': 'Moonraker ist für Spoolman konfiguriert, aber der Server antwortet nicht. Container prüfen oder andere Adresse eintragen.',
@@ -132,6 +144,12 @@ const DICT: Record<string, Record<string, string>> = {
       'Der Drucker meldet 0 verbundene ACE-Einheiten. Falls multiACE noch nicht installiert ist, ist das normal — dieser Tab aktiviert sich, sobald eine Einheit angeschlossen ist.',
   },
   fr: {
+    'Add spool': 'Ajouter une bobine', 'Add filament': 'Ajouter un filament', 'Edit spool': 'Modifier la bobine', 'Edit filament': 'Modifier le filament',
+    Filament: 'Filament', Vendor: 'Fabricant', 'New vendor': 'Nouveau fabricant', Material: 'Matériau', Color: 'Couleur',
+    'Net weight (g)': 'Poids net (g)', 'Remaining (g)': 'Restant (g)', 'leave empty for a full spool': 'vide = bobine pleine',
+    Location: 'Emplacement', 'Lot number': 'Lot', Price: 'Prix', 'Diameter (mm)': 'Diamètre (mm)', 'Density (g/cm³)': 'Densité (g/cm³)',
+    Archive: 'Archiver', Unarchive: 'Désarchiver', Delete: 'Supprimer', 'Delete spool?': 'Supprimer la bobine ?', Save: 'Enregistrer', Archived: 'Archivée',
+    'Pick a filament first': "Choisissez d'abord un filament", 'Name is required': 'Le nom est requis', 'No filaments yet — add one first': "Pas encore de filaments — ajoutez-en un d'abord",
     'Enter your Spoolman server address and Helix will configure the printer for you.': "Entrez l'adresse de votre serveur Spoolman et Helix configurera l'imprimante pour vous.",
     'Configure printer': "Configurer l'imprimante", 'Configuring…': 'Configuration…',
     'Moonraker is configured for Spoolman but the server is not responding. Check that the Spoolman container is running, or point the printer at a different address.': 'Moonraker est configuré pour Spoolman mais le serveur ne répond pas. Vérifiez le conteneur ou changez l’adresse.',
@@ -185,6 +203,12 @@ const DICT: Record<string, Record<string, string>> = {
       "L'imprimante signale 0 unité ACE connectée. Si multiACE n'est pas encore installé, c'est normal — cet onglet s'active dès qu'une unité est branchée.",
   },
   zh: {
+    'Add spool': '添加线轴', 'Add filament': '添加耗材', 'Edit spool': '编辑线轴', 'Edit filament': '编辑耗材',
+    Filament: '耗材', Vendor: '厂商', 'New vendor': '新厂商', Material: '材料', Color: '颜色',
+    'Net weight (g)': '净重 (g)', 'Remaining (g)': '剩余 (g)', 'leave empty for a full spool': '留空表示整卷',
+    Location: '位置', 'Lot number': '批号', Price: '价格', 'Diameter (mm)': '直径 (mm)', 'Density (g/cm³)': '密度 (g/cm³)',
+    Archive: '归档', Unarchive: '取消归档', Delete: '删除', 'Delete spool?': '删除线轴？', Save: '保存', Archived: '已归档',
+    'Pick a filament first': '请先选择耗材', 'Name is required': '名称必填', 'No filaments yet — add one first': '还没有耗材——请先添加',
     'Enter your Spoolman server address and Helix will configure the printer for you.': '输入 Spoolman 服务器地址，Helix 会自动为打印机完成配置。',
     'Configure printer': '配置打印机', 'Configuring…': '配置中…',
     'Moonraker is configured for Spoolman but the server is not responding. Check that the Spoolman container is running, or point the printer at a different address.': 'Moonraker 已配置 Spoolman，但服务器无响应。请检查容器是否运行，或改用其他地址。',
