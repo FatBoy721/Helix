@@ -60,6 +60,23 @@ const MATERIALS = [
   'PA', 'PA-CF', 'PA-GF', 'PC', 'PP', 'PVA', 'PVB',
 ];
 
+interface ExternalFilament {
+  id: string;
+  manufacturer?: string;
+  name?: string;
+  material?: string;
+  density?: number;
+  diameter?: number;
+  weight?: number;
+  spool_weight?: number;
+  color_hex?: string;
+}
+
+// spoolman ships a community catalog of ~7000 commercial filaments
+// (manufacturer, exact color, density, spool weight, the lot). fetched once
+// per session — it's ~1.5MB and doesn't change under us.
+let catalogCache: ExternalFilament[] | null = null;
+
 // typical densities in g/cm3 so nobody has to look this up on the box.
 // picking a material auto-fills it; still editable for exact vendor specs.
 const MATERIAL_DENSITY: Record<string, number> = {
@@ -518,6 +535,24 @@ function SpoolFormModal({
   const [lot, setLot] = useState(spool?.lot_nr ?? '');
   const [price, setPrice] = useState(spool?.price != null ? String(spool.price) : '');
   const [saving, setSaving] = useState(false);
+  const [grossWeight, setGrossWeight] = useState('');
+
+  // kitchen-scale resync: give spoolman the gross weight (spool + filament)
+  // and it back-computes remaining using the filament's empty-spool weight
+  const measure = async () => {
+    const g = parseFloat(grossWeight);
+    if (!isFinite(g) || g <= 0) return;
+    try {
+      const res = await proxy('PUT', `/v1/spool/${spool!.id}/measure`, { weight: g });
+      Alert.alert(
+        t('Saved'),
+        `${t('Remaining')}: ${Math.round(res?.remaining_weight ?? 0)} g`
+      );
+      onClose(true);
+    } catch (e: any) {
+      Alert.alert(t('Error'), String(e?.message ?? e));
+    }
+  };
 
   const save = async () => {
     if (!filamentId) {
@@ -602,6 +637,36 @@ function SpoolFormModal({
         <Text style={styles.saveText}>{t('Save')}</Text>
       </TouchableOpacity>
       {editing && (
+        <>
+          <Text style={styles.fieldLabel}>{t('Weigh the spool')}</Text>
+          <View style={styles.measureRow}>
+            <TextInput
+              style={[styles.fieldInput, { flex: 1 }]}
+              value={grossWeight}
+              onChangeText={setGrossWeight}
+              placeholder={t('Gross weight (g)')}
+              placeholderTextColor={colors.subtext}
+              keyboardType="numeric"
+            />
+            <TouchableOpacity
+              style={[
+                styles.measureBtn,
+                { backgroundColor: colors.primary },
+                !grossWeight.trim() && { opacity: 0.5 },
+              ]}
+              disabled={!grossWeight.trim()}
+              onPress={measure}
+            >
+              <MaterialCommunityIcons name="scale" size={16} color="#fff" />
+              <Text style={styles.measureText}>{t('Measure')}</Text>
+            </TouchableOpacity>
+          </View>
+          <Text style={styles.hint}>
+            {t('Put the whole spool on a scale — remaining filament is computed from the empty-spool weight.')}
+          </Text>
+        </>
+      )}
+      {editing && (
         <View style={styles.dangerRow}>
           <TouchableOpacity style={styles.dangerBtn} onPress={archive}>
             <Text style={styles.dangerBtnText}>
@@ -634,6 +699,50 @@ function FilamentFormModal({
   const [materialCustom, setMaterialCustom] = useState(
     filament?.material && !MATERIALS.includes(filament.material) ? filament.material : ''
   );
+  const [spoolWeight, setSpoolWeight] = useState<number | null>(null);
+  const [catalog, setCatalog] = useState<ExternalFilament[]>(catalogCache ?? []);
+
+  useEffect(() => {
+    if (catalogCache || editing) return;
+    proxy('GET', '/v1/external/filament')
+      .then((list) => {
+        if (Array.isArray(list)) {
+          catalogCache = list;
+          setCatalog(list);
+        }
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const applyCatalogPick = (ext: ExternalFilament) => {
+    if (ext.name) setName(ext.name);
+    if (ext.material) {
+      if (MATERIALS.includes(ext.material)) {
+        setMaterial(ext.material);
+        setMaterialCustom('');
+      } else {
+        setMaterialCustom(ext.material);
+      }
+    }
+    if (ext.color_hex) setColorHex(ext.color_hex.replace('#', ''));
+    if (ext.density) setDensity(String(ext.density));
+    if (ext.diameter) setDiameter(String(ext.diameter));
+    if (ext.weight) setWeight(String(ext.weight));
+    setSpoolWeight(ext.spool_weight ?? null);
+    if (ext.manufacturer) {
+      const existing = vendors.find(
+        (v) => v.name.toLowerCase() === ext.manufacturer!.toLowerCase()
+      );
+      if (existing) {
+        setVendorId(existing.id);
+        setNewVendor('');
+      } else {
+        setVendorId(null);
+        setNewVendor(ext.manufacturer);
+      }
+    }
+  };
   const [colorHex, setColorHex] = useState((filament?.color_hex ?? '2196F3').replace('#', ''));
   const [vendorId, setVendorId] = useState<number | null>(filament?.vendor?.id ?? null);
   const [newVendor, setNewVendor] = useState('');
@@ -665,6 +774,7 @@ function FilamentFormModal({
       };
       if (vid) body.vendor_id = vid;
       if (price.trim()) body.price = parseFloat(price);
+      if (spoolWeight != null) body.spool_weight = spoolWeight;
       if (editing) await proxy('PATCH', `/v1/filament/${filament!.id}`, body);
       else await proxy('POST', '/v1/filament', body);
       onClose(true);
@@ -679,6 +789,24 @@ function FilamentFormModal({
       title={editing ? t('Edit filament') : t('Add filament')}
       onClose={() => onClose(false)}
     >
+      {!editing && catalog.length > 0 && (
+        <Dropdown
+          label={t('Pick from catalog')}
+          placeholder={t('Search 7000+ commercial filaments…')}
+          value={null}
+          options={catalog.map((f) => ({
+            key: f.id,
+            label: [f.manufacturer, f.name, f.material].filter(Boolean).join(' '),
+            color: f.color_hex ? `#${f.color_hex.replace('#', '')}` : undefined,
+            hint: f.weight ? `${Math.round(f.weight)}g` : undefined,
+          }))}
+          onSelect={(k) => {
+            const ext = catalog.find((f) => f.id === k);
+            if (ext) applyCatalogPick(ext);
+          }}
+        />
+      )}
+
       <Field label={t('Name')} value={name} onChange={setName} placeholder="PLA Black" />
 
       <Dropdown
@@ -993,6 +1121,25 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontWeight: '700',
     fontSize: 14,
+  },
+  measureRow: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+    alignItems: 'center',
+    marginBottom: spacing.sm,
+  },
+  measureBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    borderRadius: 8,
+    paddingVertical: spacing.sm + 2,
+    paddingHorizontal: spacing.md,
+  },
+  measureText: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '600',
   },
   dangerRow: {
     flexDirection: 'row',

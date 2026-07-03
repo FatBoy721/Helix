@@ -26,6 +26,9 @@ export function t(key: string): string {
 
 const DICT: Record<string, Record<string, string>> = {
   es: {
+    'Pick from catalog': 'Elegir del catálogo', 'Search 7000+ commercial filaments…': 'Busca entre más de 7000 filamentos…',
+    'Weigh the spool': 'Pesar la bobina', 'Gross weight (g)': 'Peso bruto (g)', Measure: 'Medir', Remaining: 'Restante',
+    'Put the whole spool on a scale — remaining filament is computed from the empty-spool weight.': 'Pon la bobina entera en una báscula — el filamento restante se calcula con el peso de la bobina vacía.',
     'Connected to': 'Conectado a', 'Not configured on this printer': 'No configurado en esta impresora',
     'Spoolman server URL': 'URL del servidor Spoolman', 'Apply to printer': 'Aplicar a la impresora',
     'Printer now reports filament usage to this Spoolman server.': 'La impresora ahora reporta el uso de filamento a este servidor Spoolman.',
@@ -98,6 +101,9 @@ const DICT: Record<string, Record<string, string>> = {
       'La impresora reporta 0 unidades ACE conectadas. Si aún no instalaste multiACE, es normal — esta pestaña se activa al conectar una unidad.',
   },
   de: {
+    'Pick from catalog': 'Aus Katalog wählen', 'Search 7000+ commercial filaments…': '7000+ Filamente durchsuchen…',
+    'Weigh the spool': 'Spule wiegen', 'Gross weight (g)': 'Bruttogewicht (g)', Measure: 'Messen', Remaining: 'Restmenge',
+    'Put the whole spool on a scale — remaining filament is computed from the empty-spool weight.': 'Ganze Spule auf die Waage — Restfilament wird über das Leerspulengewicht berechnet.',
     'Connected to': 'Verbunden mit', 'Not configured on this printer': 'Auf diesem Drucker nicht konfiguriert',
     'Spoolman server URL': 'Spoolman-Server-URL', 'Apply to printer': 'Auf Drucker anwenden',
     'Printer now reports filament usage to this Spoolman server.': 'Der Drucker meldet den Filamentverbrauch jetzt an diesen Spoolman-Server.',
@@ -170,6 +176,9 @@ const DICT: Record<string, Record<string, string>> = {
       'Der Drucker meldet 0 verbundene ACE-Einheiten. Falls multiACE noch nicht installiert ist, ist das normal — dieser Tab aktiviert sich, sobald eine Einheit angeschlossen ist.',
   },
   fr: {
+    'Pick from catalog': 'Choisir dans le catalogue', 'Search 7000+ commercial filaments…': 'Chercher parmi 7000+ filaments…',
+    'Weigh the spool': 'Peser la bobine', 'Gross weight (g)': 'Poids brut (g)', Measure: 'Mesurer', Remaining: 'Restant',
+    'Put the whole spool on a scale — remaining filament is computed from the empty-spool weight.': 'Posez la bobine entière sur une balance — le filament restant est calculé via le poids de la bobine vide.',
     'Connected to': 'Connecté à', 'Not configured on this printer': 'Non configuré sur cette imprimante',
     'Spoolman server URL': 'URL du serveur Spoolman', 'Apply to printer': "Appliquer à l'imprimante",
     'Printer now reports filament usage to this Spoolman server.': "L'imprimante rapporte désormais la consommation de filament à ce serveur Spoolman.",
@@ -242,6 +251,9 @@ const DICT: Record<string, Record<string, string>> = {
       "L'imprimante signale 0 unité ACE connectée. Si multiACE n'est pas encore installé, c'est normal — cet onglet s'active dès qu'une unité est branchée.",
   },
   zh: {
+    'Pick from catalog': '从目录选择', 'Search 7000+ commercial filaments…': '搜索 7000+ 商用耗材…',
+    'Weigh the spool': '称量线轴', 'Gross weight (g)': '总重 (g)', Measure: '测量', Remaining: '剩余',
+    'Put the whole spool on a scale — remaining filament is computed from the empty-spool weight.': '把整个线轴放到秤上——剩余耗材会根据空轴重量自动计算。',
     'Connected to': '已连接到', 'Not configured on this printer': '此打印机未配置',
     'Spoolman server URL': 'Spoolman 服务器地址', 'Apply to printer': '应用到打印机',
     'Printer now reports filament usage to this Spoolman server.': '打印机现在会向此 Spoolman 服务器报告耗材用量。',
