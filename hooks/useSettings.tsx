@@ -122,6 +122,27 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
           ];
           merged.activePrinterId = 'p1';
         }
+        if (!merged.printers.some((p) => p.id === merged.activePrinterId)) {
+          const active = merged.printers[0];
+          merged.activePrinterId = active.id;
+          merged.primaryUrl = active.url;
+          merged.tailscaleUrl = active.tailscaleUrl;
+          merged.cameraUrl = active.cameraUrl;
+        }
+        if (
+          merged.primaryUrl === DEFAULT_SETTINGS.primaryUrl &&
+          merged.printers.length > 1
+        ) {
+          const configured = [...merged.printers]
+            .reverse()
+            .find((p) => p.url && p.url !== DEFAULT_SETTINGS.primaryUrl);
+          if (configured) {
+            merged.activePrinterId = configured.id;
+            merged.primaryUrl = configured.url;
+            merged.tailscaleUrl = configured.tailscaleUrl;
+            merged.cameraUrl = configured.cameraUrl;
+          }
+        }
         applyAppearance(merged);
         setSettings(merged);
       } catch {

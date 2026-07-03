@@ -224,7 +224,22 @@ export default function SettingsScreen() {
                     tailscaleUrl: '',
                     cameraUrl: '/webcam/webrtc',
                   };
-                  update({ printers: [...settings.printers, entry] });
+                  const printers = [...settings.printers, entry];
+                  update({
+                    printers,
+                    activePrinterId: entry.id,
+                    primaryUrl: entry.url,
+                    tailscaleUrl: entry.tailscaleUrl,
+                    cameraUrl: entry.cameraUrl,
+                  });
+                  setDraft({
+                    ...draft,
+                    printers,
+                    activePrinterId: entry.id,
+                    primaryUrl: entry.url,
+                    tailscaleUrl: entry.tailscaleUrl,
+                    cameraUrl: entry.cameraUrl,
+                  });
                   setNewName('');
                   setNewUrl('');
                   setAddingPrinter(false);
