@@ -32,7 +32,8 @@
     "plugins": [
       "expo-router",
       "expo-asset",
-      "expo-font"
+      "expo-font",
+      "./plugins/with-cleartext-traffic"
     ]
   }
 }
