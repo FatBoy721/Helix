@@ -26,6 +26,7 @@ export function t(key: string): string {
 
 const DICT: Record<string, Record<string, string>> = {
   es: {
+    'Select…': 'Seleccionar…', 'Search…': 'Buscar…', 'No matches': 'Sin coincidencias', new: 'nuevo',
     'Custom material': 'Material personalizado',
     Scan: 'Escanear', 'Spool label': 'Etiqueta de bobina', 'Save PNG': 'Guardar PNG', 'Share / Print': 'Compartir / Imprimir',
     'Label saved to your gallery — print it from there.': 'Etiqueta guardada en la galería — imprímela desde ahí.',
@@ -93,6 +94,7 @@ const DICT: Record<string, Record<string, string>> = {
       'La impresora reporta 0 unidades ACE conectadas. Si aún no instalaste multiACE, es normal — esta pestaña se activa al conectar una unidad.',
   },
   de: {
+    'Select…': 'Auswählen…', 'Search…': 'Suchen…', 'No matches': 'Keine Treffer', new: 'neu',
     'Custom material': 'Eigenes Material',
     Scan: 'Scannen', 'Spool label': 'Spulen-Etikett', 'Save PNG': 'PNG speichern', 'Share / Print': 'Teilen / Drucken',
     'Label saved to your gallery — print it from there.': 'Etikett in der Galerie gespeichert — von dort drucken.',
@@ -160,6 +162,7 @@ const DICT: Record<string, Record<string, string>> = {
       'Der Drucker meldet 0 verbundene ACE-Einheiten. Falls multiACE noch nicht installiert ist, ist das normal — dieser Tab aktiviert sich, sobald eine Einheit angeschlossen ist.',
   },
   fr: {
+    'Select…': 'Sélectionner…', 'Search…': 'Rechercher…', 'No matches': 'Aucun résultat', new: 'nouveau',
     'Custom material': 'Matériau personnalisé',
     Scan: 'Scanner', 'Spool label': 'Étiquette de bobine', 'Save PNG': 'Enregistrer PNG', 'Share / Print': 'Partager / Imprimer',
     'Label saved to your gallery — print it from there.': 'Étiquette enregistrée dans la galerie — imprimez-la depuis là.',
@@ -227,6 +230,7 @@ const DICT: Record<string, Record<string, string>> = {
       "L'imprimante signale 0 unité ACE connectée. Si multiACE n'est pas encore installé, c'est normal — cet onglet s'active dès qu'une unité est branchée.",
   },
   zh: {
+    'Select…': '请选择…', 'Search…': '搜索…', 'No matches': '无匹配', new: '新建',
     'Custom material': '自定义材料',
     Scan: '扫码', 'Spool label': '线轴标签', 'Save PNG': '保存 PNG', 'Share / Print': '分享 / 打印',
     'Label saved to your gallery — print it from there.': '标签已保存到相册——可从相册打印。',

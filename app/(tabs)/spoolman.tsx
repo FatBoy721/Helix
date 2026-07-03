@@ -17,6 +17,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useMoonraker } from '../../hooks/useMoonraker';
 import { useSettings } from '../../hooks/useSettings';
 import { api, normalizeBaseUrl, restartMoonraker, uploadConfigFile } from '../../services/moonraker';
+import Dropdown from '../../components/Dropdown';
 import SpoolLabel from '../../components/SpoolLabel';
 import SpoolScanner from '../../components/SpoolScanner';
 import { t } from '../../services/i18n';
@@ -558,29 +559,20 @@ function SpoolFormModal({
 
   return (
     <FormModal title={editing ? t('Edit spool') : t('Add spool')} onClose={() => onClose(false)}>
-      <Text style={styles.fieldLabel}>{t('Filament')}</Text>
-      <View style={styles.chipWrap}>
-        {filaments.map((f) => (
-          <TouchableOpacity
-            key={f.id}
-            style={[styles.pickChip, filamentId === f.id && { backgroundColor: colors.primary }]}
-            onPress={() => setFilamentId(f.id)}
-          >
-            <View
-              style={[
-                styles.chipDot,
-                { backgroundColor: `#${(f.color_hex ?? '888888').replace('#', '')}` },
-              ]}
-            />
-            <Text style={[styles.pickChipText, filamentId === f.id && { color: '#fff' }]}>
-              {filamentTitle(f)}
-            </Text>
-          </TouchableOpacity>
-        ))}
-        {!filaments.length && (
-          <Text style={styles.hint}>{t('No filaments yet — add one first')}</Text>
-        )}
-      </View>
+      {filaments.length ? (
+        <Dropdown
+          label={t('Filament')}
+          value={filamentId != null ? String(filamentId) : null}
+          options={filaments.map((f) => ({
+            key: String(f.id),
+            label: filamentTitle(f),
+            color: `#${(f.color_hex ?? '888888').replace('#', '')}`,
+          }))}
+          onSelect={(k) => setFilamentId(k ? parseInt(k, 10) : null)}
+        />
+      ) : (
+        <Text style={styles.hint}>{t('No filaments yet — add one first')}</Text>
+      )}
       <Field
         label={`${t('Remaining (g)')} — ${t('leave empty for a full spool')}`}
         value={remaining}
@@ -679,31 +671,18 @@ function FilamentFormModal({
     >
       <Field label={t('Name')} value={name} onChange={setName} placeholder="PLA Black" />
 
-      <Text style={styles.fieldLabel}>{t('Material')}</Text>
-      <View style={styles.chipWrap}>
-        {MATERIALS.map((m) => (
-          <TouchableOpacity
-            key={m}
-            style={[
-              styles.pickChip,
-              material === m && !materialCustom.trim() && { backgroundColor: colors.primary },
-            ]}
-            onPress={() => {
-              setMaterial(m);
-              setMaterialCustom('');
-            }}
-          >
-            <Text
-              style={[
-                styles.pickChipText,
-                material === m && !materialCustom.trim() && { color: '#fff' },
-              ]}
-            >
-              {m}
-            </Text>
-          </TouchableOpacity>
-        ))}
-      </View>
+      <Dropdown
+        label={t('Material')}
+        value={materialCustom.trim() ? null : material}
+        placeholder={materialCustom.trim() || undefined}
+        options={MATERIALS.map((m) => ({ key: m, label: m }))}
+        onSelect={(k) => {
+          if (k) {
+            setMaterial(k);
+            setMaterialCustom('');
+          }
+        }}
+      />
       <Field
         label={t('Custom material')}
         value={materialCustom}
@@ -727,44 +706,30 @@ function FilamentFormModal({
       </View>
       <Field label={`${t('Color')} (hex)`} value={colorHex} onChange={setColorHex} placeholder="2196F3" />
 
-      <Text style={styles.fieldLabel}>{t('Vendor')}</Text>
-      <View style={styles.chipWrap}>
-        {vendors.map((v) => (
-          <TouchableOpacity
-            key={v.id}
-            style={[styles.pickChip, vendorId === v.id && { backgroundColor: colors.primary }]}
-            onPress={() => {
-              setVendorId(vendorId === v.id ? null : v.id);
-              setNewVendor('');
-            }}
-          >
-            <Text style={[styles.pickChipText, vendorId === v.id && { color: '#fff' }]}>
-              {v.name}
-            </Text>
-          </TouchableOpacity>
-        ))}
-        {/* popular brands not in the DB yet — picking one creates it on save */}
-        {PRESET_VENDORS.filter(
-          (name) => !vendors.some((v) => v.name.toLowerCase() === name.toLowerCase())
-        ).map((name) => (
-          <TouchableOpacity
-            key={name}
-            style={[
-              styles.pickChip,
-              styles.presetChip,
-              newVendor === name && { backgroundColor: colors.primary, borderColor: colors.primary },
-            ]}
-            onPress={() => {
-              setNewVendor(newVendor === name ? '' : name);
-              setVendorId(null);
-            }}
-          >
-            <Text style={[styles.pickChipText, newVendor === name && { color: '#fff' }]}>
-              {name}
-            </Text>
-          </TouchableOpacity>
-        ))}
-      </View>
+      <Dropdown
+        label={t('Vendor')}
+        clearable
+        value={vendorId != null ? `v:${vendorId}` : newVendor ? `p:${newVendor}` : null}
+        options={[
+          ...vendors.map((v) => ({ key: `v:${v.id}`, label: v.name })),
+          // popular brands not in the DB yet — picking one creates it on save
+          ...PRESET_VENDORS.filter(
+            (name) => !vendors.some((v) => v.name.toLowerCase() === name.toLowerCase())
+          ).map((name) => ({ key: `p:${name}`, label: name, dimmed: true, hint: t('new') })),
+        ]}
+        onSelect={(k) => {
+          if (!k) {
+            setVendorId(null);
+            setNewVendor('');
+          } else if (k.startsWith('v:')) {
+            setVendorId(parseInt(k.slice(2), 10));
+            setNewVendor('');
+          } else {
+            setVendorId(null);
+            setNewVendor(k.slice(2));
+          }
+        }}
+      />
       <Field
         label={t('New vendor')}
         value={newVendor}
@@ -996,30 +961,6 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     gap: spacing.sm,
     marginBottom: spacing.md,
-  },
-  pickChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: colors.cardAlt,
-    borderRadius: 14,
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-  },
-  pickChipText: {
-    color: colors.text,
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  presetChip: {
-    backgroundColor: 'transparent',
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  chipDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
   },
   swatch: {
     width: 30,
