@@ -26,6 +26,10 @@ export function t(key: string): string {
 
 const DICT: Record<string, Record<string, string>> = {
   es: {
+    'Connected to': 'Conectado a', 'Not configured on this printer': 'No configurado en esta impresora',
+    'Spoolman server URL': 'URL del servidor Spoolman', 'Apply to printer': 'Aplicar a la impresora',
+    'Printer now reports filament usage to this Spoolman server.': 'La impresora ahora reporta el uso de filamento a este servidor Spoolman.',
+    'The Spoolman address is stored on the printer itself, so every device using it stays in sync.': 'La dirección de Spoolman se guarda en la impresora, así todos los dispositivos quedan sincronizados.',
     'Select…': 'Seleccionar…', 'Search…': 'Buscar…', 'No matches': 'Sin coincidencias', new: 'nuevo',
     'Custom material': 'Material personalizado',
     Scan: 'Escanear', 'Spool label': 'Etiqueta de bobina', 'Save PNG': 'Guardar PNG', 'Share / Print': 'Compartir / Imprimir',
@@ -94,6 +98,10 @@ const DICT: Record<string, Record<string, string>> = {
       'La impresora reporta 0 unidades ACE conectadas. Si aún no instalaste multiACE, es normal — esta pestaña se activa al conectar una unidad.',
   },
   de: {
+    'Connected to': 'Verbunden mit', 'Not configured on this printer': 'Auf diesem Drucker nicht konfiguriert',
+    'Spoolman server URL': 'Spoolman-Server-URL', 'Apply to printer': 'Auf Drucker anwenden',
+    'Printer now reports filament usage to this Spoolman server.': 'Der Drucker meldet den Filamentverbrauch jetzt an diesen Spoolman-Server.',
+    'The Spoolman address is stored on the printer itself, so every device using it stays in sync.': 'Die Spoolman-Adresse wird auf dem Drucker gespeichert — alle Geräte bleiben synchron.',
     'Select…': 'Auswählen…', 'Search…': 'Suchen…', 'No matches': 'Keine Treffer', new: 'neu',
     'Custom material': 'Eigenes Material',
     Scan: 'Scannen', 'Spool label': 'Spulen-Etikett', 'Save PNG': 'PNG speichern', 'Share / Print': 'Teilen / Drucken',
@@ -162,6 +170,10 @@ const DICT: Record<string, Record<string, string>> = {
       'Der Drucker meldet 0 verbundene ACE-Einheiten. Falls multiACE noch nicht installiert ist, ist das normal — dieser Tab aktiviert sich, sobald eine Einheit angeschlossen ist.',
   },
   fr: {
+    'Connected to': 'Connecté à', 'Not configured on this printer': 'Non configuré sur cette imprimante',
+    'Spoolman server URL': 'URL du serveur Spoolman', 'Apply to printer': "Appliquer à l'imprimante",
+    'Printer now reports filament usage to this Spoolman server.': "L'imprimante rapporte désormais la consommation de filament à ce serveur Spoolman.",
+    'The Spoolman address is stored on the printer itself, so every device using it stays in sync.': "L'adresse Spoolman est stockée sur l'imprimante — tous les appareils restent synchronisés.",
     'Select…': 'Sélectionner…', 'Search…': 'Rechercher…', 'No matches': 'Aucun résultat', new: 'nouveau',
     'Custom material': 'Matériau personnalisé',
     Scan: 'Scanner', 'Spool label': 'Étiquette de bobine', 'Save PNG': 'Enregistrer PNG', 'Share / Print': 'Partager / Imprimer',
@@ -230,6 +242,10 @@ const DICT: Record<string, Record<string, string>> = {
       "L'imprimante signale 0 unité ACE connectée. Si multiACE n'est pas encore installé, c'est normal — cet onglet s'active dès qu'une unité est branchée.",
   },
   zh: {
+    'Connected to': '已连接到', 'Not configured on this printer': '此打印机未配置',
+    'Spoolman server URL': 'Spoolman 服务器地址', 'Apply to printer': '应用到打印机',
+    'Printer now reports filament usage to this Spoolman server.': '打印机现在会向此 Spoolman 服务器报告耗材用量。',
+    'The Spoolman address is stored on the printer itself, so every device using it stays in sync.': 'Spoolman 地址保存在打印机上，所有设备保持同步。',
     'Select…': '请选择…', 'Search…': '搜索…', 'No matches': '无匹配', new: '新建',
     'Custom material': '自定义材料',
     Scan: '扫码', 'Spool label': '线轴标签', 'Save PNG': '保存 PNG', 'Share / Print': '分享 / 打印',

@@ -19,7 +19,13 @@ import { useMoonraker } from '../../hooks/useMoonraker';
 import { generateNtfyTopic, notifyLocal, sendNtfy } from '../../services/notifications';
 import { LANGUAGES, t } from '../../services/i18n';
 import { colors, spacing } from '../../constants/theme';
-import { normalizeMoonrakerUrl } from '../../services/moonraker';
+import {
+  api,
+  normalizeBaseUrl,
+  normalizeMoonrakerUrl,
+  restartMoonraker,
+  uploadConfigFile,
+} from '../../services/moonraker';
 
 const REPO_URL = 'https://github.com/FatBoy721/Helix';
 const BUG_URL = `${REPO_URL}/issues/new`;
@@ -436,6 +442,8 @@ export default function SettingsScreen() {
           follows the active printer host — works on LAN and Tailscale.
         </Text>
 
+        <SpoolmanCard activeUrl={activeUrl} />
+
         <View style={styles.card}>
           <Text style={styles.cardTitle}>{t('ACE units')}</Text>
           <View style={styles.stepperRow}>
@@ -609,6 +617,86 @@ export default function SettingsScreen() {
         </View>
       </ScrollView>
     </KeyboardAvoidingView>
+  );
+}
+
+// shows the Spoolman server the PRINTER is configured with (it lives in
+// moonraker.conf, not in app settings) and lets you set/change it without
+// touching the printer — same upload+restart flow as the Spoolman tab.
+function SpoolmanCard({ activeUrl }: { activeUrl: string }) {
+  const [current, setCurrent] = useState<string | null>(null);
+  const [input, setInput] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [checked, setChecked] = useState(false);
+
+  useEffect(() => {
+    if (!activeUrl) return;
+    api
+      .serverConfig(activeUrl)
+      .then((c) => {
+        const cur = c?.config?.spoolman?.server ?? null;
+        setCurrent(cur);
+        if (cur) setInput(cur);
+      })
+      .catch(() => setCurrent(null))
+      .finally(() => setChecked(true));
+  }, [activeUrl]);
+
+  const apply = async () => {
+    const server = normalizeBaseUrl(input);
+    if (!server) return;
+    setBusy(true);
+    try {
+      await uploadConfigFile(
+        activeUrl,
+        'extended/moonraker',
+        'spoolman.cfg',
+        `# Spoolman filament tracking (written by Helix)\n[spoolman]\nserver: ${server}\nsync_rate: 5\n`
+      );
+      await restartMoonraker(activeUrl);
+      await new Promise((r) => setTimeout(r, 8000));
+      setCurrent(server);
+      Alert.alert(t('Saved'), t('Printer now reports filament usage to this Spoolman server.'));
+    } catch (e: any) {
+      Alert.alert(t('Error'), String(e?.message ?? e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <View style={styles.card}>
+      <Text style={styles.cardTitle}>Spoolman</Text>
+      <Text style={styles.connInfo}>
+        {!checked
+          ? '…'
+          : current
+            ? `${t('Connected to')} ${current}`
+            : t('Not configured on this printer')}
+      </Text>
+      <Field
+        label={t('Spoolman server URL')}
+        value={input}
+        onChange={setInput}
+        placeholder="http://192.168.1.x:7912"
+      />
+      <TouchableOpacity
+        style={[
+          styles.smallBtn,
+          { backgroundColor: colors.primary },
+          (busy || !input.trim()) && { opacity: 0.5 },
+        ]}
+        disabled={busy || !input.trim()}
+        onPress={apply}
+      >
+        <Text style={[styles.smallBtnText, { color: '#fff' }]}>
+          {busy ? t('Configuring…') : t('Apply to printer')}
+        </Text>
+      </TouchableOpacity>
+      <Text style={styles.note}>
+        {t('The Spoolman address is stored on the printer itself, so every device using it stays in sync.')}
+      </Text>
+    </View>
   );
 }
 
