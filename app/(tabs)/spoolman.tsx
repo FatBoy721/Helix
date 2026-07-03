@@ -60,6 +60,16 @@ const MATERIALS = [
   'PA', 'PA-CF', 'PA-GF', 'PC', 'PP', 'PVA', 'PVB',
 ];
 
+// typical densities in g/cm3 so nobody has to look this up on the box.
+// picking a material auto-fills it; still editable for exact vendor specs.
+const MATERIAL_DENSITY: Record<string, number> = {
+  PLA: 1.24, 'PLA+': 1.24, 'Silk PLA': 1.24, 'Matte PLA': 1.24, 'PLA-CF': 1.29, 'Wood PLA': 1.22,
+  PETG: 1.27, 'PETG-CF': 1.3, PCTG: 1.23,
+  ABS: 1.04, ASA: 1.07, HIPS: 1.04,
+  TPU: 1.21, TPE: 1.2,
+  PA: 1.15, 'PA-CF': 1.23, 'PA-GF': 1.27, PC: 1.2, PP: 0.9, PVA: 1.23, PVB: 1.1,
+};
+
 // quick-pick brands — tapping one creates the vendor in Spoolman on save if
 // it doesn't exist yet. spoolman itself has no built-in vendor list.
 const PRESET_VENDORS = [
@@ -680,6 +690,7 @@ function FilamentFormModal({
           if (k) {
             setMaterial(k);
             setMaterialCustom('');
+            if (MATERIAL_DENSITY[k]) setDensity(String(MATERIAL_DENSITY[k]));
           }
         }}
       />
