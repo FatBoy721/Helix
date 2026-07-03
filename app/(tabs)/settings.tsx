@@ -624,19 +624,24 @@ export default function SettingsScreen() {
 // moonraker.conf, not in app settings) and lets you set/change it without
 // touching the printer — same upload+restart flow as the Spoolman tab.
 function SpoolmanCard({ activeUrl }: { activeUrl: string }) {
+  const { settings } = useSettings();
   const [current, setCurrent] = useState<string | null>(null);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [checked, setChecked] = useState(false);
+
+  // spoolman config lives per-printer (in each moonraker.conf); in a farm you
+  // point every printer at the SAME spoolman server so they share inventory,
+  // but each printer tracks its own active spool. this card always acts on
+  // whichever printer is currently selected.
+  const activePrinter = settings.printers.find((p) => p.id === settings.activePrinterId);
 
   useEffect(() => {
     if (!activeUrl) return;
     api
       .serverConfig(activeUrl)
       .then((c) => {
-        const cur = c?.config?.spoolman?.server ?? null;
-        setCurrent(cur);
-        if (cur) setInput(cur);
+        setCurrent(c?.config?.spoolman?.server ?? null);
       })
       .catch(() => setCurrent(null))
       .finally(() => setChecked(true));
@@ -666,7 +671,9 @@ function SpoolmanCard({ activeUrl }: { activeUrl: string }) {
 
   return (
     <View style={styles.card}>
-      <Text style={styles.cardTitle}>Spoolman</Text>
+      <Text style={styles.cardTitle}>
+        Spoolman{activePrinter && settings.printers.length > 1 ? ` — ${activePrinter.name}` : ''}
+      </Text>
       <Text style={styles.connInfo}>
         {!checked
           ? '…'
