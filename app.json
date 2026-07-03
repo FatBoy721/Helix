@@ -33,6 +33,7 @@
       "expo-router",
       "expo-asset",
       "expo-font",
+      "expo-media-library",
       "./plugins/with-cleartext-traffic"
     ]
   }

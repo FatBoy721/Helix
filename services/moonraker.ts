@@ -52,6 +52,29 @@ export function resolveCameraUrl(cameraUrl: string, activeBaseUrl: string): stri
   return `http://${host}${cam.startsWith('/') ? cam : '/' + cam}`;
 }
 
+export function resolveSnapshotUrl(
+  snapshotUrl: string | undefined,
+  streamUrl: string,
+  activeBaseUrl: string
+): string {
+  const explicit = resolveCameraUrl(snapshotUrl || '', activeBaseUrl);
+  if (explicit) return explicit;
+
+  const stream = resolveCameraUrl(streamUrl, activeBaseUrl);
+  if (!stream || /\/screen\/?($|\?)/i.test(stream)) return '';
+  if (/snapshot/i.test(stream)) return stream;
+
+  try {
+    const url = new URL(stream);
+    if (!url.pathname.includes('/webcam')) return '';
+    url.pathname = '/webcam/snapshot';
+    url.search = '';
+    return url.toString().replace(/\/+$/, '');
+  } catch {
+    return '';
+  }
+}
+
 async function request<T = any>(
   baseUrl: string,
   path: string,

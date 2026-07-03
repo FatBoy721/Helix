@@ -1,7 +1,9 @@
 import React, { useMemo, useState } from 'react';
-import { Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import * as FileSystem from 'expo-file-system/legacy';
+import * as MediaLibrary from 'expo-media-library';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import { colors, spacing } from '../constants/theme';
 
@@ -12,6 +14,7 @@ export interface CameraStat {
 
 interface Props {
   url: string; // fully resolved (see resolveCameraUrl)
+  snapshotUrl?: string;
   height?: number;
   lightOn?: boolean;
   onToggleLight?: () => void;
@@ -141,6 +144,7 @@ if (SNAPSHOT) snapshotLoop(); else streamLoop();
 
 export default function CameraFeed({
   url,
+  snapshotUrl,
   height = 220,
   lightOn,
   onToggleLight,
@@ -149,6 +153,7 @@ export default function CameraFeed({
   const [nonce, setNonce] = useState(0);
   const [fullscreen, setFullscreen] = useState(false);
   const [showStats, setShowStats] = useState(false);
+  const [savingSnapshot, setSavingSnapshot] = useState(false);
 
   // /webcam/webrtc serves its own player page so just load it as-is. same for
   // /screen/ — the firmware's built-in remote screen view (iframe service).
@@ -178,6 +183,48 @@ export default function CameraFeed({
       await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
     } catch {}
     setFullscreen(false);
+  };
+
+  const saveSnapshot = async () => {
+    if (!snapshotUrl || savingSnapshot) return;
+    setSavingSnapshot(true);
+    let localUri = '';
+    try {
+      const available = await MediaLibrary.isAvailableAsync();
+      if (!available) {
+        Alert.alert('Photos unavailable', 'This device does not expose a media library.');
+        return;
+      }
+
+      const permission = await MediaLibrary.requestPermissionsAsync(true, ['photo']);
+      if (!permission.granted) {
+        Alert.alert('Permission needed', 'Allow photo access to save camera snapshots.');
+        return;
+      }
+
+      const cacheDir = FileSystem.cacheDirectory;
+      if (!cacheDir) throw new Error('No cache directory available.');
+      const fileName = `helix-camera-${new Date().toISOString().replace(/[:.]/g, '-')}.jpg`;
+      const target = `${cacheDir}${fileName}`;
+      const freshUrl = snapshotUrl + (snapshotUrl.includes('?') ? '&' : '?') + `n=${Date.now()}`;
+      const result = await FileSystem.downloadAsync(freshUrl, target, {
+        headers: { 'Cache-Control': 'no-store' },
+      });
+      localUri = result.uri;
+      if (result.status < 200 || result.status >= 300) {
+        throw new Error(`Snapshot returned HTTP ${result.status}`);
+      }
+
+      await MediaLibrary.saveToLibraryAsync(result.uri);
+      Alert.alert('Saved', 'Camera snapshot saved to Photos.');
+    } catch (e: any) {
+      Alert.alert('Snapshot failed', e?.message ?? 'Could not save camera snapshot.');
+    } finally {
+      if (localUri) {
+        FileSystem.deleteAsync(localUri, { idempotent: true }).catch(() => {});
+      }
+      setSavingSnapshot(false);
+    }
   };
 
   if (!url.trim()) {
@@ -219,6 +266,15 @@ export default function CameraFeed({
             name={lightOn ? 'lightbulb-on' : 'lightbulb-outline'}
             size={20}
             color={lightOn ? colors.warning : colors.text}
+          />
+        </TouchableOpacity>
+      )}
+      {snapshotUrl && (
+        <TouchableOpacity style={styles.ctrlBtn} onPress={saveSnapshot} disabled={savingSnapshot}>
+          <MaterialCommunityIcons
+            name={savingSnapshot ? 'progress-download' : 'camera-outline'}
+            size={20}
+            color={savingSnapshot ? colors.primary : colors.text}
           />
         </TouchableOpacity>
       )}

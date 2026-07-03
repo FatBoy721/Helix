@@ -2,7 +2,12 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Alert, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useMoonraker } from '../../hooks/useMoonraker';
 import { useSettings } from '../../hooks/useSettings';
-import { api, normalizeMoonrakerUrl, resolveCameraUrl } from '../../services/moonraker';
+import {
+  api,
+  normalizeMoonrakerUrl,
+  resolveCameraUrl,
+  resolveSnapshotUrl,
+} from '../../services/moonraker';
 import TempGauge from '../../components/TempGauge';
 import PrintProgress, { formatDuration } from '../../components/PrintProgress';
 import CameraFeed, { CameraStat } from '../../components/CameraFeed';
@@ -161,6 +166,17 @@ export default function Dashboard() {
     });
   };
 
+  const activeBaseUrl = activeUrl || settings.primaryUrl;
+  const mainCameraUrl = resolveCameraUrl(settings.cameraUrl, activeBaseUrl);
+  const mainWebcam = webcams.find(
+    (w) => resolveCameraUrl(w.stream_url, activeBaseUrl) === mainCameraUrl
+  );
+  const mainSnapshotUrl = resolveSnapshotUrl(
+    mainWebcam?.snapshot_url,
+    settings.cameraUrl,
+    activeBaseUrl
+  );
+
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
       <PrinterStrip
@@ -296,7 +312,8 @@ export default function Dashboard() {
         <>
           <Text style={styles.sectionTitle}>{t('Camera')}</Text>
           <CameraFeed
-            url={resolveCameraUrl(settings.cameraUrl, activeUrl || settings.primaryUrl)}
+            url={mainCameraUrl}
+            snapshotUrl={mainSnapshotUrl}
             lightOn={ledOn}
             onToggleLight={ledKey ? toggleLed : undefined}
             stats={cameraStats}
@@ -306,14 +323,14 @@ export default function Dashboard() {
           {webcams
             .filter(
               (w) =>
-                resolveCameraUrl(w.stream_url, activeUrl || settings.primaryUrl) !==
-                resolveCameraUrl(settings.cameraUrl, activeUrl || settings.primaryUrl)
+                resolveCameraUrl(w.stream_url, activeBaseUrl) !== mainCameraUrl
             )
             .map((w) => (
               <View key={w.name}>
                 <Text style={styles.cameraName}>{w.name}</Text>
                 <CameraFeed
-                  url={resolveCameraUrl(w.stream_url, activeUrl || settings.primaryUrl)}
+                  url={resolveCameraUrl(w.stream_url, activeBaseUrl)}
+                  snapshotUrl={resolveSnapshotUrl(w.snapshot_url, w.stream_url, activeBaseUrl)}
                 />
               </View>
             ))}
