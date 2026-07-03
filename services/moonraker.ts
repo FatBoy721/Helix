@@ -22,6 +22,18 @@ export function normalizeMoonrakerUrl(input: string): string {
   }
 }
 
+export function isTailscaleUrl(input: string): boolean {
+  const base = normalizeBaseUrl(input);
+  if (!base) return false;
+
+  try {
+    const host = new URL(base).hostname.toLowerCase();
+    return host.endsWith('.ts.net') || host.startsWith('100.');
+  } catch {
+    return /\b100\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/.test(base) || /\.ts\.net\b/i.test(base);
+  }
+}
+
 export function wsUrl(baseUrl: string): string {
   return baseUrl.replace(/^http/i, 'ws') + '/websocket';
 }

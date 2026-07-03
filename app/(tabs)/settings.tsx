@@ -23,6 +23,23 @@ import { normalizeMoonrakerUrl } from '../../services/moonraker';
 
 const REPO_URL = 'https://github.com/FatBoy721/Helix';
 const BUG_URL = `${REPO_URL}/issues/new`;
+const RELEASE_API_URL = 'https://api.github.com/repos/FatBoy721/Helix/releases/latest';
+const APK_URL = `${REPO_URL}/releases/download/latest/helix.apk`;
+
+interface GitHubRelease {
+  body?: string;
+  html_url?: string;
+  assets?: { name: string; browser_download_url: string }[];
+}
+
+function buildCommit(): string {
+  const extra = Constants.expoConfig?.extra as { buildCommit?: string } | undefined;
+  return extra?.buildCommit?.toLowerCase() ?? '';
+}
+
+function releaseCommit(body?: string): string {
+  return body?.match(/\b[0-9a-f]{40}\b/i)?.[0]?.toLowerCase() ?? '';
+}
 
 const ACCENTS = [
   { name: 'Fluidd Blue', hex: '#2196f3' },
@@ -52,6 +69,7 @@ export default function SettingsScreen() {
   const [addingPrinter, setAddingPrinter] = useState(false);
   const [newName, setNewName] = useState('');
   const [newUrl, setNewUrl] = useState('');
+  const [checkingUpdates, setCheckingUpdates] = useState(false);
 
   useEffect(() => {
     if (loaded && !draft) setDraft(settings);
@@ -60,6 +78,7 @@ export default function SettingsScreen() {
 
   if (!draft) return <View style={styles.screen} />;
 
+  const currentBuild = buildCommit();
   const set = (patch: Partial<Settings>) => setDraft({ ...draft, ...patch });
 
   // Save button only appears when a draft-managed field actually differs
@@ -150,6 +169,46 @@ export default function SettingsScreen() {
     );
     notifyLocal('U1 Control test', 'Local notification works.');
     Alert.alert(ok ? 'Sent' : 'Failed', ok ? 'Check your ntfy client.' : 'Check server URL and topic.');
+  };
+
+  const checkForUpdates = async () => {
+    if (checkingUpdates) return;
+    setCheckingUpdates(true);
+    try {
+      const res = await fetch(RELEASE_API_URL, {
+        headers: { Accept: 'application/vnd.github+json' },
+      });
+      if (!res.ok) throw new Error(`GitHub returned HTTP ${res.status}`);
+
+      const release = (await res.json()) as GitHubRelease;
+      const latest = releaseCommit(release.body);
+      const current = buildCommit();
+      const downloadUrl =
+        release.assets?.find((a) => a.name === 'helix.apk')?.browser_download_url ?? APK_URL;
+
+      if (latest && current && current !== 'dev' && latest === current) {
+        Alert.alert('Up to date', `Helix is already on build ${latest.slice(0, 7)}.`);
+        return;
+      }
+
+      Alert.alert(
+        latest ? `Update available: ${latest.slice(0, 7)}` : 'Latest APK available',
+        current && current !== 'dev'
+          ? `Installed build: ${current.slice(0, 7)}`
+          : 'Open the latest APK download?',
+        [
+          { text: 'Not now', style: 'cancel' },
+          {
+            text: 'Download APK',
+            onPress: () => Linking.openURL(downloadUrl).catch(() => Linking.openURL(`${REPO_URL}/releases/latest`)),
+          },
+        ]
+      );
+    } catch (e: any) {
+      Alert.alert('Update check failed', e?.message ?? 'Could not reach GitHub releases.');
+    } finally {
+      setCheckingUpdates(false);
+    }
   };
 
   return (
@@ -411,6 +470,17 @@ export default function SettingsScreen() {
           <Text style={styles.cardTitle}>{t('About')}</Text>
           <TouchableOpacity
             style={styles.linkRow}
+            onPress={checkForUpdates}
+            disabled={checkingUpdates}
+          >
+            <MaterialCommunityIcons name="update" size={20} color={colors.text} />
+            <Text style={styles.linkText}>
+              {checkingUpdates ? 'Checking for updates...' : 'Check for updates'}
+            </Text>
+            <MaterialCommunityIcons name="download-outline" size={16} color={colors.subtext} />
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.linkRow}
             onPress={() => Linking.openURL(REPO_URL).catch(() => {})}
           >
             <MaterialCommunityIcons name="github" size={20} color={colors.text} />
@@ -434,6 +504,7 @@ export default function SettingsScreen() {
           </TouchableOpacity>
           <Text style={styles.version}>
             Helix v{Constants.expoConfig?.version ?? '1.0.0'}
+            {currentBuild && currentBuild !== 'dev' ? ` (${currentBuild.slice(0, 7)})` : ''}
           </Text>
         </View>
       </ScrollView>

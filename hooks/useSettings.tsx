@@ -2,6 +2,7 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useS
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { setLanguage } from '../services/i18n';
 import { colors } from '../constants/theme';
+import { normalizeMoonrakerUrl } from '../services/moonraker';
 
 export interface PrinterEntry {
   id: string;
@@ -22,6 +23,7 @@ export interface DashboardSections {
 }
 
 export interface Settings {
+  settingsVersion: number;
   primaryUrl: string;
   tailscaleUrl: string;
   cameraUrl: string;
@@ -41,6 +43,7 @@ export interface Settings {
 }
 
 export const DEFAULT_SETTINGS: Settings = {
+  settingsVersion: 2,
   primaryUrl: 'http://192.168.1.17:7125',
   tailscaleUrl: '',
   cameraUrl: '/webcam/webrtc',
@@ -77,6 +80,89 @@ function applyAppearance(s: Settings) {
 }
 
 const STORAGE_KEY = 'u1control.settings.v1';
+const STORAGE_VERSION = 2;
+
+function normalizePrinter(p: Partial<PrinterEntry>, index: number): PrinterEntry {
+  return {
+    id: p.id || `p${index + 1}`,
+    name: p.name || `Snapmaker ${index + 1}`,
+    url: normalizeMoonrakerUrl(p.url || DEFAULT_SETTINGS.primaryUrl),
+    tailscaleUrl: normalizeMoonrakerUrl(p.tailscaleUrl || ''),
+    cameraUrl: p.cameraUrl || DEFAULT_SETTINGS.cameraUrl,
+  };
+}
+
+function migrateSettings(raw: Partial<Settings>): Settings {
+  const parsed = { ...raw };
+  if (
+    parsed.cameraUrl === 'http://192.168.1.17/webcam/stream' ||
+    parsed.cameraUrl === '/webcam/stream.mjpg'
+  ) {
+    parsed.cameraUrl = DEFAULT_SETTINGS.cameraUrl;
+  }
+
+  const merged: Settings = {
+    ...DEFAULT_SETTINGS,
+    ...parsed,
+    settingsVersion: STORAGE_VERSION,
+    primaryUrl: normalizeMoonrakerUrl(parsed.primaryUrl || DEFAULT_SETTINGS.primaryUrl),
+    tailscaleUrl: normalizeMoonrakerUrl(parsed.tailscaleUrl || ''),
+    cameraUrl: parsed.cameraUrl || DEFAULT_SETTINGS.cameraUrl,
+    dashboard: { ...DEFAULT_SETTINGS.dashboard, ...(parsed.dashboard ?? {}) },
+    printers: Array.isArray(parsed.printers)
+      ? parsed.printers.map((p, index) => normalizePrinter(p, index))
+      : [],
+  };
+
+  if (!merged.printers.length) {
+    merged.printers = [
+      {
+        id: 'p1',
+        name: 'Snapmaker U1',
+        url: merged.primaryUrl,
+        tailscaleUrl: merged.tailscaleUrl,
+        cameraUrl: merged.cameraUrl,
+      },
+    ];
+    merged.activePrinterId = 'p1';
+  }
+
+  if (!merged.printers.some((p) => p.id === merged.activePrinterId)) {
+    const active = merged.printers[0];
+    merged.activePrinterId = active.id;
+    merged.primaryUrl = active.url;
+    merged.tailscaleUrl = active.tailscaleUrl;
+    merged.cameraUrl = active.cameraUrl;
+  }
+
+  if (
+    merged.primaryUrl === DEFAULT_SETTINGS.primaryUrl &&
+    merged.printers.length > 1
+  ) {
+    const configured = [...merged.printers]
+      .reverse()
+      .find((p) => p.url && p.url !== DEFAULT_SETTINGS.primaryUrl);
+    if (configured) {
+      merged.activePrinterId = configured.id;
+      merged.primaryUrl = configured.url;
+      merged.tailscaleUrl = configured.tailscaleUrl;
+      merged.cameraUrl = configured.cameraUrl;
+    }
+  }
+
+  merged.printers = merged.printers.map((p) =>
+    p.id === merged.activePrinterId
+      ? {
+          ...p,
+          url: merged.primaryUrl,
+          tailscaleUrl: merged.tailscaleUrl,
+          cameraUrl: merged.cameraUrl,
+        }
+      : p
+  );
+
+  return merged;
+}
 
 interface SettingsContextValue {
   settings: Settings;
@@ -143,8 +229,10 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
             merged.cameraUrl = configured.cameraUrl;
           }
         }
-        applyAppearance(merged);
-        setSettings(merged);
+        const migrated = migrateSettings(merged);
+        applyAppearance(migrated);
+        AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(migrated)).catch(() => {});
+        setSettings(migrated);
       } catch {
         // corrupt/missing settings — fall back to defaults
       } finally {
@@ -154,12 +242,14 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const update = useCallback(async (patch: Partial<Settings>) => {
+    let nextSettings = DEFAULT_SETTINGS;
     setSettings((prev) => {
-      const next = { ...prev, ...patch };
+      const next = migrateSettings({ ...prev, ...patch });
+      nextSettings = next;
       applyAppearance(next);
-      AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next)).catch(() => {});
       return next;
     });
+    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(nextSettings));
   }, []);
 
   const value = useMemo(() => ({ settings, loaded, update }), [settings, loaded, update]);

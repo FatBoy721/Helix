@@ -8,7 +8,7 @@ import React, {
   useState,
 } from 'react';
 import { AppState } from 'react-native';
-import { normalizeMoonrakerUrl, WebcamInfo, wsUrl } from '../services/moonraker';
+import { isTailscaleUrl, normalizeMoonrakerUrl, WebcamInfo, wsUrl } from '../services/moonraker';
 import { notifyEvent } from '../services/notifications';
 import { Settings, useSettings } from './useSettings';
 
@@ -301,6 +301,7 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
     // RN's WebSocket has NO connect timeout — dialing the LAN IP from
     // cellular just hangs for minutes instead of failing, which blocked the
     // tailscale failover from ever running. found this the annoying way.
+    const connectTimeoutMs = isTailscaleUrl(url) ? 15000 : 7000;
     if (connectTimeoutRef.current) clearTimeout(connectTimeoutRef.current);
     connectTimeoutRef.current = setTimeout(() => {
       if (gen === generationRef.current && ws.readyState !== WS_OPEN) {
@@ -308,7 +309,7 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
           ws.close();
         } catch {}
       }
-    }, 6000);
+    }, connectTimeoutMs);
 
     ws.onopen = () => {
       if (gen !== generationRef.current) return;
