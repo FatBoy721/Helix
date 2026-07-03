@@ -19,6 +19,7 @@ import { useMoonraker } from '../../hooks/useMoonraker';
 import { notifyLocal, sendNtfy } from '../../services/notifications';
 import { LANGUAGES, t } from '../../services/i18n';
 import { colors, spacing } from '../../constants/theme';
+import { normalizeMoonrakerUrl } from '../../services/moonraker';
 
 const REPO_URL = 'https://github.com/FatBoy721/Helix';
 const BUG_URL = `${REPO_URL}/issues/new`;
@@ -85,13 +86,17 @@ export default function SettingsScreen() {
   };
 
   const save = async () => {
+    const primaryUrl = normalizeMoonrakerUrl(draft.primaryUrl);
+    const tailscaleUrl = normalizeMoonrakerUrl(draft.tailscaleUrl);
+    const normalizedDraft = { ...draft, primaryUrl, tailscaleUrl };
     // keep the active printer entry in sync with the edited URL fields
     const printers = settings.printers.map((p) =>
       p.id === settings.activePrinterId
-        ? { ...p, url: draft.primaryUrl, tailscaleUrl: draft.tailscaleUrl, cameraUrl: draft.cameraUrl }
+        ? { ...p, url: primaryUrl, tailscaleUrl, cameraUrl: draft.cameraUrl }
         : p
     );
-    await update({ ...draft, printers, activePrinterId: settings.activePrinterId });
+    setDraft(normalizedDraft);
+    await update({ ...normalizedDraft, printers, activePrinterId: settings.activePrinterId });
     Alert.alert(t('Saved'), t('Settings applied. Connection will use the new URLs.'));
   };
 
@@ -211,10 +216,11 @@ export default function SettingsScreen() {
                 style={[styles.smallBtn, { backgroundColor: colors.primary }]}
                 onPress={() => {
                   if (!newUrl.trim()) return;
+                  const url = normalizeMoonrakerUrl(newUrl);
                   const entry: PrinterEntry = {
                     id: `p${Date.now()}`,
                     name: newName.trim() || `Snapmaker ${settings.printers.length + 1}`,
-                    url: newUrl.trim(),
+                    url,
                     tailscaleUrl: '',
                     cameraUrl: '/webcam/webrtc',
                   };

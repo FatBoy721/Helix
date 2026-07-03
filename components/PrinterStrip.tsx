@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { api, normalizeBaseUrl } from '../services/moonraker';
+import { api, normalizeMoonrakerUrl } from '../services/moonraker';
 import type { PrinterEntry } from '../hooks/useSettings';
 import { colors, spacing } from '../constants/theme';
 
@@ -47,7 +47,7 @@ export default function PrinterStrip({
       const others = printers.filter((p) => p.id !== activeId);
       for (const p of others) {
         try {
-          const res: any = await api.queryObjects(normalizeBaseUrl(p.url), [
+          const res: any = await api.queryObjects(normalizeMoonrakerUrl(p.url), [
             'print_stats',
             'display_status',
           ]);

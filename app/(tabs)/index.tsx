@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Alert, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useMoonraker } from '../../hooks/useMoonraker';
 import { useSettings } from '../../hooks/useSettings';
-import { api, normalizeBaseUrl, resolveCameraUrl } from '../../services/moonraker';
+import { api, normalizeMoonrakerUrl, resolveCameraUrl } from '../../services/moonraker';
 import TempGauge from '../../components/TempGauge';
 import PrintProgress, { formatDuration } from '../../components/PrintProgress';
 import CameraFeed, { CameraStat } from '../../components/CameraFeed';
@@ -76,8 +76,8 @@ export default function Dashboard() {
   // might be mid-reconnect at the worst possible moment.
   const doEstop = () => {
     rpc('printer.emergency_stop').catch(() => {});
-    const primary = normalizeBaseUrl(settings.primaryUrl);
-    const tailscale = normalizeBaseUrl(settings.tailscaleUrl);
+    const primary = normalizeMoonrakerUrl(settings.primaryUrl);
+    const tailscale = normalizeMoonrakerUrl(settings.tailscaleUrl);
     if (primary) api.emergencyStop(primary).catch(() => {});
     if (tailscale && tailscale !== primary) api.emergencyStop(tailscale).catch(() => {});
   };

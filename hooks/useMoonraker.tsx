@@ -8,7 +8,7 @@ import React, {
   useState,
 } from 'react';
 import { AppState } from 'react-native';
-import { normalizeBaseUrl, WebcamInfo, wsUrl } from '../services/moonraker';
+import { normalizeMoonrakerUrl, WebcamInfo, wsUrl } from '../services/moonraker';
 import { notifyEvent } from '../services/notifications';
 import { Settings, useSettings } from './useSettings';
 
@@ -237,8 +237,8 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
 
   const getUrls = useCallback((): string[] => {
     const urls: string[] = [];
-    const primary = normalizeBaseUrl(settingsRef.current.primaryUrl);
-    const tailscale = normalizeBaseUrl(settingsRef.current.tailscaleUrl);
+    const primary = normalizeMoonrakerUrl(settingsRef.current.primaryUrl);
+    const tailscale = normalizeMoonrakerUrl(settingsRef.current.tailscaleUrl);
     if (primary) urls.push(primary);
     if (tailscale && tailscale !== primary) urls.push(tailscale);
     return urls;

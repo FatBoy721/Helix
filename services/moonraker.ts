@@ -7,6 +7,21 @@ export function normalizeBaseUrl(input: string): string {
   return url.replace(/\/+$/, '');
 }
 
+export function normalizeMoonrakerUrl(input: string): string {
+  const base = normalizeBaseUrl(input);
+  if (!base) return '';
+
+  try {
+    const url = new URL(base);
+    if (url.protocol === 'http:' && !url.port) {
+      url.port = '7125';
+    }
+    return url.toString().replace(/\/+$/, '');
+  } catch {
+    return base;
+  }
+}
+
 export function wsUrl(baseUrl: string): string {
   return baseUrl.replace(/^http/i, 'ws') + '/websocket';
 }
