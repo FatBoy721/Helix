@@ -59,7 +59,10 @@ const MAX_CONSOLE_LINES = 500;
 const WS_OPEN = 1;
 const TEMP_WARNING_DELTA_C = 15;
 const TEMP_WARNING_RESET_DELTA_C = 5;
+const EXTRUDER_TARGET_DROP_MIN_DELTA_C = 5;
+const EXTRUDER_TARGET_DROP_SUPPRESS_MS = 5 * 60 * 1000;
 const HEATER_KEY_RE = /^(heater_bed|extruder\d*|heater_generic\s+.+)$/;
+const EXTRUDER_KEY_RE = /^extruder\d*$/;
 let lineIdCounter = 0;
 
 function heaterLabel(key: string): string {
@@ -67,6 +70,10 @@ function heaterLabel(key: string): string {
   if (key === 'extruder') return 'Extruder';
   if (/^extruder\d+$/.test(key)) return `Extruder ${key.replace('extruder', '')}`;
   return key.replace(/^heater_generic\s+/, '');
+}
+
+function isExtruderKey(key: string): boolean {
+  return EXTRUDER_KEY_RE.test(key);
 }
 
 export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
@@ -98,6 +105,8 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
   const prevKlippyRef = useRef('unknown');
   const sensorStateRef = useRef<Record<string, boolean>>({});
   const tempWarningRef = useRef<Record<string, boolean>>({});
+  const heaterTargetRef = useRef<Record<string, number>>({});
+  const extruderTargetDropRef = useRef<Record<string, number>>({});
   const connectedRef = useRef(false);
   const disconnectNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -178,9 +187,29 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
         const target = Number(s[key]?.target);
         if (!Number.isFinite(temperature) || !Number.isFinite(target)) continue;
 
+        const previousTarget = heaterTargetRef.current[key];
+        heaterTargetRef.current[key] = target;
+        const targetDropped =
+          previousTarget != null && target <= previousTarget - EXTRUDER_TARGET_DROP_MIN_DELTA_C;
+        if (isExtruderKey(key) && targetDropped) {
+          extruderTargetDropRef.current[key] = Date.now();
+          tempWarningRef.current[key] = false;
+        }
+
         const active = target >= 40;
-        const warning = active && temperature >= target + TEMP_WARNING_DELTA_C;
-        const reset = !active || temperature <= target + TEMP_WARNING_RESET_DELTA_C;
+        const activeExtruder = typeof s.toolhead?.extruder === 'string' ? s.toolhead.extruder : '';
+        const inactiveExtruder = isExtruderKey(key) && !!activeExtruder && activeExtruder !== key;
+        const suppressExtruderCooldown =
+          inactiveExtruder ||
+          (isExtruderKey(key) &&
+            (Date.now() - (extruderTargetDropRef.current[key] ?? 0)) <
+              EXTRUDER_TARGET_DROP_SUPPRESS_MS);
+        const warning =
+          active && !suppressExtruderCooldown && temperature >= target + TEMP_WARNING_DELTA_C;
+        const reset =
+          suppressExtruderCooldown ||
+          !active ||
+          temperature <= target + TEMP_WARNING_RESET_DELTA_C;
         const wasWarning = tempWarningRef.current[key] === true;
 
         if (!wasWarning && warning) {
@@ -270,6 +299,8 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
         prevPrintStateRef.current = statusRef.current.print_stats?.state ?? '';
         sensorStateRef.current = {};
         tempWarningRef.current = {};
+        heaterTargetRef.current = {};
+        extruderTargetDropRef.current = {};
         for (const key of Object.keys(statusRef.current)) {
           if (/^filament_(switch|motion)_sensor /.test(key)) {
             sensorStateRef.current[key] = !!statusRef.current[key]?.filament_detected;
