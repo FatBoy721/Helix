@@ -11,6 +11,7 @@ import { AppState } from 'react-native';
 import { isTailscaleUrl, normalizeMoonrakerUrl, WebcamInfo, wsUrl } from '../services/moonraker';
 import { notifyEvent } from '../services/notifications';
 import { Settings, useSettings } from './useSettings';
+import { formatTemperature } from '../services/temperature';
 
 export type ConnectionState = 'connecting' | 'connected' | 'disconnected';
 
@@ -217,7 +218,11 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
             settingsRef.current,
             'temp',
             'Temperature warning',
-            `${heaterLabel(key)} is ${Math.round(temperature)}C with target ${Math.round(target)}C`
+            `${heaterLabel(key)} is ${formatTemperature(
+              temperature,
+              settingsRef.current.temperatureUnit,
+              0
+            )} with target ${formatTemperature(target, settingsRef.current.temperatureUnit, 0)}`
           );
         }
 
@@ -291,6 +296,7 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
           if (/^(led|neopixel|dotstar) /.test(name)) subs[name] = null;
           if (/^fan_generic /.test(name)) subs[name] = null;
           if (/^heater_generic /.test(name)) subs[name] = null;
+          if (/^temperature_sensor /.test(name)) subs[name] = null;
         }
 
         const res = await rpc('printer.objects.subscribe', { objects: subs });

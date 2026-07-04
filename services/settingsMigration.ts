@@ -1,6 +1,8 @@
 import { normalizeMacroDisplayByPrinter } from './macroDisplay';
 import type { MacroDisplaySettings } from './macroDisplay';
 import { normalizeMoonrakerUrl } from './moonraker';
+import { normalizeTemperatureUnit } from './temperature';
+import type { TemperatureUnit } from './temperature';
 
 export interface PrinterEntry {
   id: string;
@@ -47,9 +49,10 @@ export interface Settings {
   aceUnits: number;
   accentColor: string;
   language: string;
+  temperatureUnit: TemperatureUnit;
 }
 
-export const STORAGE_VERSION = 5;
+export const STORAGE_VERSION = 6;
 
 export const DEFAULT_SETTINGS: Settings = {
   settingsVersion: STORAGE_VERSION,
@@ -84,6 +87,7 @@ export const DEFAULT_SETTINGS: Settings = {
   aceUnits: 1,
   accentColor: '#2196f3',
   language: 'en',
+  temperatureUnit: 'c',
 };
 
 function stringValue(raw: unknown): string | undefined {
@@ -182,6 +186,7 @@ export function migrateSettings(raw: Partial<Settings>): Settings {
     aceUnits: numberValue(parsed.aceUnits, DEFAULT_SETTINGS.aceUnits),
     accentColor: stringValue(parsed.accentColor) || DEFAULT_SETTINGS.accentColor,
     language: stringValue(parsed.language) || DEFAULT_SETTINGS.language,
+    temperatureUnit: normalizeTemperatureUnit(parsed.temperatureUnit),
     printers: Array.isArray(parsed.printers)
       ? parsed.printers.map((p, index) => normalizePrinter(p, index))
       : [],

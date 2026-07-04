@@ -348,6 +348,23 @@ export default function SettingsScreen() {
               </TouchableOpacity>
             ))}
           </View>
+          <Text style={[styles.fieldLabel, { marginTop: spacing.md }]}>{t('Temperature units')}</Text>
+          <View style={styles.modeRow}>
+            {(['c', 'f'] as const).map((unit) => {
+              const active = draft.temperatureUnit === unit;
+              return (
+                <TouchableOpacity
+                  key={unit}
+                  style={[styles.modeBtn, active && { backgroundColor: colors.primary }]}
+                  onPress={() => setLive({ temperatureUnit: unit })}
+                >
+                  <Text style={[styles.modeText, active && { color: '#fff' }]}>
+                    {unit === 'c' ? '\u00B0C' : '\u00B0F'}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
         </View>
 
         <Field

@@ -1,6 +1,12 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Alert, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { t } from '../services/i18n';
+import {
+  displayTemperature,
+  formatTemperature,
+  inputTemperatureToCelsius,
+} from '../services/temperature';
+import type { TemperatureUnit } from '../services/temperature';
 import { colors, spacing } from '../constants/theme';
 
 interface Props {
@@ -9,6 +15,7 @@ interface Props {
   disabled?: boolean;
   showPandaBreath?: boolean;
   gcodeHelp?: Record<string, string>;
+  temperatureUnit?: TemperatureUnit;
 }
 
 const SPEED_STEPS = [0, 25, 50, 75, 100];
@@ -18,8 +25,8 @@ const PANDA_BREATH_NAME_RE = /(panda|breath|chamber)/i;
 const PANDA_AUTO_FILTER_TEMP = 30;
 const PANDA_AUTO_HOTBED_TEMP = 80;
 const PANDA_DRY_PRESETS = [
-  { label: 'PLA 55C 12h', temp: 55, hours: 12 },
-  { label: 'PETG 60C 12h', temp: 60, hours: 12 },
+  { material: 'PLA', temp: 55, hours: 12 },
+  { material: 'PETG', temp: 60, hours: 12 },
 ];
 
 function genericHeaterName(objectKey: string): string {
@@ -51,8 +58,13 @@ function dryCommand(gcodeHelp: Record<string, string> | undefined): 'start' | 'r
   return '';
 }
 
-function clampTemp(value: string, max: number): number {
-  return Math.max(0, Math.min(max, parseInt(value, 10) || 0));
+function defaultTargetInput(celsius: number, unit: TemperatureUnit): string {
+  return Math.round(displayTemperature(celsius, unit)).toString();
+}
+
+function clampInputToCelsius(value: string, unit: TemperatureUnit, maxCelsius: number): number {
+  const celsius = inputTemperatureToCelsius(value, unit);
+  return Math.max(0, Math.min(maxCelsius, Math.round(celsius)));
 }
 
 function dryTimeLabel(seconds: number): string {
@@ -131,9 +143,15 @@ export default function ControlsPanel({
   disabled,
   showPandaBreath,
   gcodeHelp,
+  temperatureUnit = 'c',
 }: Props) {
-  const [bedTarget, setBedTarget] = useState('60');
-  const [pandaTarget, setPandaTarget] = useState('45');
+  const [bedTarget, setBedTarget] = useState(() => defaultTargetInput(60, temperatureUnit));
+  const [pandaTarget, setPandaTarget] = useState(() => defaultTargetInput(45, temperatureUnit));
+
+  useEffect(() => {
+    setBedTarget(defaultTargetInput(60, temperatureUnit));
+    setPandaTarget(defaultTargetInput(45, temperatureUnit));
+  }, [temperatureUnit]);
 
   const bed = status.heater_bed ?? {};
   const pandaBreath = showPandaBreath ? findPandaBreathHeater(status) : null;
@@ -165,7 +183,7 @@ export default function ControlsPanel({
     Alert.alert(t('Dry filament'), t('Choose a drying preset.'), [
       { text: t('Cancel'), style: 'cancel' },
       ...PANDA_DRY_PRESETS.map((preset) => ({
-        text: preset.label,
+        text: `${preset.material} ${formatTemperature(preset.temp, temperatureUnit, 0)} ${preset.hours}h`,
         onPress: () => startPandaDry(preset),
       })),
     ]);
@@ -190,8 +208,8 @@ export default function ControlsPanel({
         <Text style={styles.rowLabel}>
           {t('Bed')}{' '}
           <Text style={styles.rowValue}>
-            {`${(bed.temperature ?? 0).toFixed(0)}\u00B0C`}
-            {bed.target > 0 ? ` \u2192 ${bed.target.toFixed(0)}\u00B0C` : ''}
+            {formatTemperature(bed.temperature, temperatureUnit, 0)}
+            {bed.target > 0 ? ` \u2192 ${formatTemperature(bed.target, temperatureUnit, 0)}` : ''}
           </Text>
         </Text>
         <View style={styles.chips}>
@@ -206,7 +224,7 @@ export default function ControlsPanel({
             style={[styles.chip, { backgroundColor: colors.primary }, disabled && styles.disabled]}
             disabled={disabled}
             onPress={() => {
-              const tgt = Math.max(0, Math.min(110, parseInt(bedTarget, 10) || 0));
+              const tgt = clampInputToCelsius(bedTarget, temperatureUnit, 110);
               sendGcode(`SET_HEATER_TEMPERATURE HEATER=heater_bed TARGET=${tgt}`);
             }}
           >
@@ -228,9 +246,9 @@ export default function ControlsPanel({
             {t('Panda Breath')}{' '}
             <Text style={styles.rowValue}>
               {pandaBreath
-                ? `${pandaTemp.toFixed(0)}\u00B0C${
+                ? `${formatTemperature(pandaTemp, temperatureUnit, 0)}${
                     pandaActiveTarget > 0
-                      ? ` \u2192 ${pandaActiveTarget.toFixed(0)}\u00B0C`
+                      ? ` \u2192 ${formatTemperature(pandaActiveTarget, temperatureUnit, 0)}`
                       : ''
                   } \u00B7 ${pandaMode}`
                 : t('not detected')}
@@ -253,7 +271,11 @@ export default function ControlsPanel({
                 ]}
                 disabled={disabled}
                 onPress={() => {
-                  const tgt = clampTemp(pandaTarget, PANDA_BREATH_MAX_TEMP);
+                  const tgt = clampInputToCelsius(
+                    pandaTarget,
+                    temperatureUnit,
+                    PANDA_BREATH_MAX_TEMP
+                  );
                   sendGcode(`M141 S${tgt}`);
                 }}
               >
@@ -270,7 +292,11 @@ export default function ControlsPanel({
                   ]}
                   disabled={disabled}
                   onPress={() => {
-                    const tgt = clampTemp(pandaTarget, PANDA_BREATH_MAX_TEMP);
+                    const tgt = clampInputToCelsius(
+                      pandaTarget,
+                      temperatureUnit,
+                      PANDA_BREATH_MAX_TEMP
+                    );
                     sendGcode(
                       `PANDA_BREATH_AUTO ENABLE=1 TARGET=${tgt} FILTERTEMP=${PANDA_AUTO_FILTER_TEMP} HOTBEDTEMP=${PANDA_AUTO_HOTBED_TEMP}`
                     );

@@ -1,6 +1,8 @@
 import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { colors, spacing } from '../constants/theme';
+import { displayTemperature, temperatureUnitSymbol } from '../services/temperature';
+import type { TemperatureUnit } from '../services/temperature';
 
 interface Props {
   name: string;
@@ -8,6 +10,7 @@ interface Props {
   target?: number;
   power?: number; // 0..1
   active?: boolean;
+  temperatureUnit?: TemperatureUnit;
 }
 
 function tempColor(temp: number, target: number): string {
@@ -17,10 +20,18 @@ function tempColor(temp: number, target: number): string {
   return temp >= 50 ? colors.warning : colors.cold;
 }
 
-export default function TempGauge({ name, temperature, target, power, active }: Props) {
+export default function TempGauge({
+  name,
+  temperature,
+  target,
+  power,
+  active,
+  temperatureUnit = 'c',
+}: Props) {
   const temp = temperature ?? 0;
   const tgt = target ?? 0;
   const color = tempColor(temp, tgt);
+  const unitSymbol = temperatureUnitSymbol(temperatureUnit);
 
   return (
     <View style={[styles.card, active && { borderColor: colors.primary }]}>
@@ -29,10 +40,12 @@ export default function TempGauge({ name, temperature, target, power, active }: 
         {active ? <Text style={[styles.activeTag, { color: colors.primary }]}>ACTIVE</Text> : null}
       </View>
       <Text style={[styles.temp, { color }]}>
-        {temp.toFixed(1)}
-        <Text style={styles.unit}>°C</Text>
+        {displayTemperature(temp, temperatureUnit).toFixed(1)}
+        <Text style={styles.unit}>{unitSymbol}</Text>
       </Text>
-      <Text style={styles.target}>{tgt > 0 ? `→ ${tgt.toFixed(0)}°C` : 'off'}</Text>
+      <Text style={styles.target}>
+        {tgt > 0 ? `\u2192 ${displayTemperature(tgt, temperatureUnit).toFixed(0)}${unitSymbol}` : 'off'}
+      </Text>
       {typeof power === 'number' ? (
         <View style={styles.powerTrack}>
           <View style={[styles.powerFill, { width: `${Math.round(power * 100)}%`, backgroundColor: color }]} />

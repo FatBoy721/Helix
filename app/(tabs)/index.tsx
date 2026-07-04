@@ -28,6 +28,35 @@ function stateColor(state: string): string {
   }
 }
 
+interface ChamberTemperatureSource {
+  key: string;
+  data: Record<string, any>;
+}
+
+const CHAMBER_NAME_RE = /(panda[_\s-]*breath|chamber|cavity|enclosure)/i;
+
+function chamberSourceScore(key: string): number {
+  const name = key.toLowerCase();
+  if (name === 'heater_generic panda_breath') return 100;
+  if (name.startsWith('heater_generic ') && /chamber|cavity|enclosure/.test(name)) return 90;
+  if (name.startsWith('heater_generic ') && /panda|breath/.test(name)) return 80;
+  if (name.startsWith('temperature_sensor ') && /chamber|cavity|enclosure/.test(name)) return 70;
+  if (name.startsWith('temperature_sensor ') && /panda|breath/.test(name)) return 60;
+  return 0;
+}
+
+function findChamberTemperatureSource(status: Record<string, any>): ChamberTemperatureSource | null {
+  return Object.keys(status)
+    .map((key) => ({ key, score: chamberSourceScore(key), data: status[key] ?? {} }))
+    .filter(
+      (item) =>
+        item.score > 0 &&
+        CHAMBER_NAME_RE.test(item.key) &&
+        typeof item.data.temperature === 'number'
+    )
+    .sort((a, b) => b.score - a.score)[0] ?? null;
+}
+
 export default function Dashboard() {
   const { status, connection, klippyState, activeUrl, rpc, reconnect, sendGcode, gcodeHelp, webcams } =
     useMoonraker();
@@ -89,6 +118,7 @@ export default function Dashboard() {
 
   const extruderNames = ['extruder', 'extruder1', 'extruder2', 'extruder3'];
   const activeExtruder = status.toolhead?.extruder;
+  const chamberTempSource = useMemo(() => findChamberTemperatureSource(status), [status]);
 
   // Slicer's total time estimate comes from the file metadata; refetched when
   // the printing file changes.
@@ -284,31 +314,43 @@ export default function Dashboard() {
             disabled={!connected}
             showPandaBreath={show.pandaBreath}
             gcodeHelp={gcodeHelp}
+            temperatureUnit={settings.temperatureUnit}
           />
         </>
       )}
 
       {show.temps && (
         <>
-      <Text style={styles.sectionTitle}>{t('Temperatures')}</Text>
-      <View style={styles.tempGrid}>
-        <TempGauge
-          name="Bed"
-          temperature={status.heater_bed?.temperature}
-          target={status.heater_bed?.target}
-          power={status.heater_bed?.power}
-        />
-        {extruderNames.map((name, i) => (
-          <TempGauge
-            key={name}
-            name={`T${i}`}
-            temperature={status[name]?.temperature}
-            target={status[name]?.target}
-            power={status[name]?.power}
-            active={activeExtruder === name}
-          />
-        ))}
-      </View>
+          <Text style={styles.sectionTitle}>{t('Temperatures')}</Text>
+          <View style={styles.tempGrid}>
+            <TempGauge
+              name="Bed"
+              temperature={status.heater_bed?.temperature}
+              target={status.heater_bed?.target}
+              power={status.heater_bed?.power}
+              temperatureUnit={settings.temperatureUnit}
+            />
+            {chamberTempSource && (
+              <TempGauge
+                name="Chamber"
+                temperature={chamberTempSource.data.temperature}
+                target={chamberTempSource.data.target}
+                power={chamberTempSource.data.power}
+                temperatureUnit={settings.temperatureUnit}
+              />
+            )}
+            {extruderNames.map((name, i) => (
+              <TempGauge
+                key={name}
+                name={`T${i}`}
+                temperature={status[name]?.temperature}
+                target={status[name]?.target}
+                power={status[name]?.power}
+                active={activeExtruder === name}
+                temperatureUnit={settings.temperatureUnit}
+              />
+            ))}
+          </View>
         </>
       )}
 

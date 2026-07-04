@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Alert,
   ScrollView,
@@ -11,13 +11,22 @@ import {
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { ACE_MACROS, AceUnit, useACE } from '../../hooks/useACE';
 import { useMoonraker } from '../../hooks/useMoonraker';
+import { useSettings } from '../../hooks/useSettings';
 import ACELaneRow from '../../components/ACELane';
 import { t } from '../../services/i18n';
+import {
+  displayTemperature,
+  formatTemperature,
+  inputTemperatureToCelsius,
+  temperatureUnitSymbol,
+} from '../../services/temperature';
+import type { TemperatureUnit } from '../../services/temperature';
 import { colors, spacing } from '../../constants/theme';
 
 export default function ACEScreen() {
   const { units, aceMacros, hardwareDetected, sendGcode } = useACE();
   const { connection } = useMoonraker();
+  const { settings } = useSettings();
   const disabled = connection !== 'connected';
 
   if (connection === 'connected' && !hardwareDetected) {
@@ -50,6 +59,7 @@ export default function ACEScreen() {
           unit={unit}
           disabled={disabled}
           confirmRun={confirmRun}
+          temperatureUnit={settings.temperatureUnit}
         />
       ))}
 
@@ -102,13 +112,22 @@ function AceUnitCard({
   unit,
   disabled,
   confirmRun,
+  temperatureUnit,
 }: {
   unit: AceUnit;
   disabled: boolean;
   confirmRun: (title: string, script: string) => void;
+  temperatureUnit: TemperatureUnit;
 }) {
-  const [dryTemp, setDryTemp] = useState('45');
+  const [dryTemp, setDryTemp] = useState(() =>
+    Math.round(displayTemperature(45, temperatureUnit)).toString()
+  );
   const [dryMins, setDryMins] = useState('240');
+  const unitSymbol = temperatureUnitSymbol(temperatureUnit);
+
+  useEffect(() => {
+    setDryTemp(Math.round(displayTemperature(45, temperatureUnit)).toString());
+  }, [temperatureUnit]);
 
   return (
     <View style={styles.card}>
@@ -124,7 +143,7 @@ function AceUnitCard({
           <Text style={styles.unitStatusText}>
             {unit.connected
               ? typeof unit.temp === 'number'
-                ? `${unit.temp.toFixed(0)}°C`
+                ? formatTemperature(unit.temp, temperatureUnit, 0)
                 : 'online'
               : 'no data'}
           </Text>
@@ -155,9 +174,13 @@ function AceUnitCard({
         <Text style={styles.dryerTitle}>
           {t('Dryer')}{' '}
           {unit.dryer.active
-            ? `— ${unit.dryer.targetTemp ?? '?'}°C` +
+            ? `\u2014 ${
+                typeof unit.dryer.targetTemp === 'number'
+                  ? formatTemperature(unit.dryer.targetTemp, temperatureUnit, 0)
+                  : '?'
+              }` +
               (unit.dryer.remainingMin != null ? `, ${unit.dryer.remainingMin} min` : '')
-            : `— ${t('off')}`}
+            : `\u2014 ${t('off')}`}
         </Text>
         <View style={styles.dryerRow}>
           <TextInput
@@ -165,10 +188,10 @@ function AceUnitCard({
             value={dryTemp}
             onChangeText={setDryTemp}
             keyboardType="numeric"
-            placeholder="°C"
+            placeholder={unitSymbol}
             placeholderTextColor={colors.subtext}
           />
-          <Text style={styles.dryerUnit}>°C</Text>
+          <Text style={styles.dryerUnit}>{unitSymbol}</Text>
           <TextInput
             style={styles.dryerInput}
             value={dryMins}
@@ -190,7 +213,7 @@ function AceUnitCard({
                 `Start drying ACE ${unit.index}?`,
                 ACE_MACROS.dryStart(
                   unit.index - 1,
-                  parseInt(dryTemp, 10) || 45,
+                  Math.round(inputTemperatureToCelsius(dryTemp, temperatureUnit)) || 45,
                   parseInt(dryMins, 10) || 240
                 )
               )

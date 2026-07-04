@@ -1,8 +1,10 @@
 import React, { useState } from 'react';
-import { Alert, Linking, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import Constants from 'expo-constants';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import ThemedDialog, { DialogAction } from '../ThemedDialog';
 import { colors, spacing } from '../../constants/theme';
+import { downloadAndOpenApk, openUrl } from '../../services/apkInstaller';
 import { t } from '../../services/i18n';
 import {
   GitHubRelease,
@@ -15,21 +17,67 @@ import {
   releaseDownloadUrl,
 } from '../../services/updateCheck';
 
+type DialogIcon = React.ComponentProps<typeof MaterialCommunityIcons>['name'];
+
+interface DialogState {
+  title: string;
+  message?: string;
+  icon: DialogIcon;
+  actions: DialogAction[];
+}
+
 function buildCommit(): string {
   const extra = Constants.expoConfig?.extra as { buildCommit?: string } | undefined;
   return normalizeBuildCommit(extra?.buildCommit);
 }
 
-function openUrl(url: string): void {
-  Linking.openURL(url).catch(() => {});
-}
-
 export default function AboutCard() {
   const [checkingUpdates, setCheckingUpdates] = useState(false);
+  const [downloadingUpdate, setDownloadingUpdate] = useState(false);
+  const [dialog, setDialog] = useState<DialogState | null>(null);
   const currentBuild = buildCommit();
 
+  const closeDialog = () => setDialog(null);
+
+  const messageDialog = (title: string, message: string, icon: DialogIcon = 'information-outline') => {
+    setDialog({
+      title,
+      message,
+      icon,
+      actions: [{ text: t('OK'), variant: 'primary', onPress: closeDialog }],
+    });
+  };
+
+  const installUpdate = async (downloadUrl: string, latest: string) => {
+    if (downloadingUpdate) return;
+    setDownloadingUpdate(true);
+    try {
+      await downloadAndOpenApk(downloadUrl, latest);
+    } catch (e: any) {
+      setDialog({
+        title: t('Update download failed'),
+        message: e?.message ?? 'Could not open the APK installer.',
+        icon: 'alert-circle-outline',
+        actions: [
+          { text: t('Not now'), onPress: closeDialog },
+          {
+            text: t('Open in browser'),
+            icon: 'open-in-new',
+            variant: 'primary',
+            onPress: () => {
+              closeDialog();
+              openUrl(downloadUrl).catch(() => {});
+            },
+          },
+        ],
+      });
+    } finally {
+      setDownloadingUpdate(false);
+    }
+  };
+
   const checkForUpdates = async () => {
-    if (checkingUpdates) return;
+    if (checkingUpdates || downloadingUpdate) return;
     setCheckingUpdates(true);
     try {
       const res = await fetch(RELEASE_API_URL, {
@@ -42,67 +90,103 @@ export default function AboutCard() {
       const downloadUrl = releaseDownloadUrl(release);
 
       if (isCurrentRelease(currentBuild, latest)) {
-        Alert.alert(t('Up to date'), `Helix is already on build ${latest.slice(0, 7)}.`);
+        messageDialog(
+          t('Up to date'),
+          `Helix is already on build ${latest.slice(0, 7)}.`,
+          'check-circle-outline'
+        );
         return;
       }
 
-      Alert.alert(
-        latest ? `${t('Update available')}: ${latest.slice(0, 7)}` : t('Latest APK available'),
-        currentBuild && currentBuild !== 'dev'
-          ? `Installed build: ${currentBuild.slice(0, 7)}`
-          : t('Open the latest APK download?'),
-        [
-          { text: t('Not now'), style: 'cancel' },
-          { text: t('Download APK'), onPress: () => openUrl(downloadUrl) },
-        ]
-      );
+      const title = latest
+        ? `${t('Update available')}: ${latest.slice(0, 7)}`
+        : t('Latest APK available');
+      const buildLine = currentBuild && currentBuild !== 'dev'
+        ? `${t('Installed build')}: ${currentBuild.slice(0, 7)}`
+        : t('Open the latest APK download?');
+
+      setDialog({
+        title,
+        message: `${buildLine}\n${t('Install over existing app to keep settings.')}`,
+        icon: 'download-circle-outline',
+        actions: [
+          { text: t('Not now'), onPress: closeDialog },
+          {
+            text: t('Download APK'),
+            icon: 'download',
+            variant: 'primary',
+            onPress: () => {
+              closeDialog();
+              installUpdate(downloadUrl, latest);
+            },
+          },
+        ],
+      });
     } catch (e: any) {
-      Alert.alert(t('Update check failed'), e?.message ?? 'Could not reach GitHub releases.');
+      messageDialog(
+        t('Update check failed'),
+        e?.message ?? 'Could not reach GitHub releases.',
+        'alert-circle-outline'
+      );
     } finally {
       setCheckingUpdates(false);
     }
   };
 
   return (
-    <View style={styles.card}>
-      <Text style={styles.cardTitle}>{t('About')}</Text>
-      <TouchableOpacity
-        style={styles.linkRow}
-        onPress={checkForUpdates}
-        disabled={checkingUpdates}
-      >
-        <MaterialCommunityIcons name="update" size={20} color={colors.text} />
-        <Text style={styles.linkText}>
-          {checkingUpdates ? t('Checking for updates...') : t('Check for updates')}
+    <>
+      <View style={styles.card}>
+        <Text style={styles.cardTitle}>{t('About')}</Text>
+        <TouchableOpacity
+          style={styles.linkRow}
+          onPress={checkForUpdates}
+          disabled={checkingUpdates || downloadingUpdate}
+        >
+          <MaterialCommunityIcons name="update" size={20} color={colors.text} />
+          <Text style={styles.linkText}>
+            {downloadingUpdate
+              ? t('Downloading update...')
+              : checkingUpdates
+                ? t('Checking for updates...')
+                : t('Check for updates')}
+          </Text>
+          <MaterialCommunityIcons name="download-outline" size={16} color={colors.subtext} />
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.linkRow} onPress={() => openUrl(REPO_URL).catch(() => {})}>
+          <MaterialCommunityIcons name="github" size={20} color={colors.text} />
+          <Text style={styles.linkText}>GitHub - Helix</Text>
+          <MaterialCommunityIcons name="open-in-new" size={16} color={colors.subtext} />
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.linkRow}
+          onPress={() =>
+            openUrl(
+              buildBugReportUrl({
+                version: Constants.expoConfig?.version,
+                platform: Platform.OS,
+                buildCommit: currentBuild,
+              })
+            ).catch(() => {})
+          }
+        >
+          <MaterialCommunityIcons name="bug-outline" size={20} color={colors.text} />
+          <Text style={styles.linkText}>{t('Report a bug')}</Text>
+          <MaterialCommunityIcons name="open-in-new" size={16} color={colors.subtext} />
+        </TouchableOpacity>
+        <Text style={styles.version}>
+          Helix v{Constants.expoConfig?.version ?? '1.0.0'}
+          {currentBuild && currentBuild !== 'dev' ? ` (${currentBuild.slice(0, 7)})` : ''}
         </Text>
-        <MaterialCommunityIcons name="download-outline" size={16} color={colors.subtext} />
-      </TouchableOpacity>
-      <TouchableOpacity style={styles.linkRow} onPress={() => openUrl(REPO_URL)}>
-        <MaterialCommunityIcons name="github" size={20} color={colors.text} />
-        <Text style={styles.linkText}>GitHub - Helix</Text>
-        <MaterialCommunityIcons name="open-in-new" size={16} color={colors.subtext} />
-      </TouchableOpacity>
-      <TouchableOpacity
-        style={styles.linkRow}
-        onPress={() =>
-          openUrl(
-            buildBugReportUrl({
-              version: Constants.expoConfig?.version,
-              platform: Platform.OS,
-              buildCommit: currentBuild,
-            })
-          )
-        }
-      >
-        <MaterialCommunityIcons name="bug-outline" size={20} color={colors.text} />
-        <Text style={styles.linkText}>{t('Report a bug')}</Text>
-        <MaterialCommunityIcons name="open-in-new" size={16} color={colors.subtext} />
-      </TouchableOpacity>
-      <Text style={styles.version}>
-        Helix v{Constants.expoConfig?.version ?? '1.0.0'}
-        {currentBuild && currentBuild !== 'dev' ? ` (${currentBuild.slice(0, 7)})` : ''}
-      </Text>
-    </View>
+      </View>
+      <ThemedDialog
+        visible={!!dialog}
+        title={dialog?.title ?? ''}
+        message={dialog?.message}
+        icon={dialog?.icon}
+        actions={dialog?.actions ?? []}
+        onClose={closeDialog}
+      />
+    </>
   );
 }
 

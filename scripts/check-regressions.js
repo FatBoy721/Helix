@@ -41,6 +41,12 @@ const {
   releaseDownloadUrl,
 } = require(path.join('..', 'services', 'updateCheck.ts'));
 const {
+  displayTemperature,
+  formatTemperature,
+  inputTemperatureToCelsius,
+  normalizeTemperatureUnit,
+} = require(path.join('..', 'services', 'temperature.ts'));
+const {
   cacheBustUrl,
   cameraSnapshotFileName,
 } = require(path.join('..', 'services', 'cameraSnapshot.ts'));
@@ -241,6 +247,7 @@ test('settings migration seeds first-launch printer defaults', () => {
   assert.equal(migrated.settingsVersion, STORAGE_VERSION);
   assert.equal(migrated.activePrinterId, 'p1');
   assert.equal(migrated.dashboard.pandaBreath, false);
+  assert.equal(migrated.temperatureUnit, 'c');
   assert.deepEqual(migrated.printers, [
     {
       id: 'p1',
@@ -293,6 +300,21 @@ test('settings migration preserves dashboard defaults and valid notification mod
   assert.equal(migrated.dashboard.camera, true);
   assert.equal(migrated.dashboard.pandaBreath, false);
   assert.equal(migrated.notificationMode, 'ntfy');
+});
+
+test('settings migration normalizes temperature unit', () => {
+  assert.equal(migrateSettings({ temperatureUnit: 'f' }).temperatureUnit, 'f');
+  assert.equal(migrateSettings({ temperatureUnit: 'wat' }).temperatureUnit, 'c');
+});
+
+test('temperature unit helpers convert display and input values', () => {
+  assert.equal(normalizeTemperatureUnit('f'), 'f');
+  assert.equal(normalizeTemperatureUnit('bad'), 'c');
+  assert.equal(displayTemperature(100, 'f'), 212);
+  assert.equal(Math.round(inputTemperatureToCelsius('212', 'f')), 100);
+  assert.equal(inputTemperatureToCelsius('60', 'c'), 60);
+  assert.equal(formatTemperature(100, 'f', 0), '212\u00B0F');
+  assert.equal(formatTemperature(100, 'c', 0), '100\u00B0C');
 });
 
 test('settings migration infers ntfy mode from existing ntfy topic', () => {
