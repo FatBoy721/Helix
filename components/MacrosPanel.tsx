@@ -1,14 +1,14 @@
 import React, { useMemo, useState } from 'react';
 import { Alert, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useMoonraker } from '../hooks/useMoonraker';
+import { useSettings } from '../hooks/useSettings';
+import { filterMacrosForDisplay, getMacroDisplay } from '../services/macroDisplay';
 import MacroButton from './MacroButton';
 import { t } from '../services/i18n';
 import { colors, spacing } from '../constants/theme';
 
-// PAXX ships like 120 macros and dumping them in one wall scared everyone I
-// showed it to. buckets below, first match wins top to bottom. T4-T31 are
-// multiACE virtual tools (slicer-facing, you basically never tap these by
-// hand) so they get shoved into their own section out of the way.
+// PAXX exposes many macros. First matching category wins, with virtual tool
+// macros grouped separately from manual filament actions.
 const CATEGORIES: { name: string; match: (m: string) => boolean }[] = [
   { name: 'Print Control', match: (m) => /^(PRINT_|PAUSE|RESUME|CANCEL|M600$|SET_PAUSE)/i.test(m) },
   { name: 'Tool Change', match: (m) => /^T\d+$/.test(m) },
@@ -27,11 +27,19 @@ const CATEGORIES: { name: string; match: (m: string) => boolean }[] = [
 // lives on the Home tab (toggleable section) since Spoolman took the tab slot
 export default function MacrosPanel() {
   const { macros, sendGcode, connection } = useMoonraker();
+  const { settings } = useSettings();
   const [filter, setFilter] = useState('');
+  const macroDisplay = useMemo(() => getMacroDisplay(settings), [settings]);
+
+  const configuredMacros = useMemo(() => {
+    return filterMacrosForDisplay(macros, macroDisplay);
+  }, [macros, macroDisplay]);
 
   const sections = useMemo(() => {
     const f = filter.trim().toLowerCase();
-    const visible = f ? macros.filter((m) => m.toLowerCase().includes(f)) : macros;
+    const visible = f
+      ? configuredMacros.filter((m) => m.toLowerCase().includes(f))
+      : configuredMacros;
     const buckets = new Map<string, string[]>();
     for (const name of visible) {
       const cat = CATEGORIES.find((c) => c.match(name))?.name ?? 'Other';
@@ -42,7 +50,7 @@ export default function MacrosPanel() {
     return order
       .filter((name) => buckets.has(name))
       .map((name) => ({ name, macros: buckets.get(name)! }));
-  }, [macros, filter]);
+  }, [configuredMacros, filter]);
 
   const run = (name: string) => {
     // multiACE macros get a confirmation for safety
@@ -86,7 +94,11 @@ export default function MacrosPanel() {
       ))}
       {!sections.length && (
         <Text style={styles.empty}>
-          {connection === 'connected' ? t('No macros found') : t('Not connected')}
+          {connection === 'connected'
+            ? macroDisplay.mode === 'selected' && configuredMacros.length === 0
+              ? t('No macros selected in Settings')
+              : t('No macros found')
+            : t('Not connected')}
         </Text>
       )}
     </View>

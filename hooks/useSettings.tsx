@@ -2,185 +2,30 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useS
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { setLanguage } from '../services/i18n';
 import { colors } from '../constants/theme';
-import { normalizeMoonrakerUrl } from '../services/moonraker';
+import { DEFAULT_SETTINGS, migrateSettings } from '../services/settingsMigration';
+import type { Settings } from '../services/settingsMigration';
 
-export interface PrinterEntry {
-  id: string;
-  name: string;
-  url: string;
-  tailscaleUrl: string;
-  cameraUrl: string;
-}
+export {
+  DEFAULT_MACRO_DISPLAY,
+  getMacroDisplay,
+} from '../services/macroDisplay';
+export type { MacroDisplayMode, MacroDisplaySettings } from '../services/macroDisplay';
+export { DEFAULT_SETTINGS } from '../services/settingsMigration';
+export type {
+  DashboardSections,
+  NotificationMode,
+  PrinterEntry,
+  Settings,
+} from '../services/settingsMigration';
 
-export interface DashboardSections {
-  progress: boolean;
-  actions: boolean;
-  estop: boolean;
-  homeDock: boolean;
-  controls: boolean;
-  temps: boolean;
-  camera: boolean;
-  macros: boolean;
-}
-
-export type NotificationMode = 'off' | 'local' | 'ntfy';
-
-export interface Settings {
-  settingsVersion: number;
-  primaryUrl: string;
-  tailscaleUrl: string;
-  cameraUrl: string;
-  printers: PrinterEntry[];
-  activePrinterId: string;
-  dashboard: DashboardSections;
-  notificationMode: NotificationMode;
-  ntfyServer: string;
-  ntfyTopic: string;
-  notifyPrintComplete: boolean;
-  notifyPrintFailed: boolean;
-  notifyPrintPaused: boolean;
-  notifyFilamentRunout: boolean;
-  notifySwapComplete: boolean;
-  notifyPrinterError: boolean;
-  notifyPrinterDisconnected: boolean;
-  notifyTempWarning: boolean;
-  aceUnits: number;
-  accentColor: string;
-  language: string;
-}
-
-export const DEFAULT_SETTINGS: Settings = {
-  settingsVersion: 2,
-  primaryUrl: 'http://192.168.1.17:7125',
-  tailscaleUrl: '',
-  cameraUrl: '/webcam/webrtc',
-  printers: [],
-  activePrinterId: '',
-  dashboard: {
-    progress: true,
-    actions: true,
-    estop: true,
-    homeDock: true,
-    controls: true,
-    temps: true,
-    camera: true,
-    macros: true,
-  },
-  notificationMode: 'local',
-  ntfyServer: 'https://ntfy.sh',
-  ntfyTopic: '',
-  notifyPrintComplete: true,
-  notifyPrintFailed: true,
-  notifyPrintPaused: true,
-  notifyFilamentRunout: true,
-  notifySwapComplete: true,
-  notifyPrinterError: true,
-  notifyPrinterDisconnected: true,
-  notifyTempWarning: true,
-  aceUnits: 1,
-  accentColor: '#2196f3',
-  language: 'en',
-};
-
-// theming gotcha that ate an afternoon: StyleSheet.create runs at import time
-// so anything in there is frozen forever. colors.primary is mutated here and
-// every accent-colored style reads it INLINE at render instead. if you add a
-// new accent-colored thing, don't put colors.primary in a StyleSheet.
+// StyleSheet.create captures color values at module load time. Accent-colored
+// styles should read colors.primary at render time after this mutation runs.
 function applyAppearance(s: Settings) {
   colors.primary = s.accentColor || DEFAULT_SETTINGS.accentColor;
   setLanguage(s.language || 'en');
 }
 
 const STORAGE_KEY = 'u1control.settings.v1';
-const STORAGE_VERSION = 3;
-
-function notificationMode(raw: unknown, ntfyTopic?: string): NotificationMode {
-  if (raw === 'off' || raw === 'local' || raw === 'ntfy') return raw;
-  return ntfyTopic?.trim() ? 'ntfy' : DEFAULT_SETTINGS.notificationMode;
-}
-
-function normalizePrinter(p: Partial<PrinterEntry>, index: number): PrinterEntry {
-  return {
-    id: p.id || `p${index + 1}`,
-    name: p.name || `Snapmaker ${index + 1}`,
-    url: normalizeMoonrakerUrl(p.url || DEFAULT_SETTINGS.primaryUrl),
-    tailscaleUrl: normalizeMoonrakerUrl(p.tailscaleUrl || ''),
-    cameraUrl: p.cameraUrl || DEFAULT_SETTINGS.cameraUrl,
-  };
-}
-
-function migrateSettings(raw: Partial<Settings>): Settings {
-  const parsed = { ...raw };
-  if (
-    parsed.cameraUrl === 'http://192.168.1.17/webcam/stream' ||
-    parsed.cameraUrl === '/webcam/stream.mjpg'
-  ) {
-    parsed.cameraUrl = DEFAULT_SETTINGS.cameraUrl;
-  }
-
-  const merged: Settings = {
-    ...DEFAULT_SETTINGS,
-    ...parsed,
-    settingsVersion: STORAGE_VERSION,
-    primaryUrl: normalizeMoonrakerUrl(parsed.primaryUrl || DEFAULT_SETTINGS.primaryUrl),
-    tailscaleUrl: normalizeMoonrakerUrl(parsed.tailscaleUrl || ''),
-    cameraUrl: parsed.cameraUrl || DEFAULT_SETTINGS.cameraUrl,
-    dashboard: { ...DEFAULT_SETTINGS.dashboard, ...(parsed.dashboard ?? {}) },
-    notificationMode: notificationMode(parsed.notificationMode, parsed.ntfyTopic),
-    printers: Array.isArray(parsed.printers)
-      ? parsed.printers.map((p, index) => normalizePrinter(p, index))
-      : [],
-  };
-
-  if (!merged.printers.length) {
-    merged.printers = [
-      {
-        id: 'p1',
-        name: 'Snapmaker U1',
-        url: merged.primaryUrl,
-        tailscaleUrl: merged.tailscaleUrl,
-        cameraUrl: merged.cameraUrl,
-      },
-    ];
-    merged.activePrinterId = 'p1';
-  }
-
-  if (!merged.printers.some((p) => p.id === merged.activePrinterId)) {
-    const active = merged.printers[0];
-    merged.activePrinterId = active.id;
-    merged.primaryUrl = active.url;
-    merged.tailscaleUrl = active.tailscaleUrl;
-    merged.cameraUrl = active.cameraUrl;
-  }
-
-  if (
-    merged.primaryUrl === DEFAULT_SETTINGS.primaryUrl &&
-    merged.printers.length > 1
-  ) {
-    const configured = [...merged.printers]
-      .reverse()
-      .find((p) => p.url && p.url !== DEFAULT_SETTINGS.primaryUrl);
-    if (configured) {
-      merged.activePrinterId = configured.id;
-      merged.primaryUrl = configured.url;
-      merged.tailscaleUrl = configured.tailscaleUrl;
-      merged.cameraUrl = configured.cameraUrl;
-    }
-  }
-
-  merged.printers = merged.printers.map((p) =>
-    p.id === merged.activePrinterId
-      ? {
-          ...p,
-          url: merged.primaryUrl,
-          tailscaleUrl: merged.tailscaleUrl,
-          cameraUrl: merged.cameraUrl,
-        }
-      : p
-  );
-
-  return merged;
-}
 
 interface SettingsContextValue {
   settings: Settings;
@@ -199,55 +44,7 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
       try {
         const raw = await AsyncStorage.getItem(STORAGE_KEY);
         const parsed = raw ? JSON.parse(raw) : {};
-        // Migrate previous defaults: /webcam/stream 404s on PAXX; stream.mjpg
-        // lags (35 Mbit/s MJPEG) — WebRTC is the intended realtime stream.
-        if (
-          parsed.cameraUrl === 'http://192.168.1.17/webcam/stream' ||
-          parsed.cameraUrl === '/webcam/stream.mjpg'
-        ) {
-          parsed.cameraUrl = DEFAULT_SETTINGS.cameraUrl;
-        }
-        const merged: Settings = {
-          ...DEFAULT_SETTINGS,
-          ...parsed,
-          dashboard: { ...DEFAULT_SETTINGS.dashboard, ...(parsed.dashboard ?? {}) },
-        };
-        // migrate single-printer settings into the printers list (also seeds
-        // the very first launch)
-        if (!merged.printers?.length) {
-          merged.printers = [
-            {
-              id: 'p1',
-              name: 'Snapmaker U1',
-              url: merged.primaryUrl,
-              tailscaleUrl: merged.tailscaleUrl,
-              cameraUrl: merged.cameraUrl,
-            },
-          ];
-          merged.activePrinterId = 'p1';
-        }
-        if (!merged.printers.some((p) => p.id === merged.activePrinterId)) {
-          const active = merged.printers[0];
-          merged.activePrinterId = active.id;
-          merged.primaryUrl = active.url;
-          merged.tailscaleUrl = active.tailscaleUrl;
-          merged.cameraUrl = active.cameraUrl;
-        }
-        if (
-          merged.primaryUrl === DEFAULT_SETTINGS.primaryUrl &&
-          merged.printers.length > 1
-        ) {
-          const configured = [...merged.printers]
-            .reverse()
-            .find((p) => p.url && p.url !== DEFAULT_SETTINGS.primaryUrl);
-          if (configured) {
-            merged.activePrinterId = configured.id;
-            merged.primaryUrl = configured.url;
-            merged.tailscaleUrl = configured.tailscaleUrl;
-            merged.cameraUrl = configured.cameraUrl;
-          }
-        }
-        const migrated = migrateSettings(merged);
+        const migrated = migrateSettings(parsed);
         applyAppearance(migrated);
         AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(migrated)).catch(() => {});
         setSettings(migrated);

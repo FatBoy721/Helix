@@ -12,12 +12,10 @@ interface Props {
   onInteraction?: (active: boolean) => void;
 }
 
-// Fluidd-style 3D bed mesh viewer. hand-rolled canvas renderer because
-// three.js via expo-gl is a whole thing and plotly needs a CDN (no good over
-// tailscale with no internet). painter's algorithm, no z-buffer, sue me —
-// it's a heightmap, it works.
-// NOTE: klipper matrix[i][j] is i = Y row starting at min_y (FRONT of bed),
-// j = X column. got this backwards the first time and the mesh was mirrored.
+// Fluidd-style 3D bed mesh viewer. The canvas renderer keeps the mesh available
+// offline and over Tailscale without a CDN-backed charting dependency.
+// Klipper matrix[i][j] is i = Y row starting at min_y (front of bed) and
+// j = X column.
 function buildHtml(matrix: number[][], xRange: [number, number], yRange: [number, number]): string {
   const data = JSON.stringify({ m: matrix, xr: xRange, yr: yRange });
   return `<!DOCTYPE html>

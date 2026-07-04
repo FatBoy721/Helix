@@ -72,13 +72,11 @@ interface ExternalFilament {
   color_hex?: string;
 }
 
-// spoolman ships a community catalog of ~7000 commercial filaments
-// (manufacturer, exact color, density, spool weight, the lot). fetched once
-// per session — it's ~1.5MB and doesn't change under us.
+// Spoolman's community catalog is large and stable enough to cache per session.
 let catalogCache: ExternalFilament[] | null = null;
 
-// typical densities in g/cm3 so nobody has to look this up on the box.
-// picking a material auto-fills it; still editable for exact vendor specs.
+// Typical densities in g/cm3. Material selection pre-fills the value, and users
+// can still edit exact vendor specs.
 const MATERIAL_DENSITY: Record<string, number> = {
   PLA: 1.24, 'PLA+': 1.24, 'Silk PLA': 1.24, 'Matte PLA': 1.24, 'PLA-CF': 1.29, 'Wood PLA': 1.22,
   PETG: 1.27, 'PETG-CF': 1.3, PCTG: 1.23,
@@ -87,8 +85,7 @@ const MATERIAL_DENSITY: Record<string, number> = {
   PA: 1.15, 'PA-CF': 1.23, 'PA-GF': 1.27, PC: 1.2, PP: 0.9, PVA: 1.23, PVB: 1.1,
 };
 
-// quick-pick brands — tapping one creates the vendor in Spoolman on save if
-// it doesn't exist yet. spoolman itself has no built-in vendor list.
+// Quick-pick brands create the vendor in Spoolman on save when needed.
 const PRESET_VENDORS = [
   'Snapmaker', 'Bambu Lab', 'Polymaker', 'eSUN', 'SUNLU', 'Overture',
   'Hatchbox', 'Prusament', 'Creality', 'Elegoo', 'Anycubic', 'Inland',
@@ -169,8 +166,7 @@ export default function SpoolmanScreen() {
     if (connection === 'connected') refresh();
   }, [connection, refresh]);
 
-  // writes [spoolman] into the printer's moonraker config and restarts it —
-  // so users never have to SSH anywhere to hook up their Spoolman server
+  // Write [spoolman] into Moonraker config and restart the printer service.
   const configurePrinter = async () => {
     const server = normalizeBaseUrl(serverInput);
     if (!server) return;
@@ -704,16 +700,19 @@ function FilamentFormModal({
 
   useEffect(() => {
     if (catalogCache || editing) return;
+    let live = true;
     proxy('GET', '/v1/external/filament')
       .then((list) => {
-        if (Array.isArray(list)) {
+        if (live && Array.isArray(list)) {
           catalogCache = list;
           setCatalog(list);
         }
       })
       .catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    return () => {
+      live = false;
+    };
+  }, [editing, proxy]);
 
   const applyCatalogPick = (ext: ExternalFilament) => {
     if (ext.name) setName(ext.name);
@@ -851,7 +850,7 @@ function FilamentFormModal({
         value={vendorId != null ? `v:${vendorId}` : newVendor ? `p:${newVendor}` : null}
         options={[
           ...vendors.map((v) => ({ key: `v:${v.id}`, label: v.name })),
-          // popular brands not in the DB yet — picking one creates it on save
+          // Preset brands not in Spoolman yet are created on save.
           ...PRESET_VENDORS.filter(
             (name) => !vendors.some((v) => v.name.toLowerCase() === name.toLowerCase())
           ).map((name) => ({ key: `p:${name}`, label: name, dimmed: true, hint: t('new') })),

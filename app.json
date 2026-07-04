@@ -36,7 +36,16 @@
       "expo-router",
       "expo-asset",
       "expo-font",
-      "expo-media-library",
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Helix saves camera snapshots and spool labels to your photo library.",
+          "savePhotosPermission": "Helix saves camera snapshots and spool labels to your photo library.",
+          "granularPermissions": [
+            "photo"
+          ]
+        }
+      ],
       [
         "expo-camera",
         {

@@ -29,8 +29,7 @@ function dotColor(state: string): string {
   }
 }
 
-// non-active printers get a light REST poll every 15s — cheap enough, and a
-// second websocket per printer would be overkill for a status chip
+// Non-active printers use a light REST poll instead of one websocket per chip.
 export default function PrinterStrip({
   printers,
   activeId,

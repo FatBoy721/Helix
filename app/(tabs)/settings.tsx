@@ -2,7 +2,6 @@ import React, { useEffect, useState } from 'react';
 import {
   Alert,
   KeyboardAvoidingView,
-  Linking,
   Platform,
   ScrollView,
   StyleSheet,
@@ -12,10 +11,17 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import Constants from 'expo-constants';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { DashboardSections, PrinterEntry, Settings, useSettings } from '../../hooks/useSettings';
+import {
+  DashboardSections,
+  PrinterEntry,
+  Settings,
+  useSettings,
+} from '../../hooks/useSettings';
 import { useMoonraker } from '../../hooks/useMoonraker';
+import AboutCard from '../../components/settings/AboutCard';
+import MacroDisplayCard from '../../components/settings/MacroDisplayCard';
+import { buildSettingsSavePatch, hasDraftChanges } from '../../services/settingsDraft';
 import { generateNtfyTopic, notifyLocal, sendNtfy } from '../../services/notifications';
 import { LANGUAGES, t } from '../../services/i18n';
 import { colors, spacing } from '../../constants/theme';
@@ -26,26 +32,6 @@ import {
   restartMoonraker,
   uploadConfigFile,
 } from '../../services/moonraker';
-
-const REPO_URL = 'https://github.com/FatBoy721/Helix';
-const BUG_URL = `${REPO_URL}/issues/new`;
-const RELEASE_API_URL = 'https://api.github.com/repos/FatBoy721/Helix/releases/latest';
-const APK_URL = `${REPO_URL}/releases/download/latest/helix.apk`;
-
-interface GitHubRelease {
-  body?: string;
-  html_url?: string;
-  assets?: { name: string; browser_download_url: string }[];
-}
-
-function buildCommit(): string {
-  const extra = Constants.expoConfig?.extra as { buildCommit?: string } | undefined;
-  return extra?.buildCommit?.toLowerCase() ?? '';
-}
-
-function releaseCommit(body?: string): string {
-  return body?.match(/\b[0-9a-f]{40}\b/i)?.[0]?.toLowerCase() ?? '';
-}
 
 const ACCENTS = [
   { name: 'Fluidd Blue', hex: '#2196f3' },
@@ -86,38 +72,17 @@ export default function SettingsScreen() {
   const [addingPrinter, setAddingPrinter] = useState(false);
   const [newName, setNewName] = useState('');
   const [newUrl, setNewUrl] = useState('');
-  const [checkingUpdates, setCheckingUpdates] = useState(false);
 
   useEffect(() => {
-    if (loaded && !draft) setDraft(settings);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loaded]);
+    if (!loaded) return;
+    setDraft((current) => current ?? settings);
+  }, [loaded, settings]);
 
   if (!draft) return <View style={styles.screen} />;
 
-  const currentBuild = buildCommit();
   const set = (patch: Partial<Settings>) => setDraft({ ...draft, ...patch });
 
-  // Save button only appears when a draft-managed field actually differs
-  // from what's stored — it used to just sit there permanently
-  const DRAFT_KEYS: (keyof Settings)[] = [
-    'primaryUrl',
-    'tailscaleUrl',
-    'cameraUrl',
-    'notificationMode',
-    'ntfyServer',
-    'ntfyTopic',
-    'aceUnits',
-    'notifyPrintComplete',
-    'notifyPrintFailed',
-    'notifyPrintPaused',
-    'notifyFilamentRunout',
-    'notifySwapComplete',
-    'notifyPrinterError',
-    'notifyPrinterDisconnected',
-    'notifyTempWarning',
-  ];
-  const dirty = DRAFT_KEYS.some((k) => draft[k] !== settings[k]);
+  const dirty = hasDraftChanges(draft, settings);
 
   // theme + language apply instantly, no Save needed
   const setLive = (patch: Partial<Settings>) => {
@@ -128,15 +93,9 @@ export default function SettingsScreen() {
   const save = async () => {
     const primaryUrl = normalizeMoonrakerUrl(draft.primaryUrl);
     const tailscaleUrl = normalizeMoonrakerUrl(draft.tailscaleUrl);
-    const normalizedDraft = { ...draft, primaryUrl, tailscaleUrl };
-    // keep the active printer entry in sync with the edited URL fields
-    const printers = settings.printers.map((p) =>
-      p.id === settings.activePrinterId
-        ? { ...p, url: primaryUrl, tailscaleUrl, cameraUrl: draft.cameraUrl }
-        : p
-    );
-    setDraft(normalizedDraft);
-    await update({ ...normalizedDraft, printers, activePrinterId: settings.activePrinterId });
+    const patch = buildSettingsSavePatch(draft, settings, { primaryUrl, tailscaleUrl });
+    setDraft({ ...draft, ...patch });
+    await update(patch);
     Alert.alert(t('Saved'), t('Settings applied. Connection will use the new URLs.'));
   };
 
@@ -159,20 +118,22 @@ export default function SettingsScreen() {
         style: 'destructive',
         onPress: () => {
           const printers = settings.printers.filter((x) => x.id !== p.id);
-          const patch: Partial<Settings> = { printers };
+          const macroDisplayByPrinter = { ...settings.macroDisplayByPrinter };
+          delete macroDisplayByPrinter[p.id];
+          const patch: Partial<Settings> = { printers, macroDisplayByPrinter };
+          const nextDraft: Settings = { ...draft, printers, macroDisplayByPrinter };
           if (settings.activePrinterId === p.id) {
             const next = printers[0];
             patch.activePrinterId = next.id;
             patch.primaryUrl = next.url;
             patch.tailscaleUrl = next.tailscaleUrl;
             patch.cameraUrl = next.cameraUrl;
-            setDraft({
-              ...draft,
-              primaryUrl: next.url,
-              tailscaleUrl: next.tailscaleUrl,
-              cameraUrl: next.cameraUrl,
-            });
+            nextDraft.activePrinterId = next.id;
+            nextDraft.primaryUrl = next.url;
+            nextDraft.tailscaleUrl = next.tailscaleUrl;
+            nextDraft.cameraUrl = next.cameraUrl;
           }
+          setDraft(nextDraft);
           update(patch);
         },
       },
@@ -218,46 +179,6 @@ export default function SettingsScreen() {
 
     const ok = await notifyLocal('Helix test', 'Local printer alerts are working.');
     Alert.alert(ok ? 'Sent' : 'Failed', ok ? 'Local notification works.' : 'Check notification permission.');
-  };
-
-  const checkForUpdates = async () => {
-    if (checkingUpdates) return;
-    setCheckingUpdates(true);
-    try {
-      const res = await fetch(RELEASE_API_URL, {
-        headers: { Accept: 'application/vnd.github+json' },
-      });
-      if (!res.ok) throw new Error(`GitHub returned HTTP ${res.status}`);
-
-      const release = (await res.json()) as GitHubRelease;
-      const latest = releaseCommit(release.body);
-      const current = buildCommit();
-      const downloadUrl =
-        release.assets?.find((a) => a.name === 'helix.apk')?.browser_download_url ?? APK_URL;
-
-      if (latest && current && current !== 'dev' && latest === current) {
-        Alert.alert('Up to date', `Helix is already on build ${latest.slice(0, 7)}.`);
-        return;
-      }
-
-      Alert.alert(
-        latest ? `Update available: ${latest.slice(0, 7)}` : 'Latest APK available',
-        current && current !== 'dev'
-          ? `Installed build: ${current.slice(0, 7)}`
-          : 'Open the latest APK download?',
-        [
-          { text: 'Not now', style: 'cancel' },
-          {
-            text: 'Download APK',
-            onPress: () => Linking.openURL(downloadUrl).catch(() => Linking.openURL(`${REPO_URL}/releases/latest`)),
-          },
-        ]
-      );
-    } catch (e: any) {
-      Alert.alert('Update check failed', e?.message ?? 'Could not reach GitHub releases.');
-    } finally {
-      setCheckingUpdates(false);
-    }
   };
 
   return (
@@ -374,6 +295,8 @@ export default function SettingsScreen() {
             />
           ))}
         </View>
+
+        <MacroDisplayCard />
 
         <View style={styles.card}>
           <Text style={styles.cardTitle}>{t('Theme')}</Text>
@@ -574,47 +497,7 @@ export default function SettingsScreen() {
           </TouchableOpacity>
         )}
 
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>{t('About')}</Text>
-          <TouchableOpacity
-            style={styles.linkRow}
-            onPress={checkForUpdates}
-            disabled={checkingUpdates}
-          >
-            <MaterialCommunityIcons name="update" size={20} color={colors.text} />
-            <Text style={styles.linkText}>
-              {checkingUpdates ? 'Checking for updates...' : 'Check for updates'}
-            </Text>
-            <MaterialCommunityIcons name="download-outline" size={16} color={colors.subtext} />
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.linkRow}
-            onPress={() => Linking.openURL(REPO_URL).catch(() => {})}
-          >
-            <MaterialCommunityIcons name="github" size={20} color={colors.text} />
-            <Text style={styles.linkText}>GitHub - Helix</Text>
-            <MaterialCommunityIcons name="open-in-new" size={16} color={colors.subtext} />
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.linkRow}
-            onPress={() => {
-              const body = encodeURIComponent(
-                `**App version:** ${Constants.expoConfig?.version ?? '?'}\n**Platform:** ${Platform.OS}\n\n**What happened:**\n\n**Steps to reproduce:**\n`
-              );
-              Linking.openURL(`${BUG_URL}?title=${encodeURIComponent('[Bug] ')}&body=${body}`).catch(
-                () => {}
-              );
-            }}
-          >
-            <MaterialCommunityIcons name="bug-outline" size={20} color={colors.text} />
-            <Text style={styles.linkText}>{t('Report a bug')}</Text>
-            <MaterialCommunityIcons name="open-in-new" size={16} color={colors.subtext} />
-          </TouchableOpacity>
-          <Text style={styles.version}>
-            Helix v{Constants.expoConfig?.version ?? '1.0.0'}
-            {currentBuild && currentBuild !== 'dev' ? ` (${currentBuild.slice(0, 7)})` : ''}
-          </Text>
-        </View>
+        <AboutCard />
       </ScrollView>
     </KeyboardAvoidingView>
   );
@@ -956,22 +839,6 @@ const styles = StyleSheet.create({
     height: 1,
     backgroundColor: colors.border,
     marginVertical: spacing.md,
-  },
-  linkRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-    paddingVertical: spacing.sm,
-  },
-  linkText: {
-    color: colors.text,
-    fontSize: 14,
-    flex: 1,
-  },
-  version: {
-    color: colors.subtext,
-    fontSize: 11,
-    marginTop: spacing.sm,
   },
   saveBtn: {
     borderRadius: 10,

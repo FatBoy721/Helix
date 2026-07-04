@@ -20,7 +20,6 @@ import { colors, spacing } from '../../constants/theme';
 // path|modified -> thumbnail URL, null = file genuinely has no thumbnail.
 // cached at module level so scrolling doesn't re-hit /server/files/metadata
 // for every row. modified is in the key so re-sliced files bust the cache.
-// TODO: file upload from phone would be nice someday
 const thumbCache = new Map<string, string | null>();
 
 function FileThumb({ base, file }: { base: string; file: FileEntry }) {

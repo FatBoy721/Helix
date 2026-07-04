@@ -55,7 +55,7 @@ export default function SpoolLabel({ spoolId, title, material, colorHex, onClose
     }
   };
 
-  // share sheet reaches printer apps / drive / email — easiest print path
+  // The share sheet lets users send the generated label to print or file apps.
   const share = async () => {
     setBusy(true);
     try {
@@ -82,7 +82,7 @@ export default function SpoolLabel({ spoolId, title, material, colorHex, onClose
             </TouchableOpacity>
           </View>
 
-          {/* the printable label itself — white so it prints clean */}
+          {/* White label background preserves print contrast. */}
           <ViewShot ref={shotRef} options={{ format: 'png', quality: 1 }} style={styles.label}>
             <QRCode value={spoolQrValue(spoolId)} size={140} backgroundColor="#FFFFFF" />
             <View style={styles.labelText}>

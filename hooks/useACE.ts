@@ -1,12 +1,8 @@
 import { useMemo } from 'react';
 import { useMoonraker } from './useMoonraker';
 
-// actual multiACE commands, pulled from the printer's own gcode help
-// (curl http://printer:7125/printer/gcode/help and grep for ACE).
-// every forum post says ACE_LOAD_FILAMENT — that command does not exist,
-// at least not on this firmware. these do. 0-based indexes everywhere.
-// lane N feeds head N by default, run ACE_HEAD_STATUS in console to see
-// the live mapping if you've messed with it.
+// multiACE commands verified from the printer's gcode help endpoint.
+// Arguments use zero-based indexes; ACE_HEAD_STATUS reports the live mapping.
 export const ACE_MACROS = {
   load: (ace: number, lane: number) => `ACE_LOAD_HEAD HEAD=${lane} ACE=${ace} SLOT=${lane}`,
   unload: (_ace: number, lane: number) => `ACE_UNLOAD_HEAD HEAD=${lane}`,
@@ -41,12 +37,8 @@ export interface AceUnit {
   lanes: AceLane[];
 }
 
-// on this firmware there's exactly one klipper object called "ace" (the
-// multiACE controller). that object exists as soon as the module loads in
-// your printer.cfg — regardless of whether you actually have an ACE box
-// plugged in. device_count is the field that tells you if real hardware
-// answered. learned this the hard way: was reading !!raw as "connected"
-// which lied and showed a fake green dot with 0 units physically attached.
+// The "ace" Klipper object exists when the module is loaded, even if no ACE
+// unit is connected. device_count is the hardware presence signal.
 
 function parseColor(c: any): string | undefined {
   if (Array.isArray(c) && c.length >= 3) {

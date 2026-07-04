@@ -38,8 +38,8 @@ interface MoonrakerContextValue {
 
 const MoonrakerContext = createContext<MoonrakerContextValue | null>(null);
 
-// stuff we always want from moonraker. extruder1-3 because the U1 is a
-// 4-head toolchanger, gcode_move because fluidd does it so why not
+// Base objects used for dashboard state. extruder1-3 cover the U1 tool heads,
+// and gcode_move supplies position data used by Fluidd-style controls.
 const BASE_OBJECTS = [
   'print_stats',
   'heater_bed',
@@ -111,8 +111,8 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
-  // moonraker pushes status updates every ~250ms which murders RN re-renders,
-  // so batch them and flush at most every 400ms. felt laggy at 1000.
+  // Moonraker can push status updates every ~250ms. Batch UI state writes so
+  // React Native does not re-render for every websocket message.
   const flushStatus = useCallback(() => {
     if (flushTimerRef.current) return;
     flushTimerRef.current = setTimeout(() => {
@@ -199,8 +199,8 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
   const handleGcodeResponse = useCallback(
     (msg: string) => {
       addLine(msg.startsWith('!!') ? 'error' : 'response', msg);
-      // swap detection is regex-on-console-output which is admittedly jank,
-      // but multiACE doesn't emit a proper event for it. loose on purpose.
+      // multiACE does not emit a dedicated swap-complete event, so this uses
+      // broad console response matching.
       if (
         /ace/i.test(msg) &&
         /(complete|done|finished|success)/i.test(msg) &&
@@ -232,7 +232,7 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
         setObjectList(objects);
         prevKlippyRef.current = 'ready';
 
-        // webcams can change when cameras get plugged in — refresh per connect
+        // Webcams can change while the printer is running, so refresh on each connection.
         rpc('server.webcams.list')
           .then((r: any) => {
             if (gen === generationRef.current && Array.isArray(r?.webcams)) {
@@ -287,9 +287,7 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
   const scheduleReconnect = useCallback(() => {
     failCountRef.current += 1;
     const urls = getUrls();
-    // alternate LAN <-> tailscale on EVERY failure. used to be 2 strikes,
-    // but combined with the connect timeout below, alternating gets you
-    // connected in one round trip when only one of the two is reachable
+    // Alternate LAN and Tailscale after each failed connection attempt.
     if (urls.length > 1) {
       urlIndexRef.current = (urlIndexRef.current + 1) % urls.length;
     }
@@ -337,9 +335,8 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
     }
     wsRef.current = ws;
 
-    // RN's WebSocket has NO connect timeout — dialing the LAN IP from
-    // cellular just hangs for minutes instead of failing, which blocked the
-    // tailscale failover from ever running. found this the annoying way.
+    // React Native WebSocket has no connection timeout, so enforce one to keep
+    // LAN/Tailscale failover moving when a network path hangs.
     const connectTimeoutMs = isTailscaleUrl(url) ? 15000 : 7000;
     if (connectTimeoutRef.current) clearTimeout(connectTimeoutRef.current);
     connectTimeoutRef.current = setTimeout(() => {
@@ -479,8 +476,7 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
       } catch {}
       wsRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loaded, settings.primaryUrl, settings.tailscaleUrl]);
+  }, [loaded, settings.primaryUrl, settings.tailscaleUrl, connect]);
 
   const sendGcode = useCallback(
     async (script: string): Promise<boolean> => {

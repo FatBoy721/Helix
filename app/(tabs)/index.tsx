@@ -34,11 +34,10 @@ export default function Dashboard() {
   const { settings, update } = useSettings();
   const show = settings.dashboard;
 
-  // finished prints stay visible as a compact summary until dismissed —
-  // previously the full progress card just sat there at 100% forever
+  // Finished prints remain visible as a compact summary until dismissed.
   const [dismissedJob, setDismissedJob] = useState('');
 
-  // LED strip (e.g. "led cavity_led" on the U1) — toggle via SET_LED
+  // LED strip object, for example "led cavity_led" on the U1.
   const ledKey = useMemo(
     () => Object.keys(status).find((k) => /^(led|neopixel|dotstar) /.test(k)),
     [status]
@@ -140,10 +139,8 @@ export default function Dashboard() {
     return out;
   }, [printing, paused, ps.print_duration, ps.info?.current_layer, vsd.progress, slicerEstimate]);
 
-  // PARK_EXTRUDER docks the carried toolhead back in its bay = empty carriage.
-  // completely undocumented — not in gcode help, not in any wiki. found it by
-  // reading the PRINT_END macro source. G28 alone does NOT dock, verified via
-  // the camera. needs XY homed first or it errors, hence the fallback.
+  // PARK_EXTRUDER returns the carried toolhead to its bay. It requires XY to
+  // be homed first, so fall back to G28 when motion is not ready.
   const homedAxes: string = status.toolhead?.homed_axes ?? '';
   const canMove = connected && !printing && !paused;
   const doHome = () => sendGcode('G28');
@@ -319,8 +316,7 @@ export default function Dashboard() {
             onToggleLight={ledKey ? toggleLed : undefined}
             stats={cameraStats}
           />
-          {/* any extra webcams registered in moonraker (e.g. a USB cam) show up
-              here automatically — nothing to configure app-side */}
+          {/* Extra Moonraker webcams, such as USB cameras, appear automatically. */}
           {webcams
             .filter(
               (w) =>

@@ -6,6 +6,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as MediaLibrary from 'expo-media-library';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import { colors, spacing } from '../constants/theme';
+import { cacheBustUrl, cameraSnapshotFileName } from '../services/cameraSnapshot';
 
 export interface CameraStat {
   label: string;
@@ -21,14 +22,8 @@ interface Props {
   stats?: CameraStat[]; // print timing overlay, toggled via the chart button
 }
 
-// MJPEG player, take 3.
-// take 1 was <img src=stream> — froze whenever camera-streamer dropped the
-// connection and just sat there showing a stale frame forever.
-// take 2 parsed the stream manually but rendered every frame, which lagged
-// further and further behind live because the phone decodes slower than
-// ~17fps of 276KB jpegs arrive.
-// this version parses the multipart stream, only renders the NEWEST frame,
-// and a watchdog kills + reconnects the fetch if nothing arrives for 6s.
+// MJPEG streams can outpace mobile JPEG decoding, so the player keeps only the
+// newest complete frame and reconnects when frames stop arriving.
 function buildPlayerHtml(url: string, snapshotMode: boolean): string {
   return `<!DOCTYPE html><html><head>
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -90,9 +85,7 @@ async function streamLoop() {
         nb.set(buf, 0);
         nb.set(r.value, buf.length);
         buf = nb;
-        // Frame skip: extract ALL complete frames in the buffer but render
-        // only the newest — dropping stale frames keeps the view live when
-        // the phone decodes slower than frames arrive.
+        // Extract all complete frames but render only the newest one.
         var latest = null;
         for (;;) {
           var soi = findMarker(buf, 0xD8, 0);
@@ -142,6 +135,14 @@ if (SNAPSHOT) snapshotLoop(); else streamLoop();
 </body></html>`;
 }
 
+function snapshotSaveErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  if (/permission|unavailable|rejected/i.test(message)) {
+    return 'Photo saving is unavailable in this Expo runtime. Test this in a development build or installed APK.';
+  }
+  return message || 'Could not save camera snapshot.';
+}
+
 export default function CameraFeed({
   url,
   snapshotUrl,
@@ -155,9 +156,7 @@ export default function CameraFeed({
   const [showStats, setShowStats] = useState(false);
   const [savingSnapshot, setSavingSnapshot] = useState(false);
 
-  // /webcam/webrtc serves its own player page so just load it as-is. same for
-  // /screen/ — the firmware's built-in remote screen view (iframe service).
-  // btw /webcam/stream straight up 404s on PAXX, cost me an evening
+  // /webcam/webrtc and /screen/ serve their own player pages.
   const isWebrtcPage = /webrtc|\/screen\/?($|\?)/i.test(url);
   const isSnapshot = /snapshot/i.test(url);
 
@@ -196,17 +195,11 @@ export default function CameraFeed({
         return;
       }
 
-      const permission = await MediaLibrary.requestPermissionsAsync(true, ['photo']);
-      if (!permission.granted) {
-        Alert.alert('Permission needed', 'Allow photo access to save camera snapshots.');
-        return;
-      }
-
       const cacheDir = FileSystem.cacheDirectory;
       if (!cacheDir) throw new Error('No cache directory available.');
-      const fileName = `helix-camera-${new Date().toISOString().replace(/[:.]/g, '-')}.jpg`;
+      const fileName = cameraSnapshotFileName();
       const target = `${cacheDir}${fileName}`;
-      const freshUrl = snapshotUrl + (snapshotUrl.includes('?') ? '&' : '?') + `n=${Date.now()}`;
+      const freshUrl = cacheBustUrl(snapshotUrl);
       const result = await FileSystem.downloadAsync(freshUrl, target, {
         headers: { 'Cache-Control': 'no-store' },
       });
@@ -218,7 +211,7 @@ export default function CameraFeed({
       await MediaLibrary.saveToLibraryAsync(result.uri);
       Alert.alert('Saved', 'Camera snapshot saved to Photos.');
     } catch (e: any) {
-      Alert.alert('Snapshot failed', e?.message ?? 'Could not save camera snapshot.');
+      Alert.alert('Snapshot failed', snapshotSaveErrorMessage(e));
     } finally {
       if (localUri) {
         FileSystem.deleteAsync(localUri, { idempotent: true }).catch(() => {});
