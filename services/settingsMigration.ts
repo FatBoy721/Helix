@@ -16,6 +16,7 @@ export interface DashboardSections {
   estop: boolean;
   homeDock: boolean;
   controls: boolean;
+  pandaBreath: boolean;
   temps: boolean;
   camera: boolean;
   macros: boolean;
@@ -48,7 +49,7 @@ export interface Settings {
   language: string;
 }
 
-export const STORAGE_VERSION = 4;
+export const STORAGE_VERSION = 5;
 
 export const DEFAULT_SETTINGS: Settings = {
   settingsVersion: STORAGE_VERSION,
@@ -63,9 +64,10 @@ export const DEFAULT_SETTINGS: Settings = {
     estop: true,
     homeDock: true,
     controls: true,
+    pandaBreath: false,
     temps: true,
     camera: true,
-    macros: true,
+    macros: false,
   },
   macroDisplayByPrinter: {},
   notificationMode: 'local',
@@ -112,6 +114,7 @@ function normalizeDashboard(raw: unknown): DashboardSections {
     estop: booleanValue(dashboard.estop, DEFAULT_SETTINGS.dashboard.estop),
     homeDock: booleanValue(dashboard.homeDock, DEFAULT_SETTINGS.dashboard.homeDock),
     controls: booleanValue(dashboard.controls, DEFAULT_SETTINGS.dashboard.controls),
+    pandaBreath: booleanValue(dashboard.pandaBreath, DEFAULT_SETTINGS.dashboard.pandaBreath),
     temps: booleanValue(dashboard.temps, DEFAULT_SETTINGS.dashboard.temps),
     camera: booleanValue(dashboard.camera, DEFAULT_SETTINGS.dashboard.camera),
     macros: booleanValue(dashboard.macros, DEFAULT_SETTINGS.dashboard.macros),

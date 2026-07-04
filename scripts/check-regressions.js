@@ -31,6 +31,7 @@ const {
 } = require(path.join('..', 'services', 'settingsDraft.ts'));
 const {
   DEFAULT_SETTINGS,
+  STORAGE_VERSION,
   migrateSettings,
 } = require(path.join('..', 'services', 'settingsMigration.ts'));
 const {
@@ -237,8 +238,9 @@ test('settings save patch does not overwrite live-only settings', () => {
 test('settings migration seeds first-launch printer defaults', () => {
   const migrated = migrateSettings({});
 
-  assert.equal(migrated.settingsVersion, 4);
+  assert.equal(migrated.settingsVersion, STORAGE_VERSION);
   assert.equal(migrated.activePrinterId, 'p1');
+  assert.equal(migrated.dashboard.pandaBreath, false);
   assert.deepEqual(migrated.printers, [
     {
       id: 'p1',
@@ -289,6 +291,7 @@ test('settings migration preserves dashboard defaults and valid notification mod
 
   assert.equal(migrated.dashboard.macros, false);
   assert.equal(migrated.dashboard.camera, true);
+  assert.equal(migrated.dashboard.pandaBreath, false);
   assert.equal(migrated.notificationMode, 'ntfy');
 });
 

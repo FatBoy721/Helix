@@ -29,6 +29,7 @@ interface MoonrakerContextValue {
   consoleLines: ConsoleLine[];
   macros: string[];
   objectList: string[];
+  gcodeHelp: Record<string, string>;
   webcams: WebcamInfo[];
   sendGcode: (script: string) => Promise<boolean>;
   rpc: (method: string, params?: Record<string, any>) => Promise<any>;
@@ -53,7 +54,6 @@ const BASE_OBJECTS = [
   'extruder2',
   'extruder3',
   'fan',
-  'purifier',
 ];
 const MAX_CONSOLE_LINES = 500;
 const WS_OPEN = 1;
@@ -78,6 +78,7 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
   const [status, setStatus] = useState<Record<string, any>>({});
   const [consoleLines, setConsoleLines] = useState<ConsoleLine[]>([]);
   const [objectList, setObjectList] = useState<string[]>([]);
+  const [gcodeHelp, setGcodeHelp] = useState<Record<string, string>>({});
   const [webcams, setWebcams] = useState<WebcamInfo[]>([]);
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -230,7 +231,18 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
         if (gen !== generationRef.current) return;
         const objects: string[] = list?.objects ?? [];
         setObjectList(objects);
+        setGcodeHelp({});
         prevKlippyRef.current = 'ready';
+
+        rpc('printer.gcode.help')
+          .then((r: any) => {
+            if (gen === generationRef.current && r && typeof r === 'object') {
+              setGcodeHelp(r);
+            }
+          })
+          .catch(() => {
+            if (gen === generationRef.current) setGcodeHelp({});
+          });
 
         // Webcams can change while the printer is running, so refresh on each connection.
         rpc('server.webcams.list')
@@ -244,10 +256,12 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
         const subs: Record<string, null> = {};
         for (const name of BASE_OBJECTS) if (objects.includes(name)) subs[name] = null;
         for (const name of objects) {
+          if (name === 'panda_breath') subs[name] = null;
           if (/^filament_(switch|motion)_sensor /.test(name)) subs[name] = null;
           if (name === 'ace' || /^ace[\s_\d]/i.test(name)) subs[name] = null;
           if (/^(led|neopixel|dotstar) /.test(name)) subs[name] = null;
           if (/^fan_generic /.test(name)) subs[name] = null;
+          if (/^heater_generic /.test(name)) subs[name] = null;
         }
 
         const res = await rpc('printer.objects.subscribe', { objects: subs });
@@ -521,13 +535,14 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
       consoleLines,
       macros,
       objectList,
+      gcodeHelp,
       webcams,
       sendGcode,
       rpc,
       reconnect,
       clearConsole,
     }),
-    [connection, klippyState, activeUrl, status, consoleLines, macros, objectList, webcams, sendGcode, rpc, reconnect, clearConsole]
+    [connection, klippyState, activeUrl, status, consoleLines, macros, objectList, gcodeHelp, webcams, sendGcode, rpc, reconnect, clearConsole]
   );
 
   return <MoonrakerContext.Provider value={value}>{children}</MoonrakerContext.Provider>;

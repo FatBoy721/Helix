@@ -50,6 +50,7 @@ const SECTION_LABELS: { key: keyof DashboardSections; label: string }[] = [
   { key: 'estop', label: 'Emergency stop' },
   { key: 'homeDock', label: 'Home & Dock' },
   { key: 'controls', label: 'Controls' },
+  { key: 'pandaBreath', label: 'Panda Breath controls' },
   { key: 'temps', label: 'Temperatures' },
   { key: 'camera', label: 'Camera' },
   { key: 'macros', label: 'Macros' },
@@ -150,6 +151,16 @@ export default function SettingsScreen() {
   };
 
   const randomizeNtfyTopic = () => set({ ntfyTopic: generateNtfyTopic() });
+
+  const updateDashboardSection = (key: keyof DashboardSections, value: boolean) => {
+    update({
+      dashboard: {
+        ...settings.dashboard,
+        controls: key === 'pandaBreath' && value ? true : settings.dashboard.controls,
+        [key]: value,
+      },
+    });
+  };
 
   const testNotifications = async () => {
     if (draft.notificationMode === 'off') {
@@ -291,7 +302,7 @@ export default function SettingsScreen() {
               key={key}
               label={t(label)}
               value={settings.dashboard[key]}
-              onChange={(v) => update({ dashboard: { ...settings.dashboard, [key]: v } })}
+              onChange={(v) => updateDashboardSection(key, v)}
             />
           ))}
         </View>

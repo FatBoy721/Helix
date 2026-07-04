@@ -29,7 +29,7 @@ function stateColor(state: string): string {
 }
 
 export default function Dashboard() {
-  const { status, connection, klippyState, activeUrl, rpc, reconnect, sendGcode, webcams } =
+  const { status, connection, klippyState, activeUrl, rpc, reconnect, sendGcode, gcodeHelp, webcams } =
     useMoonraker();
   const { settings, update } = useSettings();
   const show = settings.dashboard;
@@ -278,7 +278,13 @@ export default function Dashboard() {
       {show.controls && (
         <>
           <Text style={styles.sectionTitle}>{t('Controls')}</Text>
-          <ControlsPanel status={status} sendGcode={sendGcode} disabled={!connected} />
+          <ControlsPanel
+            status={status}
+            sendGcode={sendGcode}
+            disabled={!connected}
+            showPandaBreath={show.pandaBreath}
+            gcodeHelp={gcodeHelp}
+          />
         </>
       )}
 

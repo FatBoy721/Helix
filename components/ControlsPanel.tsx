@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Alert, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { t } from '../services/i18n';
 import { colors, spacing } from '../constants/theme';
 
@@ -7,18 +7,84 @@ interface Props {
   status: Record<string, any>;
   sendGcode: (script: string) => Promise<boolean>;
   disabled?: boolean;
+  showPandaBreath?: boolean;
+  gcodeHelp?: Record<string, string>;
 }
 
 const SPEED_STEPS = [0, 25, 50, 75, 100];
-
-// purifier = the chamber air filter ("panda breath"). SET_PURIFIER_MODE is
-// extras-registered so it doesn't show in gcode help, but it's real —
-// PRINT_END calls it with MODE=0.
-const PURIFIER_MODES = [
-  { mode: 0, label: 'Off' },
-  { mode: 1, label: 'On' },
-  { mode: 2, label: 'Max' },
+const GENERIC_HEATER_PREFIX = 'heater_generic ';
+const PANDA_BREATH_MAX_TEMP = 60;
+const PANDA_BREATH_NAME_RE = /(panda|breath|chamber)/i;
+const PANDA_AUTO_FILTER_TEMP = 30;
+const PANDA_AUTO_HOTBED_TEMP = 80;
+const PANDA_DRY_PRESETS = [
+  { label: 'PLA 55C 12h', temp: 55, hours: 12 },
+  { label: 'PETG 60C 12h', temp: 60, hours: 12 },
 ];
+
+function genericHeaterName(objectKey: string): string {
+  return objectKey.startsWith(GENERIC_HEATER_PREFIX)
+    ? objectKey.slice(GENERIC_HEATER_PREFIX.length)
+    : objectKey;
+}
+
+function findPandaBreathHeater(status: Record<string, any>): Record<string, any> | null {
+  const heaterKeys = Object.keys(status).filter(
+    (key) =>
+      key.startsWith(GENERIC_HEATER_PREFIX) &&
+      typeof status[key]?.temperature === 'number'
+  );
+  const namedKey = heaterKeys.find((key) => PANDA_BREATH_NAME_RE.test(genericHeaterName(key)));
+  const objectKey = namedKey ?? (heaterKeys.length === 1 ? heaterKeys[0] : '');
+  if (!objectKey) return null;
+
+  return status[objectKey] ?? {};
+}
+
+function hasGcode(gcodeHelp: Record<string, string> | undefined, command: string): boolean {
+  return Object.prototype.hasOwnProperty.call(gcodeHelp ?? {}, command);
+}
+
+function dryCommand(gcodeHelp: Record<string, string> | undefined): 'start' | 'run' | '' {
+  if (hasGcode(gcodeHelp, 'PANDA_BREATH_DRY_START')) return 'start';
+  if (hasGcode(gcodeHelp, 'PANDA_BREATH_DRY_RUN')) return 'run';
+  return '';
+}
+
+function clampTemp(value: string, max: number): number {
+  return Math.max(0, Math.min(max, parseInt(value, 10) || 0));
+}
+
+function dryTimeLabel(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return '';
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.ceil((seconds % 3600) / 60);
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${Math.max(1, minutes)}m`;
+}
+
+function pandaModeLabel(
+  pandaState: Record<string, any>,
+  heater: Record<string, any> | null,
+  target: number
+): string {
+  if (pandaState.connected === false) return t('offline');
+
+  const mode = Number(pandaState.work_mode);
+  const remaining = Number(pandaState.remaining_seconds);
+  const drying =
+    pandaState.filament_drying_active === true ||
+    (Number.isFinite(remaining) && remaining > 0) ||
+    mode === 3;
+  if (drying) {
+    const remainingText = dryTimeLabel(remaining);
+    return remainingText ? `${t('Dry')} ${remainingText}` : t('Dry');
+  }
+
+  if (pandaState.auto_enabled === true || mode === 1) return t('Auto');
+  if (target > 0 || pandaState.work_on === true) return t('Manual');
+  return heater ? t('Idle') : t('not detected');
+}
 
 function FanRow({
   label,
@@ -59,14 +125,63 @@ function FanRow({
   );
 }
 
-export default function ControlsPanel({ status, sendGcode, disabled }: Props) {
+export default function ControlsPanel({
+  status,
+  sendGcode,
+  disabled,
+  showPandaBreath,
+  gcodeHelp,
+}: Props) {
   const [bedTarget, setBedTarget] = useState('60');
+  const [pandaTarget, setPandaTarget] = useState('45');
 
   const bed = status.heater_bed ?? {};
+  const pandaBreath = showPandaBreath ? findPandaBreathHeater(status) : null;
+  const pandaState = showPandaBreath ? status.panda_breath ?? {} : {};
+  const pandaTemp =
+    typeof pandaBreath?.temperature === 'number' ? pandaBreath.temperature : 0;
+  const pandaActiveTarget =
+    typeof pandaBreath?.target === 'number' ? pandaBreath.target : 0;
+  const supportsPandaAuto =
+    hasGcode(gcodeHelp, 'PANDA_BREATH_AUTO') || typeof pandaState.auto_target === 'number';
+  const pandaDryCommand = dryCommand(gcodeHelp);
+  const pandaDryActive =
+    pandaState.filament_drying_active === true ||
+    Number(pandaState.remaining_seconds) > 0 ||
+    Number(pandaState.work_mode) === 3;
+  const pandaMode = pandaModeLabel(pandaState, pandaBreath, pandaActiveTarget);
   const partFan = status.fan ?? {};
   const cavityFan = status['fan_generic cavity_fan'] ?? null;
-  const purifier = status.purifier ?? null;
-  const purifierMode: number = typeof purifier?.mode === 'number' ? purifier.mode : -1;
+
+  const startPandaDry = (preset: (typeof PANDA_DRY_PRESETS)[number]) => {
+    if (pandaDryCommand === 'start') {
+      sendGcode(`PANDA_BREATH_DRY_START TEMP=${preset.temp} HOURS=${preset.hours}`);
+    } else if (pandaDryCommand === 'run') {
+      sendGcode(`PANDA_BREATH_DRY_RUN TARGET=${preset.temp} DURATION=${preset.hours * 60}`);
+    }
+  };
+
+  const choosePandaDryPreset = () => {
+    Alert.alert(t('Dry filament'), t('Choose a drying preset.'), [
+      { text: t('Cancel'), style: 'cancel' },
+      ...PANDA_DRY_PRESETS.map((preset) => ({
+        text: preset.label,
+        onPress: () => startPandaDry(preset),
+      })),
+    ]);
+  };
+
+  const stopPandaBreath = () => {
+    const lines: string[] = [];
+    if (pandaDryActive && hasGcode(gcodeHelp, 'PANDA_BREATH_DRY_STOP')) {
+      lines.push('PANDA_BREATH_DRY_STOP');
+    }
+    if (supportsPandaAuto) {
+      lines.push('PANDA_BREATH_AUTO ENABLE=0');
+    }
+    lines.push('M141 S0');
+    sendGcode(lines.join('\n'));
+  };
 
   return (
     <View style={styles.card}>
@@ -75,8 +190,8 @@ export default function ControlsPanel({ status, sendGcode, disabled }: Props) {
         <Text style={styles.rowLabel}>
           {t('Bed')}{' '}
           <Text style={styles.rowValue}>
-            {(bed.temperature ?? 0).toFixed(0)}°C
-            {bed.target > 0 ? ` → ${bed.target.toFixed(0)}°C` : ''}
+            {`${(bed.temperature ?? 0).toFixed(0)}\u00B0C`}
+            {bed.target > 0 ? ` \u2192 ${bed.target.toFixed(0)}\u00B0C` : ''}
           </Text>
         </Text>
         <View style={styles.chips}>
@@ -107,6 +222,99 @@ export default function ControlsPanel({ status, sendGcode, disabled }: Props) {
         </View>
       </View>
 
+      {showPandaBreath && (
+        <View style={styles.row}>
+          <Text style={styles.rowLabel}>
+            {t('Panda Breath')}{' '}
+            <Text style={styles.rowValue}>
+              {pandaBreath
+                ? `${pandaTemp.toFixed(0)}\u00B0C${
+                    pandaActiveTarget > 0
+                      ? ` \u2192 ${pandaActiveTarget.toFixed(0)}\u00B0C`
+                      : ''
+                  } \u00B7 ${pandaMode}`
+                : t('not detected')}
+            </Text>
+          </Text>
+          {pandaBreath && (
+            <View style={styles.chips}>
+              <TextInput
+                style={styles.tempInput}
+                value={pandaTarget}
+                onChangeText={setPandaTarget}
+                keyboardType="numeric"
+                placeholderTextColor={colors.subtext}
+              />
+              <TouchableOpacity
+                style={[
+                  styles.chip,
+                  { backgroundColor: colors.primary },
+                  disabled && styles.disabled,
+                ]}
+                disabled={disabled}
+                onPress={() => {
+                  const tgt = clampTemp(pandaTarget, PANDA_BREATH_MAX_TEMP);
+                  sendGcode(`M141 S${tgt}`);
+                }}
+              >
+                <Text style={[styles.chipText, { color: '#fff' }]}>{t('Set')}</Text>
+              </TouchableOpacity>
+              {supportsPandaAuto && (
+                <TouchableOpacity
+                  style={[
+                    styles.chip,
+                    (pandaState.auto_enabled === true || Number(pandaState.work_mode) === 1) && {
+                      backgroundColor: colors.primary,
+                    },
+                    disabled && styles.disabled,
+                  ]}
+                  disabled={disabled}
+                  onPress={() => {
+                    const tgt = clampTemp(pandaTarget, PANDA_BREATH_MAX_TEMP);
+                    sendGcode(
+                      `PANDA_BREATH_AUTO ENABLE=1 TARGET=${tgt} FILTERTEMP=${PANDA_AUTO_FILTER_TEMP} HOTBEDTEMP=${PANDA_AUTO_HOTBED_TEMP}`
+                    );
+                  }}
+                >
+                  <Text
+                    style={[
+                      styles.chipText,
+                      (pandaState.auto_enabled === true || Number(pandaState.work_mode) === 1) && {
+                        color: '#fff',
+                      },
+                    ]}
+                  >
+                    {t('Auto')}
+                  </Text>
+                </TouchableOpacity>
+              )}
+              {pandaDryCommand && (
+                <TouchableOpacity
+                  style={[
+                    styles.chip,
+                    pandaDryActive && { backgroundColor: colors.primary },
+                    disabled && styles.disabled,
+                  ]}
+                  disabled={disabled}
+                  onPress={choosePandaDryPreset}
+                >
+                  <Text style={[styles.chipText, pandaDryActive && { color: '#fff' }]}>
+                    {t('Dry')}
+                  </Text>
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity
+                style={[styles.chip, disabled && styles.disabled]}
+                disabled={disabled}
+                onPress={stopPandaBreath}
+              >
+                <Text style={styles.chipText}>{pandaDryActive ? t('Stop') : t('Off')}</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+        </View>
+      )}
+
       {/* part cooling fan on the active head */}
       <FanRow
         label={t('Part fan')}
@@ -125,37 +333,6 @@ export default function ControlsPanel({ status, sendGcode, disabled }: Props) {
         />
       )}
 
-      {/* purifier / "panda breath" */}
-      {purifier && (
-        <View style={styles.row}>
-          <Text style={styles.rowLabel}>
-            {t('Purifier')}{' '}
-            <Text style={styles.rowValue}>
-              {purifier.exhaust_fan?.speed > 0 || purifier.inner_fan?.speed > 0
-                ? `${Math.round((purifier.inner_fan?.speed ?? 0) * 100)}% / ${Math.round((purifier.exhaust_fan?.speed ?? 0) * 100)}%`
-                : t('off')}
-            </Text>
-          </Text>
-          <View style={styles.chips}>
-            {PURIFIER_MODES.map((m) => (
-              <TouchableOpacity
-                key={m.mode}
-                style={[
-                  styles.chip,
-                  purifierMode === m.mode && { backgroundColor: colors.primary },
-                  disabled && styles.disabled,
-                ]}
-                disabled={disabled}
-                onPress={() => sendGcode(`SET_PURIFIER_MODE MODE=${m.mode}`)}
-              >
-                <Text style={[styles.chipText, purifierMode === m.mode && { color: '#fff' }]}>
-                  {t(m.label)}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-        </View>
-      )}
     </View>
   );
 }
@@ -184,6 +361,7 @@ const styles = StyleSheet.create({
   },
   chips: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 6,
     alignItems: 'center',
   },
