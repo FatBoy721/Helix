@@ -178,22 +178,31 @@ export default function Dashboard() {
   const [pickerStatuses, setPickerStatuses] = useState<Record<string, PickerPrinterStatus>>({});
   const [thumb, setThumb] = useState<string | null>(null);
   const [subtitle, setSubtitle] = useState('');
+  const [ledOverride, setLedOverride] = useState<{ key: string; on: boolean } | null>(null);
 
   const ledKey = useMemo(
     () => Object.keys(status).find((k) => /^(led|neopixel|dotstar) /.test(k)),
     [status]
   );
   const ledColors: number[][] = status[ledKey ?? '']?.color_data ?? [];
-  const ledOn = ledColors.some((c) => Array.isArray(c) && c.some((v) => v > 0));
+  const reportedLedOn = ledColors.some((c) => Array.isArray(c) && c.some((v) => v > 0));
+  const activeLedOverride = ledOverride && ledOverride.key === ledKey ? ledOverride : null;
+  const ledOn = activeLedOverride ? activeLedOverride.on : reportedLedOn;
+  useEffect(() => {
+    const pendingLed = ledOverride;
+    if (!pendingLed || pendingLed.key !== ledKey || !ledColors.length) return;
+    if (reportedLedOn === pendingLed.on) setLedOverride(null);
+  }, [ledColors.length, ledKey, ledOverride, reportedLedOn]);
   const toggleLed = () => {
     if (!ledKey) return;
-    const name = ledKey.split(' ')[1];
+    const name = ledKey.replace(/^(led|neopixel|dotstar)\s+/, '');
     const hasWhite = (ledColors[0]?.length ?? 0) >= 4;
     const v = ledOn ? 0 : 1;
+    setLedOverride({ key: ledKey, on: !ledOn });
     sendGcode(
       hasWhite
-        ? `SET_LED LED=${name} RED=0 GREEN=0 BLUE=0 WHITE=${v}`
-        : `SET_LED LED=${name} RED=${v} GREEN=${v} BLUE=${v}`
+        ? `SET_LED LED=${name} RED=0 GREEN=0 BLUE=0 WHITE=${v} SYNC=0`
+        : `SET_LED LED=${name} RED=${v} GREEN=${v} BLUE=${v} SYNC=0`
     );
   };
 
