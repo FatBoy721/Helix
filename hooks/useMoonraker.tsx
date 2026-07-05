@@ -331,6 +331,7 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
     const mode = settingsRef.current.connectionMode;
 
     // tailscale-only means tailscale-only!!!!!!!!!!!
+    // crabcore
     if (mode === 'tailscale') {
       if (tailscale) urls.push(tailscale);
       return urls;

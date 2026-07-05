@@ -1,6 +1,7 @@
 import React, { useEffect } from 'react';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { DarkTheme, ThemeProvider } from '@react-navigation/native';
 import { SettingsProvider, useSettings } from '../hooks/useSettings';
 import { MoonrakerProvider } from '../hooks/useMoonraker';
@@ -26,9 +27,11 @@ export default function RootLayout() {
   }, []);
 
   return (
-    <SettingsProvider>
-      <AppShell />
-    </SettingsProvider>
+    <SafeAreaProvider>
+      <SettingsProvider>
+        <AppShell />
+      </SettingsProvider>
+    </SafeAreaProvider>
   );
 }
 

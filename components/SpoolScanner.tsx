@@ -12,6 +12,7 @@ interface Props {
 
 // accepts Spoolman's own label format plus the obvious fallbacks:
 //   web+spoolman:s-42   |   https://.../spool/42   |   42
+// crabcore
 export function parseSpoolQr(data: string): number | null {
   const s = data.trim();
   let m = s.match(/^web\+spoolman:s-(\d+)$/i);

@@ -20,10 +20,14 @@ interface Props {
   lightOn?: boolean;
   onToggleLight?: () => void;
   stats?: CameraStat[]; // print timing overlay, toggled via the chart button
+  // hero framing: let the parent own the border/rounding (e.g. full-bleed)
+  chromeless?: boolean;
+  radius?: number;
 }
 
 // MJPEG streams can outpace mobile JPEG decoding, so the player keeps only the
 // newest complete frame and reconnects when frames stop arriving.
+// crabcore
 function buildPlayerHtml(url: string, snapshotMode: boolean): string {
   return `<!DOCTYPE html><html><head>
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -150,7 +154,13 @@ export default function CameraFeed({
   lightOn,
   onToggleLight,
   stats,
+  chromeless,
+  radius,
 }: Props) {
+  const frame = [
+    chromeless && styles.chromeless,
+    radius != null && { borderRadius: radius },
+  ];
   const [nonce, setNonce] = useState(0);
   const [fullscreen, setFullscreen] = useState(false);
   const [showStats, setShowStats] = useState(false);
@@ -210,7 +220,7 @@ export default function CameraFeed({
 
       await MediaLibrary.saveToLibraryAsync(result.uri);
       Alert.alert('Saved', 'Camera snapshot saved to Photos.');
-    } catch (e: any) {
+    } catch (e: unknown) {
       Alert.alert('Snapshot failed', snapshotSaveErrorMessage(e));
     } finally {
       if (localUri) {
@@ -222,7 +232,7 @@ export default function CameraFeed({
 
   if (!url.trim()) {
     return (
-      <View style={[styles.card, { height }, styles.center]}>
+      <View style={[styles.card, { height }, styles.center, ...frame]}>
         <Text style={styles.placeholder}>No camera URL set</Text>
       </View>
     );
@@ -301,7 +311,7 @@ export default function CameraFeed({
 
   return (
     <>
-      <View style={[styles.card, { height }]}>
+      <View style={[styles.card, { height }, ...frame]}>
         {!fullscreen && feed}
         {!fullscreen && statsPanel}
         {!fullscreen && controls}
@@ -327,10 +337,13 @@ export default function CameraFeed({
 const styles = StyleSheet.create({
   card: {
     backgroundColor: '#000',
-    borderRadius: 10,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: colors.border,
     overflow: 'hidden',
+  },
+  chromeless: {
+    borderWidth: 0,
   },
   center: {
     alignItems: 'center',
@@ -359,7 +372,7 @@ const styles = StyleSheet.create({
   },
   ctrlBtn: {
     backgroundColor: 'rgba(30,30,30,0.8)',
-    borderRadius: 16,
+    borderRadius: 8,
     width: 34,
     height: 34,
     alignItems: 'center',

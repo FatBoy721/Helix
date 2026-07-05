@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { WebView } from 'react-native-webview';
-import { colors } from '../constants/theme';
+import { colors, radius, shadow } from '../constants/theme';
 
 interface Props {
   matrix: number[][];
@@ -23,7 +23,7 @@ function buildHtml(matrix: number[][], xRange: [number, number], yRange: [number
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
 <style>
-  html,body{margin:0;padding:0;background:#1e1e1e;height:100%;overflow:hidden;touch-action:none;}
+  html,body{margin:0;padding:0;background:${colors.card};height:100%;overflow:hidden;touch-action:none;}
   canvas{display:block;width:100%;height:100%;}
 </style>
 </head>
@@ -45,6 +45,7 @@ var DATA = ${data};
   // --- Catmull-Rom upsample: 5x5 probe grid -> ~33x33 smooth surface ---
   // raw grid looked like minecraft. spline passes exactly through the real
   // probe points so it's not lying to you, just interpolating between them
+  // crabcore
   function upsample(m, f) {
     var rows = m.length, cols = m[0].length;
     if (rows < 2 || cols < 2 || f <= 1) return m;
@@ -133,7 +134,7 @@ var DATA = ${data};
       canvas.height = H * dpr;
     }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.fillStyle = '#1e1e1e';
+    ctx.fillStyle = '${colors.card}';
     ctx.fillRect(0, 0, W, H);
 
     var scale = Math.min(W, H) * 0.33 * zoom;
@@ -394,10 +395,11 @@ export default function BedMesh3D({
 const styles = StyleSheet.create({
   card: {
     backgroundColor: colors.card,
-    borderRadius: 10,
+    borderRadius: radius.lg,
     borderWidth: 1,
     borderColor: colors.border,
     overflow: 'hidden',
+    ...shadow.card,
   },
   webview: {
     flex: 1,

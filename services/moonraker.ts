@@ -1,4 +1,5 @@
 // Moonraker REST helpers. WebSocket lives in hooks/useMoonraker.tsx.
+// crabcore
 
 export function normalizeBaseUrl(input: string): string {
   let url = (input || '').trim();
@@ -32,6 +33,52 @@ export function isTailscaleUrl(input: string): boolean {
   } catch {
     return /\b100\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/.test(base) || /\.ts\.net\b/i.test(base);
   }
+}
+
+export function printerConnectionUrl(printer: {
+  url?: string;
+  tailscaleUrl?: string;
+  connectionMode?: string;
+}): string {
+  const lan = normalizeMoonrakerUrl(printer.url || '');
+  const tailscale = normalizeMoonrakerUrl(printer.tailscaleUrl || '');
+
+  if (printer.connectionMode === 'tailscale') return tailscale;
+  if (printer.connectionMode === 'lan') return lan;
+  return lan || tailscale;
+}
+
+export type PrinterConnectionValidationError = 'missing-printer-url' | 'missing-tailscale-url';
+
+export function validatePrinterConnectionTarget(
+  connectionMode: string,
+  url?: string,
+  tailscaleUrl?: string
+): PrinterConnectionValidationError | null {
+  const lan = (url || '').trim();
+  const tailscale = (tailscaleUrl || '').trim();
+
+  if (connectionMode === 'tailscale' && !tailscale) return 'missing-tailscale-url';
+  if (connectionMode === 'lan' && !lan) return 'missing-printer-url';
+  if (connectionMode === 'auto' && !lan && !tailscale) return 'missing-printer-url';
+  return null;
+}
+
+export interface MoonrakerQueryResponse<TStatus = Record<string, unknown>> {
+  status?: TStatus;
+  eventtime?: number;
+}
+
+export interface MoonrakerServerConfig {
+  spoolman?: {
+    server?: string;
+  };
+  [section: string]: unknown;
+}
+
+export interface SpoolmanProxyError {
+  message?: string;
+  [key: string]: unknown;
 }
 
 export function wsUrl(baseUrl: string): string {
@@ -210,7 +257,7 @@ export const api = {
   metadata: (base: string, filename: string) =>
     request(base, `/server/files/metadata?filename=${encodeURIComponent(filename)}`),
 
-  serverConfig: (base: string) => request<{ config: any }>(base, '/server/config'),
+  serverConfig: (base: string) => request<{ config?: MoonrakerServerConfig }>(base, '/server/config'),
 
   spoolmanStatus: (base: string) => request(base, '/server/spoolman/status'),
 
@@ -231,9 +278,9 @@ export const api = {
     base: string,
     method: string,
     path: string,
-    opts?: { query?: string; body?: any }
+    opts?: { query?: string; body?: unknown }
   ) =>
-    request<{ response: any; error: any }>(base, '/server/spoolman/proxy', {
+    request<{ response?: unknown; error?: SpoolmanProxyError | null }>(base, '/server/spoolman/proxy', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -245,6 +292,12 @@ export const api = {
       }),
     }),
 
-  queryObjects: (base: string, objects: string[]) =>
-    request(base, `/printer/objects/query?${objects.map((o) => encodeURIComponent(o)).join('&')}`),
+  queryObjects: <TStatus = Record<string, unknown>>(
+    base: string,
+    objects: string[]
+  ) =>
+    request<MoonrakerQueryResponse<TStatus>>(
+      base,
+      `/printer/objects/query?${objects.map((o) => encodeURIComponent(o)).join('&')}`
+    ),
 };

@@ -3,6 +3,7 @@ import { useMoonraker } from './useMoonraker';
 
 // multiACE commands verified from the printer's gcode help endpoint.
 // Arguments use zero-based indexes; ACE_HEAD_STATUS reports the live mapping.
+// crabcore
 export const ACE_MACROS = {
   load: (ace: number, lane: number) => `ACE_LOAD_HEAD HEAD=${lane} ACE=${ace} SLOT=${lane}`,
   unload: (_ace: number, lane: number) => `ACE_UNLOAD_HEAD HEAD=${lane}`,

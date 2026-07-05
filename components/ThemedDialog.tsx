@@ -18,6 +18,7 @@ interface Props {
   title: string;
   message?: string;
   icon?: IconName;
+  placement?: 'bottom' | 'center';
   onClose: () => void;
   actions: DialogAction[];
 }
@@ -37,13 +38,15 @@ export default function ThemedDialog({
   title,
   message,
   icon,
+  placement = 'bottom',
   onClose,
   actions,
 }: Props) {
+  const centered = placement === 'center';
   return (
-    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
-      <View style={styles.wrap}>
-        <View style={styles.card}>
+    <Modal visible={visible} animationType={centered ? 'fade' : 'slide'} transparent onRequestClose={onClose}>
+      <View style={[styles.wrap, centered && styles.wrapCenter]}>
+        <View style={[styles.card, centered && styles.cardCenter]}>
           <View style={styles.header}>
             <View style={styles.titleRow}>
               {icon ? (
@@ -98,11 +101,23 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.6)',
     justifyContent: 'flex-end',
   },
+  wrapCenter: {
+    justifyContent: 'center',
+    padding: spacing.lg,
+  },
   card: {
     backgroundColor: colors.bg,
     borderTopLeftRadius: 16,
     borderTopRightRadius: 16,
     padding: spacing.lg,
+  },
+  cardCenter: {
+    width: '100%',
+    maxWidth: 380,
+    alignSelf: 'center',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: colors.border,
   },
   header: {
     flexDirection: 'row',

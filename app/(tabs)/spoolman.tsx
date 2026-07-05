@@ -73,6 +73,7 @@ interface ExternalFilament {
 }
 
 // Spoolman's community catalog is large and stable enough to cache per session.
+// crabcore
 let catalogCache: ExternalFilament[] | null = null;
 
 // Typical densities in g/cm3. Material selection pre-fills the value, and users

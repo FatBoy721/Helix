@@ -55,9 +55,11 @@ const {
   isTailscaleUrl,
   normalizeBaseUrl,
   normalizeMoonrakerUrl,
+  printerConnectionUrl,
   resolveCameraUrl,
   resolveSnapshotUrl,
   thumbnailUrl,
+  validatePrinterConnectionTarget,
   wsUrl,
 } = require(path.join('..', 'services', 'moonraker.ts'));
 
@@ -345,6 +347,32 @@ test('settings migration falls back to first printer when active ID is invalid',
   assert.equal(migrated.connectionMode, 'auto');
 });
 
+test('settings migration preserves Tailscale-only printer without LAN URL', () => {
+  const migrated = migrateSettings({
+    activePrinterId: 'p1',
+    primaryUrl: '',
+    tailscaleUrl: '100.115.155.101',
+    connectionMode: 'tailscale',
+    printers: [
+      {
+        id: 'p1',
+        name: 'Remote',
+        url: '',
+        tailscaleUrl: '100.115.155.101',
+        cameraUrl: '/webcam/webrtc',
+        connectionMode: 'tailscale',
+      },
+    ],
+  });
+
+  assert.equal(migrated.activePrinterId, 'p1');
+  assert.equal(migrated.primaryUrl, '');
+  assert.equal(migrated.tailscaleUrl, 'http://100.115.155.101:7125');
+  assert.equal(migrated.printers[0].url, '');
+  assert.equal(migrated.printers[0].tailscaleUrl, 'http://100.115.155.101:7125');
+  assert.equal(migrated.connectionMode, 'tailscale');
+});
+
 test('settings migration preserves active printer using the old prefilled default URL', () => {
   const migrated = migrateSettings({
     activePrinterId: 'p1',
@@ -445,6 +473,38 @@ test('detects Tailscale hosts and IPs', () => {
   assert.equal(isTailscaleUrl('http://100.115.155.101:7125'), true);
   assert.equal(isTailscaleUrl('printer.tailnet.ts.net'), true);
   assert.equal(isTailscaleUrl('http://192.168.1.17:7125'), false);
+});
+
+test('chooses visible printer URL from connection mode', () => {
+  const printer = {
+    url: 'http://192.168.1.17:7125',
+    tailscaleUrl: 'http://100.115.155.101:7125',
+  };
+
+  assert.equal(
+    printerConnectionUrl({ ...printer, connectionMode: 'lan' }),
+    'http://192.168.1.17:7125'
+  );
+  assert.equal(
+    printerConnectionUrl({ ...printer, connectionMode: 'tailscale' }),
+    'http://100.115.155.101:7125'
+  );
+  assert.equal(
+    printerConnectionUrl({ url: '', tailscaleUrl: '100.115.155.101', connectionMode: 'tailscale' }),
+    'http://100.115.155.101:7125'
+  );
+  assert.equal(
+    printerConnectionUrl({ url: '192.168.1.17', tailscaleUrl: '100.115.155.101', connectionMode: 'auto' }),
+    'http://192.168.1.17:7125'
+  );
+});
+
+test('validates required URLs for each printer connection mode', () => {
+  assert.equal(validatePrinterConnectionTarget('lan', '', ''), 'missing-printer-url');
+  assert.equal(validatePrinterConnectionTarget('tailscale', '', ''), 'missing-tailscale-url');
+  assert.equal(validatePrinterConnectionTarget('tailscale', '', 'http://100.115.155.101:7125'), null);
+  assert.equal(validatePrinterConnectionTarget('auto', '', ''), 'missing-printer-url');
+  assert.equal(validatePrinterConnectionTarget('auto', '', 'http://100.115.155.101:7125'), null);
 });
 
 test('builds websocket URL from active Moonraker URL', () => {

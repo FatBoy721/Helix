@@ -31,6 +31,7 @@ interface Props {
 
 // bottom-sheet picker. RN has no styled native dropdown and the chip walls
 // were getting out of hand once the lists grew past ~8 entries.
+// crabcore
 export default function Dropdown({
   label,
   placeholder,

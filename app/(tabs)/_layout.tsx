@@ -14,28 +14,47 @@ function tabIcon(name: IconName) {
 }
 
 export default function TabLayout() {
-  // subscribing to settings re-renders tabs on accent/language change
   useSettings();
 
   return (
     <Tabs
       screenOptions={{
-        headerStyle: { backgroundColor: colors.card },
+        headerStyle: { backgroundColor: colors.bg },
+        headerShadowVisible: false,
         headerTintColor: colors.text,
-        headerTitleStyle: { fontWeight: '600' },
-        tabBarStyle: { backgroundColor: colors.card, borderTopColor: colors.border },
+        headerTitleStyle: { fontWeight: '800' },
+        tabBarHideOnKeyboard: true,
+        tabBarStyle: {
+          backgroundColor: colors.card,
+          borderTopWidth: 1,
+          borderTopColor: colors.border,
+          height: 66,
+          paddingTop: 5,
+          paddingBottom: 7,
+          shadowColor: '#000',
+          shadowOpacity: 0.18,
+          shadowRadius: 10,
+          shadowOffset: { width: 0, height: -3 },
+          elevation: 10,
+        },
         tabBarActiveTintColor: colors.primary,
         tabBarInactiveTintColor: colors.subtext,
-        tabBarLabelStyle: { fontSize: 9 },
+        tabBarLabelStyle: { fontSize: 9, fontWeight: '700', marginTop: -2 },
+        tabBarItemStyle: { paddingVertical: 0 },
       }}
     >
       <Tabs.Screen
         name="index"
-        options={{ title: 'Helix', tabBarLabel: t('Home'), tabBarIcon: tabIcon('view-dashboard') }}
+        options={{
+          title: 'Helix',
+          headerShown: false,
+          tabBarLabel: t('Home'),
+          tabBarIcon: tabIcon('home-variant'),
+        }}
       />
       <Tabs.Screen
         name="mesh"
-        options={{ title: t('Bed Mesh'), tabBarLabel: t('Mesh'), tabBarIcon: tabIcon('grid') }}
+        options={{ title: t('Bed Mesh'), headerShown: false, tabBarLabel: t('Mesh'), tabBarIcon: tabIcon('grid') }}
       />
       <Tabs.Screen
         name="spoolman"

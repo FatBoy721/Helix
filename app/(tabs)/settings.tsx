@@ -23,6 +23,7 @@ import {
 import { useMoonraker } from '../../hooks/useMoonraker';
 import AboutCard from '../../components/settings/AboutCard';
 import MacroDisplayCard from '../../components/settings/MacroDisplayCard';
+import ThemedDialog from '../../components/ThemedDialog';
 import { buildSettingsSavePatch, hasDraftChanges } from '../../services/settingsDraft';
 import { generateNtfyTopic, notifyLocal, sendNtfy } from '../../services/notifications';
 import { LANGUAGES, t } from '../../services/i18n';
@@ -31,9 +32,12 @@ import {
   api,
   normalizeBaseUrl,
   normalizeMoonrakerUrl,
+  printerConnectionUrl,
   restartMoonraker,
   uploadConfigFile,
+  validatePrinterConnectionTarget,
 } from '../../services/moonraker';
+import type { PrinterConnectionValidationError } from '../../services/moonraker';
 
 const ACCENTS = [
   { name: 'Fluidd Blue', hex: '#2196f3' },
@@ -78,6 +82,18 @@ const CONNECTION_MODES: {
   { value: 'tailscale', label: 'Tailscale only', icon: 'vpn' },
 ];
 
+function alertPrinterConnectionError(error: PrinterConnectionValidationError | null): boolean {
+  if (!error) return false;
+
+  if (error === 'missing-tailscale-url') {
+    Alert.alert(t('Missing Tailscale URL'), t('Tailscale-only mode needs a Tailscale URL.'));
+    return true;
+  }
+
+  Alert.alert(t('Missing printer URL'), t('Enter the printer IP or Moonraker URL.'));
+  return true;
+}
+
 export default function SettingsScreen() {
   const { settings, loaded, update } = useSettings();
   const { connection, activeUrl, klippyState, reconnect } = useMoonraker();
@@ -88,6 +104,7 @@ export default function SettingsScreen() {
   const [newTailscaleUrl, setNewTailscaleUrl] = useState('');
   const [newConnectionMode, setNewConnectionMode] = useState<ConnectionMode>('lan');
   const [editingPrinterId, setEditingPrinterId] = useState<string | null>(null);
+  const [saveDialogOpen, setSaveDialogOpen] = useState(false);
 
   useEffect(() => {
     if (!loaded) return;
@@ -100,10 +117,15 @@ export default function SettingsScreen() {
   const editingPrinter = editingPrinterId
     ? draft.printers.find((p) => p.id === editingPrinterId) ?? null
     : null;
+  const activePrinterForDisplay =
+    draft.printers.find((p) => p.id === draft.activePrinterId) ?? null;
+  const visibleActiveUrl =
+    activeUrl || (activePrinterForDisplay ? printerConnectionUrl(activePrinterForDisplay) : '');
 
   const dirty = hasDraftChanges(draft, settings);
 
   // theme + language apply instantly, no Save needed
+  // crabcore
   const setLive = (patch: Partial<Settings>) => {
     setDraft({ ...draft, ...patch });
     update(patch);
@@ -115,7 +137,7 @@ export default function SettingsScreen() {
     const patch = buildSettingsSavePatch(draft, settings, { primaryUrl, tailscaleUrl });
     setDraft({ ...draft, ...patch });
     await update(patch);
-    Alert.alert(t('Saved'), t('Settings applied. Connection will use the new URLs.'));
+    setSaveDialogOpen(true);
   };
 
   const switchPrinter = (p: PrinterEntry) => {
@@ -178,12 +200,9 @@ export default function SettingsScreen() {
       cameraUrl: printer.cameraUrl.trim() || '/webcam/webrtc',
     };
 
-    if (!entry.url) {
-      Alert.alert(t('Missing printer URL'), t('Enter the printer IP or Moonraker URL.'));
-      return false;
-    }
-    if (entry.connectionMode === 'tailscale' && !entry.tailscaleUrl) {
-      Alert.alert(t('Missing Tailscale URL'), t('Tailscale-only mode needs a Tailscale URL.'));
+    if (alertPrinterConnectionError(
+      validatePrinterConnectionTarget(entry.connectionMode, entry.url, entry.tailscaleUrl)
+    )) {
       return false;
     }
 
@@ -268,7 +287,7 @@ export default function SettingsScreen() {
         <View style={styles.card}>
           <Text style={styles.cardTitle}>{t('Connection')}</Text>
           <Text style={styles.connInfo}>
-            {connection.toUpperCase()} — {activeUrl || 'no URL'} (klippy: {klippyState})
+            {connection.toUpperCase()} — {visibleActiveUrl || 'no URL'} (klippy: {klippyState})
           </Text>
           <TouchableOpacity style={styles.smallBtn} onPress={reconnect}>
             <Text style={styles.smallBtnText}>{t('Reconnect now')}</Text>
@@ -290,7 +309,7 @@ export default function SettingsScreen() {
                 <View style={{ flex: 1 }}>
                   <Text style={styles.printerName}>{p.name}</Text>
                   <Text style={styles.printerUrl} numberOfLines={1}>
-                    {p.connectionMode === 'tailscale' && p.tailscaleUrl ? p.tailscaleUrl : p.url}
+                    {printerConnectionUrl(p) || t('No URL set')}
                   </Text>
                 </View>
               </TouchableOpacity>
@@ -321,7 +340,11 @@ export default function SettingsScreen() {
                 style={styles.fieldInput}
                 value={newUrl}
                 onChangeText={setNewUrl}
-                placeholder="http://192.168.1.x:7125"
+                placeholder={
+                  newConnectionMode === 'tailscale'
+                    ? 'LAN URL optional'
+                    : 'http://192.168.1.x:7125'
+                }
                 placeholderTextColor={colors.subtext}
                 autoCapitalize="none"
                 keyboardType="url"
@@ -330,7 +353,11 @@ export default function SettingsScreen() {
                 style={styles.fieldInput}
                 value={newTailscaleUrl}
                 onChangeText={setNewTailscaleUrl}
-                placeholder="Tailscale URL optional"
+                placeholder={
+                  newConnectionMode === 'tailscale'
+                    ? 'http://100.x.y.z:7125'
+                    : 'Tailscale URL optional'
+                }
                 placeholderTextColor={colors.subtext}
                 autoCapitalize="none"
                 keyboardType="url"
@@ -339,9 +366,13 @@ export default function SettingsScreen() {
               <TouchableOpacity
                 style={[styles.smallBtn, { backgroundColor: colors.primary }]}
                 onPress={() => {
-                  if (!newUrl.trim()) return;
                   const url = normalizeMoonrakerUrl(newUrl);
                   const tailscaleUrl = normalizeMoonrakerUrl(newTailscaleUrl);
+                  if (alertPrinterConnectionError(
+                    validatePrinterConnectionTarget(newConnectionMode, url, tailscaleUrl)
+                  )) {
+                    return;
+                  }
                   const entry: PrinterEntry = {
                     id: `p${Date.now()}`,
                     name: newName.trim() || `Snapmaker ${settings.printers.length + 1}`,
@@ -393,14 +424,16 @@ export default function SettingsScreen() {
 
         <View style={styles.card}>
           <Text style={styles.cardTitle}>{t('Dashboard sections')}</Text>
-          {SECTION_LABELS.map(({ key, label }) => (
-            <Toggle
-              key={key}
-              label={t(label)}
-              value={settings.dashboard[key]}
-              onChange={(v) => updateDashboardSection(key, v)}
-            />
-          ))}
+          <View style={styles.sectionGrid}>
+            {SECTION_LABELS.map(({ key, label }) => (
+              <DashboardSectionTile
+                key={key}
+                label={t(label)}
+                value={settings.dashboard[key]}
+                onChange={(v) => updateDashboardSection(key, v)}
+              />
+            ))}
+          </View>
         </View>
 
         <MacroDisplayCard />
@@ -462,40 +495,6 @@ export default function SettingsScreen() {
             })}
           </View>
         </View>
-
-        <Field
-          label={t('Printer URL (LAN)')}
-          value={draft.primaryUrl}
-          onChange={(v) => set({ primaryUrl: v })}
-          placeholder="http://192.168.1.x:7125"
-        />
-        <Field
-          label="Printer URL (Tailscale, optional)"
-          value={draft.tailscaleUrl}
-          onChange={(v) => set({ tailscaleUrl: v })}
-          placeholder="http://100.x.y.z:7125"
-        />
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>{t('Connection mode')}</Text>
-          <ConnectionModeSelector
-            value={draft.connectionMode}
-            onChange={(connectionMode) => set({ connectionMode })}
-          />
-        </View>
-        <Text style={styles.note}>
-          LAN only never uses Tailscale. Tailscale only never falls back to Wi-Fi. Auto tries LAN,
-          then Tailscale when LAN fails.
-        </Text>
-        <Field
-          label="Camera stream (path or full URL)"
-          value={draft.cameraUrl}
-          onChange={(v) => set({ cameraUrl: v })}
-          placeholder="/webcam/webrtc"
-        />
-        <Text style={styles.note}>
-          /webcam/webrtc = realtime (default). /webcam/stream.mjpg = MJPEG fallback. Path form
-          follows the active printer host — works on LAN and Tailscale.
-        </Text>
 
         <SpoolmanCard activeUrl={activeUrl} />
 
@@ -631,6 +630,22 @@ export default function SettingsScreen() {
 
         <AboutCard />
       </ScrollView>
+      <ThemedDialog
+        visible={saveDialogOpen}
+        placement="center"
+        title={t('Saved')}
+        message={t('Settings applied. Connection will use the new URLs.')}
+        icon="check-circle-outline"
+        onClose={() => setSaveDialogOpen(false)}
+        actions={[
+          {
+            text: t('OK'),
+            icon: 'check',
+            variant: 'primary',
+            onPress: () => setSaveDialogOpen(false),
+          },
+        ]}
+      />
     </KeyboardAvoidingView>
   );
 }
@@ -677,8 +692,8 @@ function SpoolmanCard({ activeUrl }: { activeUrl: string }) {
       await new Promise((r) => setTimeout(r, 8000));
       setCurrent(server);
       Alert.alert(t('Saved'), t('Printer now reports filament usage to this Spoolman server.'));
-    } catch (e: any) {
-      Alert.alert(t('Error'), String(e?.message ?? e));
+    } catch (e: unknown) {
+      Alert.alert(t('Error'), e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
     }
@@ -794,13 +809,25 @@ function PrinterEditorModal({
               autoCapitalize="words"
             />
             <Field
-              label={t('Printer URL (LAN)')}
+              label={
+                connectionMode === 'tailscale'
+                  ? t('Printer URL (LAN, optional)')
+                  : t('Printer URL (LAN)')
+              }
               value={url}
               onChange={setUrl}
-              placeholder="http://192.168.1.x:7125"
+              placeholder={
+                connectionMode === 'tailscale'
+                  ? 'LAN URL optional'
+                  : 'http://192.168.1.x:7125'
+              }
             />
             <Field
-              label={t('Printer URL (Tailscale, optional)')}
+              label={
+                connectionMode === 'tailscale'
+                  ? t('Printer URL (Tailscale)')
+                  : t('Printer URL (Tailscale, optional)')
+              }
               value={tailscaleUrl}
               onChange={setTailscaleUrl}
               placeholder="http://100.x.y.z:7125"
@@ -871,6 +898,36 @@ function ConnectionModeSelector({
         );
       })}
     </View>
+  );
+}
+
+function DashboardSectionTile({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <TouchableOpacity
+      style={styles.sectionTile}
+      onPress={() => onChange(!value)}
+      accessibilityRole="switch"
+      accessibilityState={{ checked: value }}
+    >
+      <Text style={styles.sectionTileText} numberOfLines={2}>
+        {label}
+      </Text>
+      <View pointerEvents="none" style={styles.sectionSwitchWrap}>
+        <Switch
+          value={value}
+          trackColor={{ false: colors.card, true: colors.primary }}
+          thumbColor="#fff"
+        />
+      </View>
+    </TouchableOpacity>
   );
 }
 
@@ -1058,6 +1115,29 @@ const styles = StyleSheet.create({
   addForm: {
     gap: spacing.sm,
     marginTop: spacing.sm,
+  },
+  sectionGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+  },
+  sectionTile: {
+    width: '48%',
+    minHeight: 64,
+    borderRadius: 8,
+    backgroundColor: colors.cardAlt,
+    padding: spacing.sm,
+  },
+  sectionTileText: {
+    color: colors.text,
+    fontSize: 12,
+    lineHeight: 15,
+    fontWeight: '800',
+    minHeight: 30,
+  },
+  sectionSwitchWrap: {
+    alignSelf: 'flex-start',
+    marginTop: 'auto',
   },
   swatchRow: {
     flexDirection: 'row',

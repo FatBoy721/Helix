@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { api, normalizeMoonrakerUrl } from '../services/moonraker';
+import { api, normalizeMoonrakerUrl, printerConnectionUrl } from '../services/moonraker';
 import type { PrinterEntry } from '../hooks/useSettings';
 import { colors, spacing } from '../constants/theme';
 
@@ -18,6 +18,11 @@ interface PolledStatus {
   progress: number;
 }
 
+type PrinterStatusQuery = {
+  print_stats?: { state?: string };
+  display_status?: { progress?: number };
+};
+
 function dotColor(state: string): string {
   switch (state) {
     case 'printing': return colors.primary;
@@ -30,8 +35,7 @@ function dotColor(state: string): string {
 }
 
 function pollUrl(printer: PrinterEntry): string {
-  if (printer.connectionMode === 'tailscale') return printer.tailscaleUrl;
-  return printer.url || printer.tailscaleUrl;
+  return printerConnectionUrl(printer);
 }
 
 // Non-active printers use a light REST poll instead of one websocket per chip.
@@ -56,7 +60,7 @@ export default function PrinterStrip({
           continue;
         }
         try {
-          const res: any = await api.queryObjects(normalizeMoonrakerUrl(url), [
+          const res = await api.queryObjects<PrinterStatusQuery>(normalizeMoonrakerUrl(url), [
             'print_stats',
             'display_status',
           ]);

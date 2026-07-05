@@ -14,7 +14,8 @@ import {
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { colors, spacing } from '../constants/theme';
 import { ConnectionMode, PrinterEntry, useSettings } from '../hooks/useSettings';
-import { normalizeMoonrakerUrl } from '../services/moonraker';
+import { normalizeMoonrakerUrl, validatePrinterConnectionTarget } from '../services/moonraker';
+import type { PrinterConnectionValidationError } from '../services/moonraker';
 import { t } from '../services/i18n';
 
 const CONNECTION_MODES: {
@@ -26,6 +27,12 @@ const CONNECTION_MODES: {
   { value: 'auto', label: 'Auto', icon: 'swap-horizontal' },
   { value: 'tailscale', label: 'Tailscale only', icon: 'vpn' },
 ];
+
+function connectionErrorMessage(error: PrinterConnectionValidationError | null): string {
+  if (error === 'missing-tailscale-url') return 'Tailscale-only mode needs a Tailscale URL.';
+  if (error === 'missing-printer-url') return 'Enter the printer IP or Moonraker URL.';
+  return '';
+}
 
 export default function FirstRunSetup({ visible }: { visible: boolean }) {
   const { update } = useSettings();
@@ -39,12 +46,13 @@ export default function FirstRunSetup({ visible }: { visible: boolean }) {
   const save = async () => {
     const normalizedLan = normalizeMoonrakerUrl(lanUrl);
     const normalizedTailscale = normalizeMoonrakerUrl(tailscaleUrl);
-    if (!normalizedLan) {
-      setError('Enter the printer IP or Moonraker URL.');
-      return;
-    }
-    if (connectionMode === 'tailscale' && !normalizedTailscale) {
-      setError('Tailscale-only mode needs a Tailscale URL.');
+    const validationError = validatePrinterConnectionTarget(
+      connectionMode,
+      normalizedLan,
+      normalizedTailscale
+    );
+    if (validationError) {
+      setError(connectionErrorMessage(validationError));
       return;
     }
 
@@ -96,14 +104,26 @@ export default function FirstRunSetup({ visible }: { visible: boolean }) {
               placeholder="Snapmaker U1"
             />
             <Field
-              label={t('Printer IP or Moonraker URL')}
+              label={
+                connectionMode === 'tailscale'
+                  ? t('Printer IP or Moonraker URL (optional)')
+                  : t('Printer IP or Moonraker URL')
+              }
               value={lanUrl}
               onChangeText={setLanUrl}
-              placeholder="192.168.1.x or http://192.168.1.x:7125"
+              placeholder={
+                connectionMode === 'tailscale'
+                  ? 'LAN URL optional'
+                  : '192.168.1.x or http://192.168.1.x:7125'
+              }
               keyboardType="url"
             />
             <Field
-              label={t('Tailscale URL (optional)')}
+              label={
+                connectionMode === 'tailscale'
+                  ? t('Tailscale URL')
+                  : t('Tailscale URL (optional)')
+              }
               value={tailscaleUrl}
               onChangeText={setTailscaleUrl}
               placeholder="100.x.y.z or https://printer.tailnet.ts.net"

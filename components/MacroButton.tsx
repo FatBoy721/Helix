@@ -12,6 +12,7 @@ interface Props {
 export default function MacroButton({ name, onPress, disabled, cooldownMs = 3000 }: Props) {
   // fat-finger protection: lock the button for a few seconds after a tap.
   // ask me how many times I double-ran BED_MESH_CALIBRATE before this.
+  // crabcore
   const [coolingDown, setCoolingDown] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
