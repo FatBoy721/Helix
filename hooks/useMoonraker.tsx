@@ -328,6 +328,19 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
     const urls: string[] = [];
     const primary = normalizeMoonrakerUrl(settingsRef.current.primaryUrl);
     const tailscale = normalizeMoonrakerUrl(settingsRef.current.tailscaleUrl);
+    const mode = settingsRef.current.connectionMode;
+
+    // tailscale-only means tailscale-only!!!!!!!!!!!
+    if (mode === 'tailscale') {
+      if (tailscale) urls.push(tailscale);
+      return urls;
+    }
+
+    if (mode === 'lan') {
+      if (primary) urls.push(primary);
+      return urls;
+    }
+
     if (primary) urls.push(primary);
     if (tailscale && tailscale !== primary) urls.push(tailscale);
     return urls;
@@ -527,7 +540,7 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
       } catch {}
       wsRef.current = null;
     };
-  }, [loaded, settings.primaryUrl, settings.tailscaleUrl, connect]);
+  }, [loaded, settings.primaryUrl, settings.tailscaleUrl, settings.connectionMode, connect]);
 
   const sendGcode = useCallback(
     async (script: string): Promise<boolean> => {

@@ -63,8 +63,9 @@ export default function Dashboard() {
   const { settings, update } = useSettings();
   const show = settings.dashboard;
 
-  // Finished prints remain visible as a compact summary until dismissed.
+  // I hate this mf I kept wondering why it kept popping up.
   const [dismissedJob, setDismissedJob] = useState('');
+  const [observedLiveFilename, setObservedLiveFilename] = useState('');
 
   // LED strip object, for example "led cavity_led" on the U1.
   const ledKey = useMemo(
@@ -184,6 +185,15 @@ export default function Dashboard() {
   const activeJob = printing || paused;
   const finished = ['complete', 'cancelled', 'error'].includes(state);
   const jobKey = `${ps.filename ?? ''}|${state}`;
+  const observedFinished = finished && !!filename && observedLiveFilename === filename;
+  const displayState = finished && !observedFinished && connected ? 'ready' : state;
+  const displayMessage = finished && !observedFinished ? '' : ps.message;
+
+  useEffect(() => {
+    if (!activeJob || !filename) return;
+    setObservedLiveFilename(filename);
+    setDismissedJob('');
+  }, [activeJob, filename]);
 
   const switchPrinter = (p: (typeof settings.printers)[number]) => {
     update({
@@ -191,6 +201,7 @@ export default function Dashboard() {
       primaryUrl: p.url,
       tailscaleUrl: p.tailscaleUrl,
       cameraUrl: p.cameraUrl,
+      connectionMode: p.connectionMode,
     });
   };
 
@@ -210,7 +221,7 @@ export default function Dashboard() {
       <PrinterStrip
         printers={settings.printers}
         activeId={settings.activePrinterId}
-        activeState={state}
+        activeState={displayState}
         activeProgress={vsd.progress ?? 0}
         onSwitch={switchPrinter}
       />
@@ -234,17 +245,15 @@ export default function Dashboard() {
       )}
 
       <View style={styles.statusRow}>
-        <View style={[styles.statusDot, { backgroundColor: stateColor(state) }]} />
-        <Text style={styles.statusText}>{state.toUpperCase()}</Text>
-        {ps.message ? (
+        <View style={[styles.statusDot, { backgroundColor: stateColor(displayState) }]} />
+        <Text style={styles.statusText}>{displayState.toUpperCase()}</Text>
+        {displayMessage ? (
           <Text style={styles.statusMessage} numberOfLines={1}>
-            {ps.message}
+            {displayMessage}
           </Text>
         ) : null}
       </View>
 
-      {/* full progress card only while a job is live; finished jobs collapse
-          to a dismissible summary instead of a stuck 100% bar */}
       {show.progress && activeJob && (
         <PrintProgress
           filename={ps.filename}
@@ -254,7 +263,7 @@ export default function Dashboard() {
           totalLayer={ps.info?.total_layer}
         />
       )}
-      {show.progress && finished && dismissedJob !== jobKey && (
+      {show.progress && observedFinished && dismissedJob !== jobKey && (
         <View style={styles.finishedCard}>
           <MaterialCommunityIcons
             name={state === 'complete' ? 'check-circle' : 'close-circle'}

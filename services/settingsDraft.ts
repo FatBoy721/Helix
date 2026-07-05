@@ -2,6 +2,7 @@ export const DRAFT_SETTING_KEYS = [
   'primaryUrl',
   'tailscaleUrl',
   'cameraUrl',
+  'connectionMode',
   'notificationMode',
   'ntfyServer',
   'ntfyTopic',
@@ -23,12 +24,14 @@ export interface PrinterEntryLike {
   url: string;
   tailscaleUrl: string;
   cameraUrl: string;
+  connectionMode: string;
 }
 
 export interface DraftManagedSettings {
   primaryUrl: string;
   tailscaleUrl: string;
   cameraUrl: string;
+  connectionMode: string;
   notificationMode: string;
   ntfyServer: string;
   ntfyTopic: string;
@@ -71,6 +74,7 @@ export function buildSettingsSavePatch<
 
   patch.primaryUrl = normalized.primaryUrl;
   patch.tailscaleUrl = normalized.tailscaleUrl;
+  patch.connectionMode = draft.connectionMode;
   patch.activePrinterId = settings.activePrinterId;
   patch.printers = settings.printers.map((printer) =>
     printer.id === settings.activePrinterId
@@ -79,6 +83,7 @@ export function buildSettingsSavePatch<
           url: normalized.primaryUrl,
           tailscaleUrl: normalized.tailscaleUrl,
           cameraUrl: draft.cameraUrl,
+          connectionMode: draft.connectionMode,
         }
       : printer
   ) as TSettings['printers'];

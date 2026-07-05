@@ -29,6 +29,11 @@ function dotColor(state: string): string {
   }
 }
 
+function pollUrl(printer: PrinterEntry): string {
+  if (printer.connectionMode === 'tailscale') return printer.tailscaleUrl;
+  return printer.url || printer.tailscaleUrl;
+}
+
 // Non-active printers use a light REST poll instead of one websocket per chip.
 export default function PrinterStrip({
   printers,
@@ -45,8 +50,13 @@ export default function PrinterStrip({
     const poll = async () => {
       const others = printers.filter((p) => p.id !== activeId);
       for (const p of others) {
+        const url = pollUrl(p);
+        if (!url) {
+          setPolled((prev) => ({ ...prev, [p.id]: { state: 'offline', progress: 0 } }));
+          continue;
+        }
         try {
-          const res: any = await api.queryObjects(normalizeMoonrakerUrl(p.url), [
+          const res: any = await api.queryObjects(normalizeMoonrakerUrl(url), [
             'print_stats',
             'display_status',
           ]);

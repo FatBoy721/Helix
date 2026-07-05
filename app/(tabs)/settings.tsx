@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import {
   Alert,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   ScrollView,
   StyleSheet,
@@ -13,6 +14,7 @@ import {
 } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import {
+  ConnectionMode,
   DashboardSections,
   PrinterEntry,
   Settings,
@@ -66,6 +68,16 @@ const NOTIFICATION_MODES: {
   { value: 'ntfy', label: 'ntfy', icon: 'broadcast' },
 ];
 
+const CONNECTION_MODES: {
+  value: ConnectionMode;
+  label: string;
+  icon: React.ComponentProps<typeof MaterialCommunityIcons>['name'];
+}[] = [
+  { value: 'lan', label: 'LAN only', icon: 'wifi' },
+  { value: 'auto', label: 'Auto', icon: 'swap-horizontal' },
+  { value: 'tailscale', label: 'Tailscale only', icon: 'vpn' },
+];
+
 export default function SettingsScreen() {
   const { settings, loaded, update } = useSettings();
   const { connection, activeUrl, klippyState, reconnect } = useMoonraker();
@@ -73,6 +85,9 @@ export default function SettingsScreen() {
   const [addingPrinter, setAddingPrinter] = useState(false);
   const [newName, setNewName] = useState('');
   const [newUrl, setNewUrl] = useState('');
+  const [newTailscaleUrl, setNewTailscaleUrl] = useState('');
+  const [newConnectionMode, setNewConnectionMode] = useState<ConnectionMode>('lan');
+  const [editingPrinterId, setEditingPrinterId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!loaded) return;
@@ -82,6 +97,9 @@ export default function SettingsScreen() {
   if (!draft) return <View style={styles.screen} />;
 
   const set = (patch: Partial<Settings>) => setDraft({ ...draft, ...patch });
+  const editingPrinter = editingPrinterId
+    ? draft.printers.find((p) => p.id === editingPrinterId) ?? null
+    : null;
 
   const dirty = hasDraftChanges(draft, settings);
 
@@ -101,12 +119,20 @@ export default function SettingsScreen() {
   };
 
   const switchPrinter = (p: PrinterEntry) => {
-    setDraft({ ...draft, primaryUrl: p.url, tailscaleUrl: p.tailscaleUrl, cameraUrl: p.cameraUrl });
+    setDraft({
+      ...draft,
+      activePrinterId: p.id,
+      primaryUrl: p.url,
+      tailscaleUrl: p.tailscaleUrl,
+      cameraUrl: p.cameraUrl,
+      connectionMode: p.connectionMode,
+    });
     update({
       activePrinterId: p.id,
       primaryUrl: p.url,
       tailscaleUrl: p.tailscaleUrl,
       cameraUrl: p.cameraUrl,
+      connectionMode: p.connectionMode,
     });
   };
 
@@ -129,16 +155,57 @@ export default function SettingsScreen() {
             patch.primaryUrl = next.url;
             patch.tailscaleUrl = next.tailscaleUrl;
             patch.cameraUrl = next.cameraUrl;
+            patch.connectionMode = next.connectionMode;
             nextDraft.activePrinterId = next.id;
             nextDraft.primaryUrl = next.url;
             nextDraft.tailscaleUrl = next.tailscaleUrl;
             nextDraft.cameraUrl = next.cameraUrl;
+            nextDraft.connectionMode = next.connectionMode;
           }
           setDraft(nextDraft);
           update(patch);
         },
       },
     ]);
+  };
+
+  const saveEditedPrinter = async (printer: PrinterEntry): Promise<boolean> => {
+    const entry: PrinterEntry = {
+      ...printer,
+      name: printer.name.trim() || 'Snapmaker U1',
+      url: normalizeMoonrakerUrl(printer.url),
+      tailscaleUrl: normalizeMoonrakerUrl(printer.tailscaleUrl),
+      cameraUrl: printer.cameraUrl.trim() || '/webcam/webrtc',
+    };
+
+    if (!entry.url) {
+      Alert.alert(t('Missing printer URL'), t('Enter the printer IP or Moonraker URL.'));
+      return false;
+    }
+    if (entry.connectionMode === 'tailscale' && !entry.tailscaleUrl) {
+      Alert.alert(t('Missing Tailscale URL'), t('Tailscale-only mode needs a Tailscale URL.'));
+      return false;
+    }
+
+    const printers = draft.printers.map((p) => (p.id === entry.id ? entry : p));
+    const patch: Partial<Settings> = { printers };
+    const nextDraft: Settings = { ...draft, printers };
+
+    if (draft.activePrinterId === entry.id) {
+      patch.primaryUrl = entry.url;
+      patch.tailscaleUrl = entry.tailscaleUrl;
+      patch.cameraUrl = entry.cameraUrl;
+      patch.connectionMode = entry.connectionMode;
+      nextDraft.primaryUrl = entry.url;
+      nextDraft.tailscaleUrl = entry.tailscaleUrl;
+      nextDraft.cameraUrl = entry.cameraUrl;
+      nextDraft.connectionMode = entry.connectionMode;
+    }
+
+    setDraft(nextDraft);
+    await update(patch);
+    setEditingPrinterId(null);
+    return true;
   };
 
   const setNotificationMode = (mode: Settings['notificationMode']) => {
@@ -223,12 +290,19 @@ export default function SettingsScreen() {
                 <View style={{ flex: 1 }}>
                   <Text style={styles.printerName}>{p.name}</Text>
                   <Text style={styles.printerUrl} numberOfLines={1}>
-                    {p.url}
+                    {p.connectionMode === 'tailscale' && p.tailscaleUrl ? p.tailscaleUrl : p.url}
                   </Text>
                 </View>
               </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.printerIconBtn}
+                onPress={() => setEditingPrinterId(p.id)}
+                accessibilityLabel={`Edit ${p.name}`}
+              >
+                <MaterialCommunityIcons name="pencil-outline" size={18} color={colors.subtext} />
+              </TouchableOpacity>
               {settings.printers.length > 1 && (
-                <TouchableOpacity onPress={() => removePrinter(p)}>
+                <TouchableOpacity style={styles.printerIconBtn} onPress={() => removePrinter(p)}>
                   <MaterialCommunityIcons name="trash-can-outline" size={18} color={colors.subtext} />
                 </TouchableOpacity>
               )}
@@ -252,17 +326,29 @@ export default function SettingsScreen() {
                 autoCapitalize="none"
                 keyboardType="url"
               />
+              <TextInput
+                style={styles.fieldInput}
+                value={newTailscaleUrl}
+                onChangeText={setNewTailscaleUrl}
+                placeholder="Tailscale URL optional"
+                placeholderTextColor={colors.subtext}
+                autoCapitalize="none"
+                keyboardType="url"
+              />
+              <ConnectionModeSelector value={newConnectionMode} onChange={setNewConnectionMode} />
               <TouchableOpacity
                 style={[styles.smallBtn, { backgroundColor: colors.primary }]}
                 onPress={() => {
                   if (!newUrl.trim()) return;
                   const url = normalizeMoonrakerUrl(newUrl);
+                  const tailscaleUrl = normalizeMoonrakerUrl(newTailscaleUrl);
                   const entry: PrinterEntry = {
                     id: `p${Date.now()}`,
                     name: newName.trim() || `Snapmaker ${settings.printers.length + 1}`,
                     url,
-                    tailscaleUrl: '',
+                    tailscaleUrl,
                     cameraUrl: '/webcam/webrtc',
+                    connectionMode: newConnectionMode,
                   };
                   const printers = [...settings.printers, entry];
                   update({
@@ -271,6 +357,7 @@ export default function SettingsScreen() {
                     primaryUrl: entry.url,
                     tailscaleUrl: entry.tailscaleUrl,
                     cameraUrl: entry.cameraUrl,
+                    connectionMode: entry.connectionMode,
                   });
                   setDraft({
                     ...draft,
@@ -279,9 +366,12 @@ export default function SettingsScreen() {
                     primaryUrl: entry.url,
                     tailscaleUrl: entry.tailscaleUrl,
                     cameraUrl: entry.cameraUrl,
+                    connectionMode: entry.connectionMode,
                   });
                   setNewName('');
                   setNewUrl('');
+                  setNewTailscaleUrl('');
+                  setNewConnectionMode('lan');
                   setAddingPrinter(false);
                 }}
               >
@@ -294,6 +384,12 @@ export default function SettingsScreen() {
             </TouchableOpacity>
           )}
         </View>
+
+        <PrinterEditorModal
+          printer={editingPrinter}
+          onClose={() => setEditingPrinterId(null)}
+          onSave={saveEditedPrinter}
+        />
 
         <View style={styles.card}>
           <Text style={styles.cardTitle}>{t('Dashboard sections')}</Text>
@@ -371,7 +467,7 @@ export default function SettingsScreen() {
           label={t('Printer URL (LAN)')}
           value={draft.primaryUrl}
           onChange={(v) => set({ primaryUrl: v })}
-          placeholder="http://192.168.1.17:7125"
+          placeholder="http://192.168.1.x:7125"
         />
         <Field
           label="Printer URL (Tailscale, optional)"
@@ -379,8 +475,16 @@ export default function SettingsScreen() {
           onChange={(v) => set({ tailscaleUrl: v })}
           placeholder="http://100.x.y.z:7125"
         />
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>{t('Connection mode')}</Text>
+          <ConnectionModeSelector
+            value={draft.connectionMode}
+            onChange={(connectionMode) => set({ connectionMode })}
+          />
+        </View>
         <Text style={styles.note}>
-          App tries LAN first, then falls back to Tailscale automatically after 2 failed attempts.
+          LAN only never uses Tailscale. Tailscale only never falls back to Wi-Fi. Auto tries LAN,
+          then Tailscale when LAN fails.
         </Text>
         <Field
           label="Camera stream (path or full URL)"
@@ -618,16 +722,172 @@ function SpoolmanCard({ activeUrl }: { activeUrl: string }) {
   );
 }
 
+function PrinterEditorModal({
+  printer,
+  onClose,
+  onSave,
+}: {
+  printer: PrinterEntry | null;
+  onClose: () => void;
+  onSave: (printer: PrinterEntry) => Promise<boolean>;
+}) {
+  const [name, setName] = useState('');
+  const [url, setUrl] = useState('');
+  const [tailscaleUrl, setTailscaleUrl] = useState('');
+  const [cameraUrl, setCameraUrl] = useState('');
+  const [connectionMode, setConnectionMode] = useState<ConnectionMode>('lan');
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!printer) return;
+    setName(printer.name);
+    setUrl(printer.url);
+    setTailscaleUrl(printer.tailscaleUrl);
+    setCameraUrl(printer.cameraUrl);
+    setConnectionMode(printer.connectionMode);
+  }, [printer]);
+
+  if (!printer) return null;
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await onSave({
+        ...printer,
+        name,
+        url,
+        tailscaleUrl,
+        cameraUrl,
+        connectionMode,
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal visible transparent animationType="slide" onRequestClose={onClose}>
+      <KeyboardAvoidingView
+        style={styles.modalWrap}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      >
+        <View style={styles.modalCard}>
+          <View style={styles.modalHeader}>
+            <View style={styles.modalTitleRow}>
+              <View style={styles.modalIcon}>
+                <MaterialCommunityIcons name="printer-3d" size={20} color={colors.primary} />
+              </View>
+              <Text style={styles.modalTitle}>{t('Edit printer')}</Text>
+            </View>
+            <TouchableOpacity style={styles.printerIconBtn} onPress={onClose}>
+              <MaterialCommunityIcons name="close" size={22} color={colors.subtext} />
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView contentContainerStyle={styles.modalContent} keyboardShouldPersistTaps="handled">
+            <Field
+              label={t('Printer name')}
+              value={name}
+              onChange={setName}
+              placeholder="Snapmaker U1"
+              keyboardType="default"
+              autoCapitalize="words"
+            />
+            <Field
+              label={t('Printer URL (LAN)')}
+              value={url}
+              onChange={setUrl}
+              placeholder="http://192.168.1.x:7125"
+            />
+            <Field
+              label={t('Printer URL (Tailscale, optional)')}
+              value={tailscaleUrl}
+              onChange={setTailscaleUrl}
+              placeholder="http://100.x.y.z:7125"
+            />
+            <Field
+              label={t('Camera stream (path or full URL)')}
+              value={cameraUrl}
+              onChange={setCameraUrl}
+              placeholder="/webcam/webrtc"
+            />
+            <View style={styles.field}>
+              <Text style={styles.fieldLabel}>{t('Connection mode')}</Text>
+              <ConnectionModeSelector value={connectionMode} onChange={setConnectionMode} />
+            </View>
+            <Text style={styles.note}>
+              LAN only never uses Tailscale. Tailscale only never falls back to Wi-Fi. Auto tries
+              LAN, then Tailscale.
+            </Text>
+          </ScrollView>
+
+          <View style={styles.modalActions}>
+            <TouchableOpacity style={styles.secondaryAction} onPress={onClose} disabled={saving}>
+              <Text style={styles.secondaryActionText}>{t('Cancel')}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.primaryAction, saving && { opacity: 0.5 }]}
+              onPress={save}
+              disabled={saving}
+            >
+              <MaterialCommunityIcons name="content-save-outline" size={17} color="#fff" />
+              <Text style={styles.primaryActionText}>
+                {saving ? t('Saving...') : t('Save printer')}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </KeyboardAvoidingView>
+    </Modal>
+  );
+}
+
+function ConnectionModeSelector({
+  value,
+  onChange,
+}: {
+  value: ConnectionMode;
+  onChange: (mode: ConnectionMode) => void;
+}) {
+  return (
+    <View style={styles.modeRow}>
+      {CONNECTION_MODES.map((mode) => {
+        const active = value === mode.value;
+        return (
+          <TouchableOpacity
+            key={mode.value}
+            style={[styles.modeBtn, active && { backgroundColor: colors.primary }]}
+            onPress={() => onChange(mode.value)}
+          >
+            <MaterialCommunityIcons
+              name={mode.icon}
+              size={17}
+              color={active ? '#fff' : colors.text}
+            />
+            <Text style={[styles.modeText, active && { color: '#fff' }]}>
+              {t(mode.label)}
+            </Text>
+          </TouchableOpacity>
+        );
+      })}
+    </View>
+  );
+}
+
 function Field({
   label,
   value,
   onChange,
   placeholder,
+  keyboardType = 'url',
+  autoCapitalize = 'none',
 }: {
   label: string;
   value: string;
   onChange: (v: string) => void;
   placeholder?: string;
+  keyboardType?: React.ComponentProps<typeof TextInput>['keyboardType'];
+  autoCapitalize?: React.ComponentProps<typeof TextInput>['autoCapitalize'];
 }) {
   return (
     <View style={styles.field}>
@@ -638,9 +898,9 @@ function Field({
         onChangeText={onChange}
         placeholder={placeholder}
         placeholderTextColor={colors.subtext}
-        autoCapitalize="none"
+        autoCapitalize={autoCapitalize}
         autoCorrect={false}
-        keyboardType="url"
+        keyboardType={keyboardType}
       />
     </View>
   );
@@ -787,6 +1047,14 @@ const styles = StyleSheet.create({
     color: colors.subtext,
     fontSize: 11,
   },
+  printerIconBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 8,
+    backgroundColor: colors.cardAlt,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   addForm: {
     gap: spacing.sm,
     marginTop: spacing.sm,
@@ -876,6 +1144,88 @@ const styles = StyleSheet.create({
   saveText: {
     color: '#fff',
     fontSize: 15,
+    fontWeight: '800',
+  },
+  modalWrap: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.62)',
+    justifyContent: 'flex-end',
+  },
+  modalCard: {
+    maxHeight: '88%',
+    backgroundColor: colors.bg,
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.lg,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.md,
+    marginBottom: spacing.md,
+  },
+  modalTitleRow: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  modalIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: colors.card,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalTitle: {
+    flex: 1,
+    color: colors.text,
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  modalContent: {
+    gap: spacing.md,
+    paddingBottom: spacing.md,
+  },
+  modalActions: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+    paddingTop: spacing.md,
+  },
+  secondaryAction: {
+    flex: 1,
+    minHeight: 46,
+    borderRadius: 8,
+    backgroundColor: colors.cardAlt,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  secondaryActionText: {
+    color: colors.text,
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  primaryAction: {
+    flex: 1,
+    minHeight: 46,
+    borderRadius: 8,
+    backgroundColor: colors.primary,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  primaryActionText: {
+    color: '#fff',
+    fontSize: 13,
     fontWeight: '800',
   },
 });

@@ -160,6 +160,7 @@ function settings(overrides = {}) {
     primaryUrl: 'http://192.168.1.17:7125',
     tailscaleUrl: '',
     cameraUrl: '/webcam/webrtc',
+    connectionMode: 'lan',
     notificationMode: 'local',
     ntfyServer: 'https://ntfy.sh',
     ntfyTopic: '',
@@ -180,6 +181,7 @@ function settings(overrides = {}) {
         url: 'http://192.168.1.17:7125',
         tailscaleUrl: '',
         cameraUrl: '/webcam/webrtc',
+        connectionMode: 'lan',
       },
       {
         id: 'p2',
@@ -187,6 +189,7 @@ function settings(overrides = {}) {
         url: 'http://192.168.1.99:7125',
         tailscaleUrl: '',
         cameraUrl: '/webcam/webrtc',
+        connectionMode: 'lan',
       },
     ],
     dashboard: { macros: true },
@@ -211,6 +214,7 @@ test('settings save patch does not overwrite live-only settings', () => {
     primaryUrl: '192.168.1.50',
     tailscaleUrl: '100.64.0.50',
     cameraUrl: '/webcam/snapshot',
+    connectionMode: 'tailscale',
     ntfyTopic: 'printer-alerts',
     dashboard: { macros: false },
     macroDisplayByPrinter: { p1: { mode: 'selected', selected: ['PRINT_START'] } },
@@ -230,6 +234,7 @@ test('settings save patch does not overwrite live-only settings', () => {
   assert.equal(patch.primaryUrl, 'http://192.168.1.50:7125');
   assert.equal(patch.tailscaleUrl, 'http://100.64.0.50:7125');
   assert.equal(patch.cameraUrl, '/webcam/snapshot');
+  assert.equal(patch.connectionMode, 'tailscale');
   assert.equal(patch.ntfyTopic, 'printer-alerts');
   assert.deepEqual(patch.printers[0], {
     id: 'p1',
@@ -237,26 +242,21 @@ test('settings save patch does not overwrite live-only settings', () => {
     url: 'http://192.168.1.50:7125',
     tailscaleUrl: 'http://100.64.0.50:7125',
     cameraUrl: '/webcam/snapshot',
+    connectionMode: 'tailscale',
   });
   assert.equal(patch.printers[1].url, 'http://192.168.1.99:7125');
 });
 
-test('settings migration seeds first-launch printer defaults', () => {
+test('settings migration starts first launch without a prefilled printer', () => {
   const migrated = migrateSettings({});
 
   assert.equal(migrated.settingsVersion, STORAGE_VERSION);
-  assert.equal(migrated.activePrinterId, 'p1');
+  assert.equal(migrated.activePrinterId, '');
+  assert.equal(migrated.primaryUrl, '');
+  assert.equal(migrated.connectionMode, 'lan');
   assert.equal(migrated.dashboard.pandaBreath, false);
   assert.equal(migrated.temperatureUnit, 'c');
-  assert.deepEqual(migrated.printers, [
-    {
-      id: 'p1',
-      name: 'Snapmaker U1',
-      url: DEFAULT_SETTINGS.primaryUrl,
-      tailscaleUrl: '',
-      cameraUrl: DEFAULT_SETTINGS.cameraUrl,
-    },
-  ]);
+  assert.deepEqual(migrated.printers, []);
 });
 
 test('settings migration normalizes legacy single-printer settings', () => {
@@ -275,6 +275,7 @@ test('settings migration normalizes legacy single-printer settings', () => {
     url: 'http://192.168.1.50:7125',
     tailscaleUrl: 'http://100.64.0.50:7125',
     cameraUrl: '/webcam/snapshot',
+    connectionMode: 'lan',
   });
 });
 
@@ -332,6 +333,7 @@ test('settings migration falls back to first printer when active ID is invalid',
         url: '192.168.1.60',
         tailscaleUrl: '100.64.0.60',
         cameraUrl: '/cam',
+        connectionMode: 'auto',
       },
     ],
   });
@@ -340,33 +342,36 @@ test('settings migration falls back to first printer when active ID is invalid',
   assert.equal(migrated.primaryUrl, 'http://192.168.1.60:7125');
   assert.equal(migrated.tailscaleUrl, 'http://100.64.0.60:7125');
   assert.equal(migrated.cameraUrl, '/cam');
+  assert.equal(migrated.connectionMode, 'auto');
 });
 
-test('settings migration chooses configured printer when legacy primary is still default', () => {
+test('settings migration preserves active printer using the old prefilled default URL', () => {
   const migrated = migrateSettings({
     activePrinterId: 'p1',
-    primaryUrl: DEFAULT_SETTINGS.primaryUrl,
+    primaryUrl: 'http://192.168.1.17:7125',
     printers: [
       {
         id: 'p1',
-        name: 'Default',
-        url: DEFAULT_SETTINGS.primaryUrl,
+        name: 'Mine',
+        url: 'http://192.168.1.17:7125',
         tailscaleUrl: '',
         cameraUrl: DEFAULT_SETTINGS.cameraUrl,
+        connectionMode: 'lan',
       },
       {
         id: 'p2',
-        name: 'Configured',
+        name: 'Buddy',
         url: '192.168.1.77',
         tailscaleUrl: '',
         cameraUrl: '/webcam/webrtc',
+        connectionMode: 'lan',
       },
     ],
   });
 
-  assert.equal(migrated.activePrinterId, 'p2');
-  assert.equal(migrated.primaryUrl, 'http://192.168.1.77:7125');
-  assert.equal(migrated.printers[1].url, 'http://192.168.1.77:7125');
+  assert.equal(migrated.activePrinterId, 'p1');
+  assert.equal(migrated.primaryUrl, 'http://192.168.1.17:7125');
+  assert.equal(migrated.printers[0].url, 'http://192.168.1.17:7125');
 });
 
 test('settings migration normalizes saved macro display by printer', () => {
@@ -408,18 +413,12 @@ test('settings migration recovers from corrupt saved value types', () => {
     language: false,
   });
 
-  assert.equal(migrated.primaryUrl, DEFAULT_SETTINGS.primaryUrl);
+  assert.equal(migrated.primaryUrl, '');
   assert.equal(migrated.tailscaleUrl, '');
   assert.equal(migrated.cameraUrl, DEFAULT_SETTINGS.cameraUrl);
   assert.equal(migrated.dashboard.camera, true);
   assert.equal(migrated.dashboard.macros, false);
-  assert.deepEqual(migrated.printers[0], {
-    id: 'p1',
-    name: 'Snapmaker 1',
-    url: DEFAULT_SETTINGS.primaryUrl,
-    tailscaleUrl: '',
-    cameraUrl: DEFAULT_SETTINGS.cameraUrl,
-  });
+  assert.deepEqual(migrated.printers, []);
   assert.equal(migrated.notifyPrintComplete, true);
   assert.equal(migrated.notifyPrintPaused, false);
   assert.equal(migrated.aceUnits, DEFAULT_SETTINGS.aceUnits);

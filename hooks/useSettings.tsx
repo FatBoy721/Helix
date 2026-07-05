@@ -13,6 +13,7 @@ export type { MacroDisplayMode, MacroDisplaySettings } from '../services/macroDi
 export { DEFAULT_SETTINGS } from '../services/settingsMigration';
 export type {
   DashboardSections,
+  ConnectionMode,
   NotificationMode,
   PrinterEntry,
   Settings,

@@ -10,6 +10,7 @@ export interface PrinterEntry {
   url: string;
   tailscaleUrl: string;
   cameraUrl: string;
+  connectionMode: ConnectionMode;
 }
 
 export interface DashboardSections {
@@ -25,12 +26,14 @@ export interface DashboardSections {
 }
 
 export type NotificationMode = 'off' | 'local' | 'ntfy';
+export type ConnectionMode = 'auto' | 'lan' | 'tailscale';
 
 export interface Settings {
   settingsVersion: number;
   primaryUrl: string;
   tailscaleUrl: string;
   cameraUrl: string;
+  connectionMode: ConnectionMode;
   printers: PrinterEntry[];
   activePrinterId: string;
   dashboard: DashboardSections;
@@ -52,13 +55,15 @@ export interface Settings {
   temperatureUnit: TemperatureUnit;
 }
 
-export const STORAGE_VERSION = 6;
+export const STORAGE_VERSION = 7;
+export const LEGACY_DEFAULT_PRIMARY_URL = 'http://192.168.1.17:7125';
 
 export const DEFAULT_SETTINGS: Settings = {
   settingsVersion: STORAGE_VERSION,
-  primaryUrl: 'http://192.168.1.17:7125',
+  primaryUrl: '',
   tailscaleUrl: '',
   cameraUrl: '/webcam/webrtc',
+  connectionMode: 'lan',
   printers: [],
   activePrinterId: '',
   dashboard: {
@@ -107,6 +112,12 @@ function notificationMode(raw: unknown, ntfyTopic?: unknown): NotificationMode {
   return stringValue(ntfyTopic)?.trim() ? 'ntfy' : DEFAULT_SETTINGS.notificationMode;
 }
 
+export function normalizeConnectionMode(raw: unknown): ConnectionMode {
+  return raw === 'auto' || raw === 'lan' || raw === 'tailscale'
+    ? raw
+    : DEFAULT_SETTINGS.connectionMode;
+}
+
 function normalizeDashboard(raw: unknown): DashboardSections {
   const dashboard = raw && typeof raw === 'object' && !Array.isArray(raw)
     ? (raw as Partial<DashboardSections>)
@@ -133,14 +144,18 @@ function normalizePrinter(raw: unknown, index: number): PrinterEntry {
   return {
     id: stringValue(p.id) || `p${index + 1}`,
     name: stringValue(p.name) || `Snapmaker ${index + 1}`,
-    url: normalizeMoonrakerUrl(stringValue(p.url) || DEFAULT_SETTINGS.primaryUrl),
+    url: normalizeMoonrakerUrl(stringValue(p.url) || ''),
     tailscaleUrl: normalizeMoonrakerUrl(stringValue(p.tailscaleUrl) || ''),
     cameraUrl: stringValue(p.cameraUrl) || DEFAULT_SETTINGS.cameraUrl,
+    connectionMode: normalizeConnectionMode(p.connectionMode),
   };
 }
 
 export function migrateSettings(raw: Partial<Settings>): Settings {
   const parsed = { ...raw };
+  const parsedPrimaryUrl = normalizeMoonrakerUrl(stringValue(parsed.primaryUrl) || '');
+  const parsedTailscaleUrl = normalizeMoonrakerUrl(stringValue(parsed.tailscaleUrl) || '');
+  const parsedConnectionMode = normalizeConnectionMode(parsed.connectionMode);
   if (
     parsed.cameraUrl === 'http://192.168.1.17/webcam/stream' ||
     parsed.cameraUrl === '/webcam/stream.mjpg'
@@ -152,9 +167,10 @@ export function migrateSettings(raw: Partial<Settings>): Settings {
     ...DEFAULT_SETTINGS,
     ...parsed,
     settingsVersion: STORAGE_VERSION,
-    primaryUrl: normalizeMoonrakerUrl(stringValue(parsed.primaryUrl) || DEFAULT_SETTINGS.primaryUrl),
-    tailscaleUrl: normalizeMoonrakerUrl(stringValue(parsed.tailscaleUrl) || ''),
+    primaryUrl: parsedPrimaryUrl,
+    tailscaleUrl: parsedTailscaleUrl,
     cameraUrl: stringValue(parsed.cameraUrl) || DEFAULT_SETTINGS.cameraUrl,
+    connectionMode: parsedConnectionMode,
     dashboard: normalizeDashboard(parsed.dashboard),
     macroDisplayByPrinter: normalizeMacroDisplayByPrinter(parsed.macroDisplayByPrinter),
     notificationMode: notificationMode(parsed.notificationMode, parsed.ntfyTopic),
@@ -188,41 +204,45 @@ export function migrateSettings(raw: Partial<Settings>): Settings {
     language: stringValue(parsed.language) || DEFAULT_SETTINGS.language,
     temperatureUnit: normalizeTemperatureUnit(parsed.temperatureUnit),
     printers: Array.isArray(parsed.printers)
-      ? parsed.printers.map((p, index) => normalizePrinter(p, index))
+      ? parsed.printers
+          .map((p, index) => normalizePrinter(p, index))
+          .filter((p) => p.url || p.tailscaleUrl)
       : [],
   };
 
   if (!merged.printers.length) {
-    merged.printers = [
-      {
-        id: 'p1',
-        name: 'Snapmaker U1',
-        url: merged.primaryUrl,
-        tailscaleUrl: merged.tailscaleUrl,
-        cameraUrl: merged.cameraUrl,
-      },
-    ];
-    merged.activePrinterId = 'p1';
+    if (merged.primaryUrl || merged.tailscaleUrl) {
+      merged.printers = [
+        {
+          id: 'p1',
+          name: 'Snapmaker U1',
+          url: merged.primaryUrl,
+          tailscaleUrl: merged.tailscaleUrl,
+          cameraUrl: merged.cameraUrl,
+          connectionMode: merged.connectionMode,
+        },
+      ];
+      merged.activePrinterId = 'p1';
+    } else {
+      merged.activePrinterId = '';
+    }
   }
 
-  if (!merged.printers.some((p) => p.id === merged.activePrinterId)) {
+  if (merged.printers.length && !merged.printers.some((p) => p.id === merged.activePrinterId)) {
     const active = merged.printers[0];
     merged.activePrinterId = active.id;
     merged.primaryUrl = active.url;
     merged.tailscaleUrl = active.tailscaleUrl;
     merged.cameraUrl = active.cameraUrl;
+    merged.connectionMode = active.connectionMode;
   }
 
-  if (merged.primaryUrl === DEFAULT_SETTINGS.primaryUrl && merged.printers.length > 1) {
-    const configured = [...merged.printers]
-      .reverse()
-      .find((p) => p.url && p.url !== DEFAULT_SETTINGS.primaryUrl);
-    if (configured) {
-      merged.activePrinterId = configured.id;
-      merged.primaryUrl = configured.url;
-      merged.tailscaleUrl = configured.tailscaleUrl;
-      merged.cameraUrl = configured.cameraUrl;
-    }
+  const selectedPrinter = merged.printers.find((p) => p.id === merged.activePrinterId);
+  if (selectedPrinter) {
+    if (!stringValue(parsed.primaryUrl)) merged.primaryUrl = selectedPrinter.url;
+    if (!stringValue(parsed.tailscaleUrl)) merged.tailscaleUrl = selectedPrinter.tailscaleUrl;
+    if (!stringValue(parsed.cameraUrl)) merged.cameraUrl = selectedPrinter.cameraUrl;
+    if (!stringValue(parsed.connectionMode)) merged.connectionMode = selectedPrinter.connectionMode;
   }
 
   merged.printers = merged.printers.map((p) =>
@@ -232,6 +252,7 @@ export function migrateSettings(raw: Partial<Settings>): Settings {
           url: merged.primaryUrl,
           tailscaleUrl: merged.tailscaleUrl,
           cameraUrl: merged.cameraUrl,
+          connectionMode: merged.connectionMode,
         }
       : p
   );

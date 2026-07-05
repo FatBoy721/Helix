@@ -2,8 +2,9 @@ import React, { useEffect } from 'react';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { DarkTheme, ThemeProvider } from '@react-navigation/native';
-import { SettingsProvider } from '../hooks/useSettings';
+import { SettingsProvider, useSettings } from '../hooks/useSettings';
 import { MoonrakerProvider } from '../hooks/useMoonraker';
+import FirstRunSetup from '../components/FirstRunSetup';
 import { initNotifications } from '../services/notifications';
 import { colors } from '../constants/theme';
 
@@ -26,6 +27,16 @@ export default function RootLayout() {
 
   return (
     <SettingsProvider>
+      <AppShell />
+    </SettingsProvider>
+  );
+}
+
+function AppShell() {
+  const { settings, loaded } = useSettings();
+
+  return (
+    <>
       <MoonrakerProvider>
         <ThemeProvider value={theme}>
           <StatusBar style="light" />
@@ -34,6 +45,7 @@ export default function RootLayout() {
           </Stack>
         </ThemeProvider>
       </MoonrakerProvider>
-    </SettingsProvider>
+      <FirstRunSetup visible={loaded && settings.printers.length === 0} />
+    </>
   );
 }
