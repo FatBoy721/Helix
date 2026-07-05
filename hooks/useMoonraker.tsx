@@ -60,6 +60,7 @@ const MAX_CONSOLE_LINES = 500;
 const WS_OPEN = 1;
 const TEMP_WARNING_DELTA_C = 15;
 const TEMP_WARNING_RESET_DELTA_C = 5;
+const EXTRUDER_ACTIVE_TARGET_MIN_C = 120;
 const EXTRUDER_TARGET_DROP_MIN_DELTA_C = 5;
 const EXTRUDER_TARGET_DROP_SUPPRESS_MS = 5 * 60 * 1000;
 const HEATER_KEY_RE = /^(heater_bed|extruder\d*|heater_generic\s+.+)$/;
@@ -202,6 +203,7 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
         const inactiveExtruder = isExtruderKey(key) && !!activeExtruder && activeExtruder !== key;
         const suppressExtruderCooldown =
           inactiveExtruder ||
+          (isExtruderKey(key) && target > 0 && target < EXTRUDER_ACTIVE_TARGET_MIN_C) ||
           (isExtruderKey(key) &&
             (Date.now() - (extruderTargetDropRef.current[key] ?? 0)) <
               EXTRUDER_TARGET_DROP_SUPPRESS_MS);
