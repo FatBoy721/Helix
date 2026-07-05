@@ -51,6 +51,10 @@ const {
   cameraSnapshotFileName,
 } = require(path.join('..', 'services', 'cameraSnapshot.ts'));
 const {
+  findMachineChamberTemperatureSource,
+  findPandaBreathTemperatureSource,
+} = require(path.join('..', 'services', 'chamberTemperature.ts'));
+const {
   fileUrl,
   isTailscaleUrl,
   normalizeBaseUrl,
@@ -510,6 +514,38 @@ test('validates required URLs for each printer connection mode', () => {
 test('builds websocket URL from active Moonraker URL', () => {
   assert.equal(wsUrl('http://192.168.1.17:7125'), 'ws://192.168.1.17:7125/websocket');
   assert.equal(wsUrl('https://printer.tailnet.ts.net'), 'wss://printer.tailnet.ts.net/websocket');
+});
+
+test('prefers U1 cavity sensor over Panda Breath for machine chamber temperature', () => {
+  const source = findMachineChamberTemperatureSource({
+    'heater_generic panda_breath': { temperature: 48, target: 50 },
+    'temperature_sensor cavity': { temperature: 42 },
+  });
+
+  assert.equal(source.key, 'temperature_sensor cavity');
+  assert.equal(source.label, 'Cavity');
+  assert.equal(source.data.temperature, 42);
+});
+
+test('does not use Panda Breath as the machine chamber temperature source', () => {
+  assert.equal(
+    findMachineChamberTemperatureSource({
+      'heater_generic panda_breath': { temperature: 48, target: 50 },
+    }),
+    null
+  );
+});
+
+test('finds Panda Breath as its own temperature source', () => {
+  const source = findPandaBreathTemperatureSource({
+    'temperature_sensor cavity': { temperature: 42 },
+    'heater_generic panda_breath': { temperature: 48, target: 50 },
+  });
+
+  assert.equal(source.key, 'heater_generic panda_breath');
+  assert.equal(source.label, 'Panda Breath');
+  assert.equal(source.data.temperature, 48);
+  assert.equal(source.data.target, 50);
 });
 
 test('resolves camera paths against active printer host on port 80', () => {

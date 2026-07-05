@@ -24,6 +24,10 @@ import {
   resolveSnapshotUrl,
   thumbnailUrl,
 } from '../../services/moonraker';
+import {
+  findMachineChamberTemperatureSource,
+  findPandaBreathTemperatureSource,
+} from '../../services/chamberTemperature';
 import { formatDuration } from '../../components/PrintProgress';
 import CameraFeed, { CameraStat } from '../../components/CameraFeed';
 import ControlsPanel from '../../components/ControlsPanel';
@@ -55,11 +59,6 @@ interface PickerPrinterStatus {
 type PrinterStatusQuery = {
   print_stats?: { state?: string };
   display_status?: { progress?: number };
-};
-
-type TemperatureStatus = {
-  temperature?: number;
-  target?: number;
 };
 
 interface PickerAnchor {
@@ -151,32 +150,6 @@ function pickerStatusColor(status: PickerPrinterStatus): string {
   return colors.success;
 }
 
-const CHAMBER_NAME_RE = /(panda[_\s-]*breath|chamber|cavity|enclosure)/i;
-
-function chamberSourceScore(key: string): number {
-  const name = key.toLowerCase();
-  if (name === 'heater_generic panda_breath') return 100;
-  if (name.startsWith('heater_generic ') && /chamber|cavity|enclosure/.test(name)) return 90;
-  if (name.startsWith('heater_generic ') && /panda|breath/.test(name)) return 80;
-  if (name.startsWith('temperature_sensor ') && /chamber|cavity|enclosure/.test(name)) return 70;
-  if (name.startsWith('temperature_sensor ') && /panda|breath/.test(name)) return 60;
-  return 0;
-}
-
-function asTemperatureStatus(value: unknown): TemperatureStatus {
-  return value && typeof value === 'object' ? value as TemperatureStatus : {};
-}
-
-function findChamberTemperatureSource(status: Record<string, unknown>) {
-  return Object.keys(status)
-    .map((key) => ({ key, score: chamberSourceScore(key), data: asTemperatureStatus(status[key]) }))
-    .filter(
-      (item) =>
-        item.score > 0 && CHAMBER_NAME_RE.test(item.key) && typeof item.data.temperature === 'number'
-    )
-    .sort((a, b) => b.score - a.score)[0] ?? null;
-}
-
 export default function Dashboard() {
   const {
     status,
@@ -250,7 +223,11 @@ export default function Dashboard() {
   };
 
   const extruderNames = ['extruder', 'extruder1', 'extruder2', 'extruder3'];
-  const chamberTempSource = useMemo(() => findChamberTemperatureSource(status), [status]);
+  const chamberTempSource = useMemo(() => findMachineChamberTemperatureSource(status), [status]);
+  const pandaBreathTempSource = useMemo(
+    () => show.pandaBreath ? findPandaBreathTemperatureSource(status) : null,
+    [show.pandaBreath, status]
+  );
 
   const filename: string = ps.filename ?? '';
   const [slicerEstimate, setSlicerEstimate] = useState<number | null>(null);
@@ -407,12 +384,26 @@ export default function Dashboard() {
 
   const bed = status.heater_bed ?? {};
   const chamber = chamberTempSource?.data ?? null;
+  const pandaBreathTemp = pandaBreathTempSource?.data ?? null;
 
-  // all heaters for the device slide (bed, chamber, every toolhead)
+  // all heaters for the device slide (bed, cavity, Panda Breath, every toolhead)
   const temps: { key: string; label: string; temperature?: number; target?: number }[] = [
     { key: 'bed', label: t('Bed'), temperature: bed.temperature, target: bed.target },
     ...(chamber
-      ? [{ key: 'chamber', label: t('Chamber'), temperature: chamber.temperature, target: chamber.target }]
+      ? [{
+          key: 'chamber',
+          label: t(chamberTempSource?.label ?? 'Chamber'),
+          temperature: chamber.temperature,
+          target: chamber.target,
+        }]
+      : []),
+    ...(pandaBreathTemp
+      ? [{
+          key: 'panda_breath',
+          label: t(pandaBreathTempSource?.label ?? 'Panda Breath'),
+          temperature: pandaBreathTemp.temperature,
+          target: pandaBreathTemp.target,
+        }]
       : []),
     ...extruderNames
       .filter((n) => n === 'extruder' || status[n])
