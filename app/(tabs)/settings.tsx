@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   Alert,
   KeyboardAvoidingView,
@@ -13,6 +13,7 @@ import {
   View,
 } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { useFocusEffect, useRouter } from 'expo-router';
 import {
   ConnectionMode,
   DashboardSections,
@@ -37,6 +38,7 @@ import {
   uploadConfigFile,
   validatePrinterConnectionTarget,
 } from '../../services/moonraker';
+import { getMakerWorldCookies } from '../../services/nativeSlicer';
 import type { PrinterConnectionValidationError } from '../../services/moonraker';
 
 const ACCENTS = [
@@ -628,6 +630,8 @@ export default function SettingsScreen() {
           </TouchableOpacity>
         )}
 
+        <MakerWorldCard />
+
         <AboutCard />
       </ScrollView>
       <ThemedDialog
@@ -647,6 +651,45 @@ export default function SettingsScreen() {
         ]}
       />
     </KeyboardAvoidingView>
+  );
+}
+
+function MakerWorldCard() {
+  const router = useRouter();
+  const [authed, setAuthed] = useState(false);
+
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+      getMakerWorldCookies()
+        .then((c) => active && setAuthed(c.hasAuth))
+        .catch(() => {});
+      return () => {
+        active = false;
+      };
+    }, [])
+  );
+
+  return (
+    <View style={styles.card}>
+      <Text style={styles.cardTitle}>MakerWorld</Text>
+      <Text style={styles.connInfo}>
+        Log in once to import shared MakerWorld models in the Slicer tab.
+      </Text>
+      <View style={styles.toggleRow}>
+        <Text style={styles.toggleLabel}>Account</Text>
+        <Text style={{ color: authed ? colors.success : colors.warning, fontSize: 13, fontWeight: '700' }}>
+          {authed ? 'Logged in' : 'Not logged in'}
+        </Text>
+      </View>
+      <TouchableOpacity
+        style={[styles.smallBtn, { flexDirection: 'row', justifyContent: 'center', gap: 6 }]}
+        onPress={() => router.push('/makerworld-login')}
+      >
+        <MaterialCommunityIcons name="login" size={16} color={colors.text} />
+        <Text style={styles.smallBtnText}>{authed ? 'Re-login' : 'Log in to MakerWorld'}</Text>
+      </TouchableOpacity>
+    </View>
   );
 }
 

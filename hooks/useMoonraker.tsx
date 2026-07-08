@@ -54,6 +54,7 @@ const BASE_OBJECTS = [
   'extruder1',
   'extruder2',
   'extruder3',
+  'print_task_config',
   'fan',
 ];
 const MAX_CONSOLE_LINES = 500;

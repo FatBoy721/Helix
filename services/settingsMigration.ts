@@ -3,6 +3,10 @@ import type { MacroDisplaySettings } from './macroDisplay';
 import { normalizeMoonrakerUrl } from './moonraker';
 import { normalizeTemperatureUnit } from './temperature';
 import type { TemperatureUnit } from './temperature';
+import {
+  DEFAULT_FILAMENT_SLOT_COLORS,
+  normalizeFilamentSlotColors,
+} from '../constants/filamentColors';
 
 export interface PrinterEntry {
   id: string;
@@ -53,9 +57,13 @@ export interface Settings {
   accentColor: string;
   language: string;
   temperatureUnit: TemperatureUnit;
+  /** Hex colours for the four physical filament slots (T0–T3), used by paint/preview. */
+  filamentSlotColors: string[];
+  /** Manual fallback material labels for the four physical filament slots. */
+  filamentSlotMaterials: string[];
 }
 
-export const STORAGE_VERSION = 7;
+export const STORAGE_VERSION = 9;
 export const LEGACY_DEFAULT_PRIMARY_URL = 'http://192.168.1.17:7125';
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -93,6 +101,8 @@ export const DEFAULT_SETTINGS: Settings = {
   accentColor: '#2196f3',
   language: 'en',
   temperatureUnit: 'c',
+  filamentSlotColors: [...DEFAULT_FILAMENT_SLOT_COLORS],
+  filamentSlotMaterials: ['PLA', 'PLA', 'PLA', 'PLA'],
 };
 
 function stringValue(raw: unknown): string | undefined {
@@ -134,6 +144,14 @@ function normalizeDashboard(raw: unknown): DashboardSections {
     camera: booleanValue(dashboard.camera, DEFAULT_SETTINGS.dashboard.camera),
     macros: booleanValue(dashboard.macros, DEFAULT_SETTINGS.dashboard.macros),
   };
+}
+
+function normalizeFilamentSlotMaterials(raw: unknown): string[] {
+  const src = Array.isArray(raw) ? raw : [];
+  return Array.from({ length: 4 }, (_, i) => {
+    const value = stringValue(src[i])?.trim().toUpperCase();
+    return value || DEFAULT_SETTINGS.filamentSlotMaterials[i];
+  });
 }
 
 function normalizePrinter(raw: unknown, index: number): PrinterEntry {
@@ -203,6 +221,8 @@ export function migrateSettings(raw: Partial<Settings>): Settings {
     accentColor: stringValue(parsed.accentColor) || DEFAULT_SETTINGS.accentColor,
     language: stringValue(parsed.language) || DEFAULT_SETTINGS.language,
     temperatureUnit: normalizeTemperatureUnit(parsed.temperatureUnit),
+    filamentSlotColors: normalizeFilamentSlotColors(parsed.filamentSlotColors),
+    filamentSlotMaterials: normalizeFilamentSlotMaterials(parsed.filamentSlotMaterials),
     printers: Array.isArray(parsed.printers)
       ? parsed.printers
           .map((p, index) => normalizePrinter(p, index))

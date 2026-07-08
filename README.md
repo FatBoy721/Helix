@@ -38,6 +38,9 @@ Scan the QR code with Expo Go, or `npx expo run:android` for a native build.
   Debounced buttons, ACE macros ask before running.
 - **Console** — live G-code stream + input.
 - **Files** — G-code list with embedded slicer thumbnails, tap to print.
+- **Slice** — on-device STL/3MF slicing for the U1 (Orca profiles, prepare
+  screen, G-code preview), MakerWorld share-to-slice, upload to Moonraker, and
+  start print from the app.
 - **History** — Fluidd-style printer stats (total jobs, print time, filament)
   plus per-job list with status icons and thumbnails.
 - **Timelapse** — browse, play, and download timelapse videos in-app.
@@ -89,6 +92,22 @@ Scan the QR code with Expo Go, or `npx expo run:android` for a native build.
 Issues and PRs welcome. Translation fixes especially — the ES/DE/FR/ZH strings
 in `services/i18n.ts` are best-effort.
 
+## Credits
+
+Helix is an independent project by [FatBoy721](https://github.com/FatBoy721).
+
+On-device slicing incorporates work from
+**[u1-slicer-for-android](https://github.com/taylormadearmy/u1-slicer-for-android)**
+(Taylor Madearmy) and the
+[OrcaSlicer](https://github.com/SoftFever/OrcaSlicer) /
+[PrusaSlicer](https://github.com/prusa3d/PrusaSlicer) engine (AGPL-3.0). See
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and
+[ATTRIBUTION.md](ATTRIBUTION.md).
+
 ## License
 
-[MIT](LICENSE)
+Helix is licensed under the
+[GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0-or-later).
+
+Pre-1.1.0 releases were MIT-only. From v1.1.0 onward, builds that bundle the
+native slicer are AGPL because of the integrated engine and ported components.

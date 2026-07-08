@@ -1,12 +1,13 @@
 {
   "name": "u1-control",
-  "version": "1.0.2",
+  "version": "1.1.0",
+  "license": "AGPL-3.0-or-later",
   "main": "expo-router/entry",
   "private": true,
   "scripts": {
     "start": "expo start",
-    "android": "expo start --android",
-    "ios": "expo start --ios",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
     "web": "expo start --web",
     "test:macro-display": "node scripts/check-regressions.js",
     "test:regressions": "node scripts/check-regressions.js",

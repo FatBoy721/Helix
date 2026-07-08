@@ -54,15 +54,15 @@ export default function TabLayout() {
       />
       <Tabs.Screen
         name="mesh"
-        options={{ title: t('Bed Mesh'), headerShown: false, tabBarLabel: t('Mesh'), tabBarIcon: tabIcon('grid') }}
+        options={{ title: t('Bed Mesh'), headerShown: false, href: null }}
       />
       <Tabs.Screen
         name="spoolman"
-        options={{ title: 'Spoolman', tabBarLabel: 'Spoolman', tabBarIcon: tabIcon('paper-roll-outline') }}
+        options={{ title: 'Spoolman', href: null }}
       />
       <Tabs.Screen
         name="console"
-        options={{ title: t('Console'), tabBarLabel: t('Console'), tabBarIcon: tabIcon('console') }}
+        options={{ title: t('Console'), href: null }}
       />
       <Tabs.Screen
         name="files"
@@ -70,7 +70,15 @@ export default function TabLayout() {
       />
       <Tabs.Screen
         name="ace"
-        options={{ title: 'multiACE', tabBarLabel: 'ACE', tabBarIcon: tabIcon('palette-swatch') }}
+        options={{ title: 'multiACE', href: null }}
+      />
+      <Tabs.Screen
+        name="slicer"
+        options={{ title: 'Slicer', tabBarLabel: 'Slice', tabBarIcon: tabIcon('cube-outline') }}
+      />
+      <Tabs.Screen
+        name="tools"
+        options={{ title: 'Tools', tabBarLabel: 'Tools', tabBarIcon: tabIcon('view-grid-outline') }}
       />
       <Tabs.Screen
         name="settings"
