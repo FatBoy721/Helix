@@ -61,6 +61,8 @@ export interface Settings {
   filamentSlotColors: string[];
   /** Manual fallback material labels for the four physical filament slots. */
   filamentSlotMaterials: string[];
+  /** Ids of in-app notifications the user has already opened. */
+  seenNotificationIds: string[];
 }
 
 export const STORAGE_VERSION = 9;
@@ -103,6 +105,7 @@ export const DEFAULT_SETTINGS: Settings = {
   temperatureUnit: 'c',
   filamentSlotColors: [...DEFAULT_FILAMENT_SLOT_COLORS],
   filamentSlotMaterials: ['PLA', 'PLA', 'PLA', 'PLA'],
+  seenNotificationIds: [],
 };
 
 function stringValue(raw: unknown): string | undefined {
@@ -223,6 +226,9 @@ export function migrateSettings(raw: Partial<Settings>): Settings {
     temperatureUnit: normalizeTemperatureUnit(parsed.temperatureUnit),
     filamentSlotColors: normalizeFilamentSlotColors(parsed.filamentSlotColors),
     filamentSlotMaterials: normalizeFilamentSlotMaterials(parsed.filamentSlotMaterials),
+    seenNotificationIds: Array.isArray(parsed.seenNotificationIds)
+      ? parsed.seenNotificationIds.filter((id): id is string => typeof id === 'string')
+      : [],
     printers: Array.isArray(parsed.printers)
       ? parsed.printers
           .map((p, index) => normalizePrinter(p, index))

@@ -30,6 +30,7 @@ import {
 } from '../../services/chamberTemperature';
 import { formatDuration } from '../../components/PrintProgress';
 import CameraFeed, { CameraStat } from '../../components/CameraFeed';
+import NotificationBell from '../../components/NotificationBell';
 import ControlsPanel from '../../components/ControlsPanel';
 import MacrosPanel from '../../components/MacrosPanel';
 import {
@@ -456,6 +457,7 @@ export default function Dashboard() {
         <View style={styles.headerStack}>
           {/* header */}
           <View style={styles.header}>
+            <NotificationBell />
             <View style={styles.headerLeft}>
               <View ref={pickerTriggerRef} collapsable={false} style={styles.nameAnchor}>
                 <PressableScale
