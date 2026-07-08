@@ -31,7 +31,7 @@ jobs:
         run: npm ci
 
       - name: Build release APK
-        run: cd android && ./gradlew assembleRelease --no-daemon
+        run: chmod +x android/gradlew && cd android && ./gradlew assembleRelease --no-daemon
 
       - name: Rename APK
         run: cp android/app/build/outputs/apk/release/app-release.apk helix.apk
