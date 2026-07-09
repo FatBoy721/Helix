@@ -1,5 +1,6 @@
 import React, { useEffect } from 'react';
 import { AppState } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Tabs, useRouter } from 'expo-router';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSettings } from '../../hooks/useSettings';
@@ -19,6 +20,9 @@ function tabIcon(name: IconName) {
 export default function TabLayout() {
   useSettings();
   const router = useRouter();
+  // Issue #5: on 3-button-navigation devices the Android nav bar overlaps the
+  // tab bar (the app draws edge-to-edge). Pad the bar by the system inset.
+  const insets = useSafeAreaInsets();
 
   // "Open with Helix" (.3mf/.stl) can arrive on any tab, so consume the launch
   // intent here at the root, then jump to the Slicer. The intent reads once, so
@@ -56,9 +60,9 @@ export default function TabLayout() {
           backgroundColor: colors.card,
           borderTopWidth: 1,
           borderTopColor: colors.border,
-          height: 66,
+          height: 66 + insets.bottom,
           paddingTop: 5,
-          paddingBottom: 7,
+          paddingBottom: 7 + insets.bottom,
           shadowColor: '#000',
           shadowOpacity: 0.18,
           shadowRadius: 10,
