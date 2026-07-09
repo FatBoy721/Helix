@@ -24,7 +24,7 @@ import type { TemperatureUnit } from '../../services/temperature';
 import { colors, spacing } from '../../constants/theme';
 
 export default function ACEScreen() {
-  const { units, aceMacros, hardwareDetected, sendGcode } = useACE();
+  const { units, aceMacros, hardwareDetected, sendGcode, activeAceIndex } = useACE();
   const { connection } = useMoonraker();
   const { settings } = useSettings();
   const disabled = connection !== 'connected';
@@ -70,10 +70,14 @@ export default function ACEScreen() {
             {units.map((unit) => (
               <TouchableOpacity
                 key={unit.index}
-                style={[styles.switchBtn, disabled && styles.disabledBtn]}
+                style={[
+                  styles.switchBtn,
+                  unit.aceIndex === activeAceIndex && styles.switchBtnActive,
+                  disabled && styles.disabledBtn,
+                ]}
                 disabled={disabled}
                 onPress={() =>
-                  confirmRun(`Switch to ACE ${unit.index}?`, ACE_MACROS.switchAce(unit.index - 1))
+                  confirmRun(`Switch to ACE ${unit.index}?`, ACE_MACROS.switchAce(unit.aceIndex))
                 }
               >
                 <Text style={styles.switchText}>ACE {unit.index}</Text>
@@ -142,9 +146,15 @@ function AceUnitCard({
           />
           <Text style={styles.unitStatusText}>
             {unit.connected
-              ? typeof unit.temp === 'number'
-                ? formatTemperature(unit.temp, temperatureUnit, 0)
-                : 'online'
+              ? [
+                  typeof unit.temp === 'number'
+                    ? formatTemperature(unit.temp, temperatureUnit, 0)
+                    : 'online',
+                  typeof unit.humidity === 'number' ? `${unit.humidity}% RH` : null,
+                  unit.active ? 'active' : null,
+                ]
+                  .filter(Boolean)
+                  .join(' · ')
               : 'no data'}
           </Text>
         </View>
@@ -158,13 +168,13 @@ function AceUnitCard({
           onLoad={() =>
             confirmRun(
               `Load ACE ${unit.index} lane ${lane.index + 1} → head ${lane.index}?`,
-              ACE_MACROS.load(unit.index - 1, lane.index)
+              ACE_MACROS.load(unit.aceIndex, lane.index)
             )
           }
           onUnload={() =>
             confirmRun(
               `Unload head ${lane.index} back to ACE?`,
-              ACE_MACROS.unload(unit.index - 1, lane.index)
+              ACE_MACROS.unload(unit.aceIndex, lane.index)
             )
           }
         />
@@ -212,7 +222,7 @@ function AceUnitCard({
               confirmRun(
                 `Start drying ACE ${unit.index}?`,
                 ACE_MACROS.dryStart(
-                  unit.index - 1,
+                  unit.aceIndex,
                   Math.round(inputTemperatureToCelsius(dryTemp, temperatureUnit)) || 45,
                   parseInt(dryMins, 10) || 240
                 )
@@ -225,7 +235,7 @@ function AceUnitCard({
             style={[styles.dryerBtn, styles.dryerStopBtn, disabled && styles.disabledBtn]}
             disabled={disabled}
             onPress={() =>
-              confirmRun(`Stop drying ACE ${unit.index}?`, ACE_MACROS.dryStop(unit.index - 1))
+              confirmRun(`Stop drying ACE ${unit.index}?`, ACE_MACROS.dryStop(unit.aceIndex))
             }
           >
             <Text style={styles.dryerBtnText}>{t('Stop')}</Text>
@@ -358,6 +368,10 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     paddingVertical: spacing.md,
     alignItems: 'center',
+  },
+  switchBtnActive: {
+    borderWidth: 1,
+    borderColor: colors.primary,
   },
   switchText: {
     color: colors.text,
