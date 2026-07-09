@@ -2,6 +2,7 @@ package org.crabcore.u1control.slicing
 
 import android.app.Activity
 import android.content.Context
+import android.content.Intent
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -29,6 +30,7 @@ import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.File
 import java.net.URLEncoder
+import java.util.concurrent.TimeUnit
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -307,8 +309,11 @@ class HelixGcodePreviewActivity : Activity() {
     val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
     // Saved printers count too — the dialog's picker can retarget the send.
     val enabled = moonrakerUrl.isNotBlank() || HelixPrinterStore.read(this).isNotEmpty()
+    // Save works with no printer at all — it's the manual-upload escape hatch.
+    row.addView(pill("Save", false) { saveGcode() },
+      LinearLayout.LayoutParams(0, dp(48), 0.8f).apply { setMargins(0, 0, dp(5), 0) })
     row.addView(pill("Upload", false) { if (enabled) sendToPrinter(false) }.apply { alpha = if (enabled) 1f else 0.4f },
-      LinearLayout.LayoutParams(0, dp(48), 1f).apply { setMargins(0, 0, dp(5), 0) })
+      LinearLayout.LayoutParams(0, dp(48), 1f).apply { setMargins(dp(5), 0, dp(5), 0) })
     row.addView(pill("Upload & Print", true) { if (enabled) showPrintPreprocessDialog() }.apply { alpha = if (enabled) 1f else 0.4f },
       LinearLayout.LayoutParams(0, dp(48), 1.6f).apply { setMargins(dp(5), 0, 0, 0) })
     bar.addView(row)
@@ -795,17 +800,16 @@ class HelixGcodePreviewActivity : Activity() {
     setSendStatus("Uploading $uploadName...")
     Thread {
       try {
-        // Dialog remap: rewrite tool changes onto the slots the user picked.
-        val identity = toolSlotMap.withIndex().all { (i, v) -> i == v }
-        val file = if (identity) File(gcodePath) else {
-          val remapped = File(filesDir, "remap_send.gcode")
-          if (GcodeToolMapper.applyToolMapping(gcodePath, remapped.absolutePath, toolSlotMap.copyOf())) {
-            remapped
-          } else {
-            File(gcodePath)
-          }
-        }
-        val client = OkHttpClient()
+        val file = remappedGcodeFile()
+        // Default OkHttp timeouts are 10s — a multi-MB gcode over WiFi/Tailscale
+        // needs the same size-scaled window HelixSlicerModule.uploadGcode uses.
+        val sizeMb = file.length() / (1024L * 1024L)
+        val timeoutSec = maxOf(30L, minOf(300L, sizeMb + 30L))
+        val client = OkHttpClient.Builder()
+          .connectTimeout(20, TimeUnit.SECONDS)
+          .writeTimeout(timeoutSec, TimeUnit.SECONDS)
+          .readTimeout(timeoutSec, TimeUnit.SECONDS)
+          .build()
         val body = MultipartBody.Builder().setType(MultipartBody.FORM)
           .addFormDataPart("root", "gcodes")
           .addFormDataPart("file", uploadName, file.asRequestBody("text/plain".toMediaType()))
@@ -826,6 +830,53 @@ class HelixGcodePreviewActivity : Activity() {
         setSendStatus("Send failed: ${error.message ?: error::class.java.simpleName}")
       } finally {
         sending = false
+      }
+    }.start()
+  }
+
+  // Dialog remap: rewrite tool changes onto the slots the user picked.
+  private fun remappedGcodeFile(): File {
+    val identity = toolSlotMap.withIndex().all { (i, v) -> i == v }
+    if (identity) return File(gcodePath)
+    val remapped = File(filesDir, "remap_send.gcode")
+    return if (GcodeToolMapper.applyToolMapping(gcodePath, remapped.absolutePath, toolSlotMap.copyOf())) {
+      remapped
+    } else {
+      File(gcodePath)
+    }
+  }
+
+  // "Save" pill → SAF create-document so the gcode can be uploaded manually
+  // (e.g. through Fluidd in a browser) when a direct send isn't possible.
+  private fun saveGcode() {
+    if (!File(gcodePath).exists()) { setSendStatus("G-code file is missing."); return }
+    val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+      addCategory(Intent.CATEGORY_OPENABLE)
+      type = "application/octet-stream"
+      putExtra(Intent.EXTRA_TITLE, uploadName)
+    }
+    try {
+      startActivityForResult(intent, REQ_SAVE_GCODE)
+    } catch (_: Throwable) {
+      setSendStatus("No file picker available on this device.")
+    }
+  }
+
+  override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+    super.onActivityResult(requestCode, resultCode, data)
+    if (requestCode != REQ_SAVE_GCODE) return
+    val uri = data?.data
+    if (resultCode != RESULT_OK || uri == null) return
+    setSendStatus("Saving $uploadName...")
+    Thread {
+      try {
+        val file = remappedGcodeFile()
+        contentResolver.openOutputStream(uri)?.use { out ->
+          file.inputStream().use { it.copyTo(out) }
+        } ?: throw IllegalStateException("Could not open the chosen location.")
+        setSendStatus("Saved $uploadName")
+      } catch (error: Throwable) {
+        setSendStatus("Save failed: ${error.message ?: error::class.java.simpleName}")
       }
     }.start()
   }
@@ -1074,5 +1125,6 @@ class HelixGcodePreviewActivity : Activity() {
     const val EXTRA_USED_TOOL_MASK = "usedToolMask"
     const val EXTRA_MODEL_PATH = "modelPath"
     const val EXTRA_SLOT_COLORS = "slotColors"
+    private const val REQ_SAVE_GCODE = 4471
   }
 }
