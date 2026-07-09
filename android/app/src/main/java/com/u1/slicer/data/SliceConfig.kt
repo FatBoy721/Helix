@@ -34,6 +34,8 @@ data class SliceConfig(
     @JvmField var supportAngle: Float = 45f,
     @JvmField var supportFilament: Int = 0,
     @JvmField var supportInterfaceFilament: Int = 0,
+    @JvmField var supportBuildPlateOnly: Boolean = false,
+    @JvmField var supportPattern: String = "default",
 
     // Skirt/Brim
     @JvmField var skirtLoops: Int = 0,

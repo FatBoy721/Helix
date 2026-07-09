@@ -15,20 +15,27 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { colors, spacing } from '../../constants/theme';
 import {
   clearLastSlice,
+  extractModelPlate,
+  getGcodeFilamentGrams,
   getGcodeThumbnail,
   getLastSliceResult,
   getMakerWorldCookies,
+  getModelPlates,
   getNativeSlicerStatus,
   getSharedMakerWorldLink,
+  ModelPlate,
   NativeMakerWorldDownload,
   NativeSliceResult,
   NativeSlicerStatus,
   openMakerWorldDownloader,
   openNativeGcodePreview,
   openNativeModelPreview,
+  pickModelFile,
   setFilamentSlotColors,
+  setNativePrinters,
   SharedMakerWorldLink,
   uploadGcodeToPrinter,
+  type SharedModelFile,
 } from '../../services/nativeSlicer';
 import { useMoonraker } from '../../hooks/useMoonraker';
 import { useACE } from '../../hooks/useACE';
@@ -37,7 +44,9 @@ import { useSettings } from '../../hooks/useSettings';
 import FilamentSlotsEditor, { type FilamentSlotDisplay } from '../../components/FilamentSlotsEditor';
 import { normalizeFilamentSlotColors } from '../../constants/filamentColors';
 import { takeMwDownload } from '../../services/mwBus';
-import { api, thumbnailUrl } from '../../services/moonraker';
+import { subscribePendingModel, takePendingModel } from '../../services/pendingModel';
+import PrintPreprocessDialog, { type PrintPref } from '../../components/PrintPreprocessDialog';
+import { api, printerConnectionUrl, thumbnailUrl } from '../../services/moonraker';
 
 const MW_DESIGN_RE = /(?:https?:\/\/)?(?:www\.)?makerworld\.com\/(?:\w+\/)?models\/(\d+)/i;
 // The specific print profile/instance the user is viewing, e.g.
@@ -65,7 +74,7 @@ type SliceState =
 type UploadState =
   | { state: 'idle' }
   | { state: 'uploading'; message: string }
-  | { state: 'done'; message: string; filename: string; moonrakerPath: string; preview: UploadPreview }
+  | { state: 'done'; message: string; filename: string; moonrakerPath: string; preview: UploadPreview; printerId: string }
   | { state: 'error'; message: string };
 
 type UploadResult = Awaited<ReturnType<typeof uploadGcodeToPrinter>>;
@@ -112,6 +121,18 @@ export default function SliceLabScreen() {
   const [upload, setUpload] = useState<UploadState>({ state: 'idle' });
   const [printStart, setPrintStart] = useState<PrintStartState>({ state: 'idle' });
   const [mwAuthed, setMwAuthed] = useState(false);
+  const [plates, setPlates] = useState<ModelPlate[]>([]);
+  const [selectedPlate, setSelectedPlate] = useState<{ id: number; path: string; name: string } | null>(null);
+  const [platesFor, setPlatesFor] = useState<string | null>(null);
+  const [extracting, setExtracting] = useState(false);
+  const [preprocessOpen, setPreprocessOpen] = useState(false);
+  const [sendProgress, setSendProgress] = useState(0);
+  const [perToolGrams, setPerToolGrams] = useState<number[]>([]);
+  const [printPrefs, setPrintPrefs] = useState<Record<PrintPref, boolean>>({
+    flowCal: false,
+    timelapse: false,
+    autoLevel: false,
+  });
   const handledUrlRef = useRef<string | null>(null);
   const awaitingInteractive = useRef(false);
   const { activeUrl, connection, status, objectList } = useMoonraker();
@@ -141,6 +162,16 @@ export default function SliceLabScreen() {
     setFilamentSlotColors(effectiveFilamentSlotColors).catch(() => {});
   }, [settingsLoaded, effectiveFilamentSlotColors]);
 
+  // Mirror the printer list for the native print dialog's printer picker.
+  useEffect(() => {
+    if (!settingsLoaded) return;
+    setNativePrinters(
+      settings.printers
+        .map((p) => ({ name: p.name, url: printerConnectionUrl(p) }))
+        .filter((p) => p.url),
+    ).catch(() => {});
+  }, [settingsLoaded, settings.printers]);
+
   const normalizePath = (p: string) => p.replace(/^file:\/\//, '');
 
   const syncLastSlice = useCallback(async (modelPath: string | null) => {
@@ -154,6 +185,44 @@ export default function SliceLabScreen() {
       // Native bridge unavailable — ignore.
     }
   }, []);
+
+  const applyOpenedFile = useCallback((openedFile: SharedModelFile) => {
+    handledUrlRef.current = null;
+    awaitingInteractive.current = false;
+    clearLastSlice().catch(() => {});
+    setSlice({ state: 'idle' });
+    setUpload({ state: 'idle' });
+    setPrintStart({ state: 'idle' });
+    setPlates([]);
+    setSelectedPlate(null);
+    setPlatesFor(null);
+    setDownload({
+      state: 'success',
+      message: `Opened ${openedFile.fileName}.`,
+      result: {
+        designId: null,
+        instanceId: null,
+        fileName: openedFile.fileName,
+        filePath: openedFile.filePath,
+        sizeBytes: openedFile.sizeBytes,
+      },
+    });
+  }, []);
+
+  const pickLocalModel = useCallback(async () => {
+    try {
+      const file = await pickModelFile();
+      applyOpenedFile(file);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/cancel/i.test(message)) return;
+      Alert.alert('Upload', message);
+    }
+  }, [applyOpenedFile]);
+
+  // Open-with can finish importing after the Slice tab first paints — subscribe
+  // so we still show the model when the native handoff lands late.
+  useEffect(() => subscribePendingModel(applyOpenedFile), [applyOpenedFile]);
 
   // Re-check MakerWorld login + pick up interactive downloads / native slice results.
   useFocusEffect(
@@ -174,6 +243,9 @@ export default function SliceLabScreen() {
           state: 'idle',
           message: 'Import cancelled. Share a MakerWorld link to try again.',
         });
+      } else {
+        const openedFile = takePendingModel();
+        if (openedFile) applyOpenedFile(openedFile);
       }
       getMakerWorldCookies()
         .then((c) => active && setMwAuthed(c.hasAuth))
@@ -184,7 +256,7 @@ export default function SliceLabScreen() {
       return () => {
         active = false;
       };
-    }, [syncLastSlice, download])
+    }, [applyOpenedFile, syncLastSlice, download])
   );
 
   const checkStatus = useCallback(async () => {
@@ -329,7 +401,7 @@ export default function SliceLabScreen() {
   }, [sharedLink?.makerWorldUrl, startDownload]);
 
   const startUpload = useCallback(
-    async (gcodePath: string, sourceName?: string | null) => {
+    async (gcodePath: string, sourceName?: string | null, thenPreprocess = false) => {
       setUpload({ state: 'uploading', message: `Uploading to ${activeUrl || 'printer'}...` });
       setPrintStart({ state: 'idle' });
       try {
@@ -348,7 +420,13 @@ export default function SliceLabScreen() {
           filename: uploadedName,
           moonrakerPath: verifiedPath,
           preview,
+          printerId: settings.activePrinterId,
         });
+        // "Upload & Print" flows straight into the Print Preprocessing dialog.
+        if (thenPreprocess) {
+          setPrintStart({ state: 'idle' });
+          setPreprocessOpen(true);
+        }
       } catch (error) {
         setUpload({
           state: 'error',
@@ -356,29 +434,85 @@ export default function SliceLabScreen() {
         });
       }
     },
-    [activeUrl]
+    [activeUrl, settings.activePrinterId]
+  );
+
+  // Detect multi-plate 3MFs once per imported file, so the user can pick a plate.
+  const modelFilePath = download.state === 'success' ? download.result.filePath : null;
+  useEffect(() => {
+    let active = true;
+    if (!modelFilePath) {
+      setPlates([]);
+      setSelectedPlate(null);
+      setPlatesFor(null);
+      return;
+    }
+    if (platesFor === modelFilePath) return;
+    getModelPlates(modelFilePath)
+      .then((found) => {
+        if (!active) return;
+        setPlatesFor(modelFilePath);
+        setPlates(found.length > 1 ? found : []);
+        setSelectedPlate(null);
+      })
+      .catch(() => {
+        if (!active) return;
+        setPlates([]);
+        setSelectedPlate(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [modelFilePath, platesFor]);
+
+  const choosePlate = useCallback(
+    async (plate: ModelPlate) => {
+      if (!modelFilePath || selectedPlate?.id === plate.id) return;
+      setExtracting(true);
+      try {
+        const extracted = await extractModelPlate(modelFilePath, plate.id);
+        setSelectedPlate({ id: plate.id, path: extracted.filePath, name: plate.name });
+        setSlice({ state: 'idle' });
+        setUpload({ state: 'idle' });
+        setPrintStart({ state: 'idle' });
+      } catch (error) {
+        Alert.alert('Plate', error instanceof Error ? error.message : String(error));
+      } finally {
+        setExtracting(false);
+      }
+    },
+    [modelFilePath, selectedPlate],
   );
 
   const prepareAndSlice = useCallback(async () => {
     if (download.state !== 'success') return;
+    if (plates.length > 1 && !selectedPlate) {
+      Alert.alert('Plates', 'This model has multiple plates — pick one to slice first.');
+      return;
+    }
     if (toolLoad.blockReason) {
       Alert.alert('Filament', toolLoad.blockReason);
       return;
     }
+    const path = selectedPlate?.path ?? download.result.filePath;
+    const title = selectedPlate
+      ? `${download.result.fileName} — ${selectedPlate.name}`
+      : download.result.fileName;
     try {
       await openNativeModelPreview(
-        download.result.filePath,
-        download.result.fileName,
+        path,
+        title,
         effectiveFilamentSlotColors,
         colors.primary,
         connection === 'connected' ? activeUrl : null,
         toolLoad.selectedTool,
         toolLoad.nativeLoadedToolMask,
+        Boolean(selectedPlate),
       );
     } catch (error) {
       Alert.alert('Prepare & Slice', error instanceof Error ? error.message : String(error));
     }
-  }, [activeUrl, connection, download, effectiveFilamentSlotColors, toolLoad]);
+  }, [activeUrl, connection, download, effectiveFilamentSlotColors, toolLoad, plates, selectedPlate]);
 
   const updateFilamentSlots = useCallback(
     async (next: string[]) => {
@@ -423,37 +557,79 @@ export default function SliceLabScreen() {
     }
   }, [activeUrl, connection, download, slice, toolLoad]);
 
-  const startUploadedPrint = useCallback(async () => {
+  const openPreprocess = useCallback(() => {
+    if (slice.state !== 'success') return;
+    setPrintStart({ state: 'idle' });
+    setSendProgress(0);
+    setPreprocessOpen(true);
+  }, [slice.state]);
+
+  // Cancel on the Send card: drop the slice result, back to the import state.
+  const dismissSlice = useCallback(() => {
+    setSlice({ state: 'idle' });
+    setUpload({ state: 'idle' });
+    setPrintStart({ state: 'idle' });
+    clearLastSlice().catch(() => {});
+  }, []);
+
+  const selectPrinter = useCallback(
+    (id: string) => {
+      const p = settings.printers.find((x) => x.id === id);
+      if (!p || p.id === settings.activePrinterId) return;
+      updateSettings({
+        activePrinterId: p.id,
+        primaryUrl: p.url,
+        tailscaleUrl: p.tailscaleUrl,
+        cameraUrl: p.cameraUrl,
+        connectionMode: p.connectionMode,
+      });
+    },
+    [settings.printers, settings.activePrinterId, updateSettings],
+  );
+
+  // The dialog's Print button: upload the sliced gcode, verify it, then start —
+  // all in one go, driving the dialog's progress bar.
+  const uploadAndPrint = useCallback(async () => {
+    if (slice.state !== 'success') return;
     if (!activeUrl) {
       setPrintStart({ state: 'error', message: 'Printer URL is blank.' });
       return;
     }
-    if (upload.state !== 'done') {
-      setPrintStart({ state: 'error', message: 'Upload a verified G-code file first.' });
-      return;
-    }
-    const initialTool = slice.state === 'success' ? slice.result.initialTool ?? toolLoad.selectedTool : toolLoad.selectedTool;
-    const requiredToolMask = slice.state === 'success'
-      ? slice.result.usedToolMask ?? (1 << initialTool)
-      : 1 << initialTool;
+    const initialTool = slice.result.initialTool ?? toolLoad.selectedTool;
+    const requiredToolMask = slice.result.usedToolMask ?? (1 << initialTool);
     const missingTools = missingLoadedTools(toolLoad, requiredToolMask);
     if (missingTools) {
       setPrintStart({ state: 'error', message: `Load filament in ${missingTools} before printing.` });
       return;
     }
 
-    setPrintStart({ state: 'starting', message: `Starting ${upload.moonrakerPath}...` });
+    const gcodePath = slice.result.gcodePath;
+    const sourceName = download.state === 'success' ? download.result.fileName : null;
+    setPrintStart({ state: 'starting', message: 'Uploading…' });
+    setSendProgress(0.12);
     try {
-      await api.startPrint(activeUrl, upload.moonrakerPath);
-      setPrintStart({ state: 'done', message: `Print started: ${upload.moonrakerPath}` });
+      const requestedName = buildPrinterUploadFilename(sourceName, gcodePath);
+      const uploaded = await uploadGcodeToPrinter(activeUrl, requestedName, gcodePath);
+      setSendProgress(0.55);
+      const uploadedName = uploaded && 'filename' in uploaded ? uploaded.filename : requestedName;
+      const moonrakerPath = uploadedPathFromResponse(uploaded, uploadedName);
+      setPrintStart({ state: 'starting', message: 'Verifying…' });
+      const verifiedPath = await verifyUploadedGcode(activeUrl, moonrakerPath, uploadedName);
+      setSendProgress(0.8);
+      setPrintStart({ state: 'starting', message: 'Starting print…' });
+      await api.startPrint(activeUrl, verifiedPath);
+      setSendProgress(1);
+      setPrintStart({ state: 'done', message: `Print started: ${verifiedPath}` });
+      setPreprocessOpen(false);
       router.replace('/');
     } catch (error) {
+      setSendProgress(0);
       setPrintStart({
         state: 'error',
-        message: `Start failed: ${error instanceof Error ? error.message : String(error)}`,
+        message: `Send failed: ${error instanceof Error ? error.message : String(error)}`,
       });
     }
-  }, [activeUrl, router, slice, toolLoad, upload]);
+  }, [activeUrl, router, slice, toolLoad, download]);
 
   const refresh = async () => {
     setRefreshing(true);
@@ -486,12 +662,16 @@ export default function SliceLabScreen() {
     getGcodeThumbnail(slicedGcodePath)
       .then((uri) => active && setSliceThumb(uri))
       .catch(() => active && setSliceThumb(null));
+    getGcodeFilamentGrams(slicedGcodePath)
+      .then((g) => active && setPerToolGrams(g))
+      .catch(() => active && setPerToolGrams([]));
     return () => {
       active = false;
     };
   }, [slicedGcodePath]);
 
   return (
+    <>
     <ScrollView
       style={styles.screen}
       contentContainerStyle={styles.content}
@@ -519,6 +699,14 @@ export default function SliceLabScreen() {
 
       <View style={styles.card}>
         <Text style={styles.sectionTitle}>Model</Text>
+        <TouchableOpacity
+          style={styles.secondaryButton}
+          onPress={pickLocalModel}
+          activeOpacity={0.85}
+        >
+          <MaterialCommunityIcons name="upload" size={18} color={colors.text} />
+          <Text style={styles.buttonText}>Upload .3mf / .stl</Text>
+        </TouchableOpacity>
         <Text
           style={[
             styles.value,
@@ -559,15 +747,72 @@ export default function SliceLabScreen() {
             <Text style={styles.buttonText}>Import from link</Text>
           </TouchableOpacity>
         ) : null}
+        {hasModel && plates.length > 1 ? (
+          <View style={styles.plateSection}>
+            <Text style={styles.plateHeading}>
+              {plates.length} plates — pick one to slice
+            </Text>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.plateRow}
+            >
+              {plates.map((plate) => {
+                const active = selectedPlate?.id === plate.id;
+                return (
+                  <TouchableOpacity
+                    key={plate.id}
+                    style={[styles.plateCard, active && styles.plateCardActive]}
+                    onPress={() => choosePlate(plate)}
+                    disabled={extracting}
+                    activeOpacity={0.85}
+                  >
+                    {plate.thumbnail ? (
+                      <Image source={{ uri: plate.thumbnail }} style={styles.plateThumb} resizeMode="cover" />
+                    ) : (
+                      <View style={[styles.plateThumb, styles.platePlaceholder]}>
+                        <MaterialCommunityIcons name="grid" size={22} color={colors.subtext} />
+                      </View>
+                    )}
+                    <Text style={styles.plateName} numberOfLines={1}>{plate.name}</Text>
+                    <Text style={styles.plateMeta}>
+                      {plate.objectCount} obj{plate.objectCount === 1 ? '' : 's'}
+                    </Text>
+                    {active ? (
+                      <View style={styles.plateCheck}>
+                        <MaterialCommunityIcons name="check-circle" size={18} color={colors.primary} />
+                      </View>
+                    ) : null}
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+            {extracting ? (
+              <View style={styles.loadingRow}>
+                <ActivityIndicator color={colors.primary} />
+                <Text style={styles.body}>Preparing plate…</Text>
+              </View>
+            ) : null}
+          </View>
+        ) : null}
         {hasModel ? (
           <TouchableOpacity
-            style={[styles.button, (!ready || toolLoad.blockReason) && styles.buttonOff]}
-            disabled={!ready || Boolean(toolLoad.blockReason)}
+            style={[
+              styles.button,
+              (!ready || toolLoad.blockReason || extracting || (plates.length > 1 && !selectedPlate)) &&
+                styles.buttonOff,
+            ]}
+            disabled={
+              !ready || Boolean(toolLoad.blockReason) || extracting ||
+              (plates.length > 1 && !selectedPlate)
+            }
             onPress={prepareAndSlice}
             activeOpacity={0.85}
           >
             <MaterialCommunityIcons name="cube-scan" size={20} color={colors.text} />
-            <Text style={styles.buttonText}>Prepare & Slice</Text>
+            <Text style={styles.buttonText}>
+              {plates.length > 1 && !selectedPlate ? 'Pick a plate above' : 'Prepare & Slice'}
+            </Text>
           </TouchableOpacity>
         ) : null}
       </View>
@@ -583,87 +828,51 @@ export default function SliceLabScreen() {
             {slice.result.estimatedFilamentGrams.toFixed(1)} g
           </Text>
           <TouchableOpacity
-            style={styles.secondaryButton}
-            onPress={openToolpathPreview}
+            style={[styles.button, !printerReady && styles.buttonOff]}
+            disabled={!printerReady}
+            onPress={openPreprocess}
             activeOpacity={0.85}
           >
-            <MaterialCommunityIcons name="layers-triple-outline" size={18} color={colors.text} />
-            <Text style={styles.buttonText}>View toolpaths</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.button, (!printerReady || upload.state === 'uploading') && styles.buttonOff]}
-            disabled={!printerReady || upload.state === 'uploading'}
-            onPress={() => startUpload(slice.result.gcodePath, download.result.fileName)}
-            activeOpacity={0.85}
-          >
-            {upload.state === 'uploading' ? (
-              <ActivityIndicator color={colors.text} />
-            ) : (
-              <MaterialCommunityIcons
-                name={upload.state === 'done' ? 'check' : 'printer-3d'}
-                size={18}
-                color={colors.text}
-              />
-            )}
+            <MaterialCommunityIcons name="printer-3d" size={18} color={colors.text} />
             <Text style={styles.buttonText}>
-              {upload.state === 'done'
-                ? 'Uploaded'
-                : printerReady
-                  ? 'Upload G-code'
-                  : 'Printer offline'}
+              {printerReady ? 'Upload & Print' : 'Printer offline'}
             </Text>
           </TouchableOpacity>
-          {upload.state === 'done' ? (
-            <>
-              <View style={styles.previewRow}>
-                {upload.preview.thumbnail ? (
-                  <Image source={{ uri: upload.preview.thumbnail }} style={styles.previewImage} resizeMode="cover" />
-                ) : (
-                  <View style={[styles.previewImage, styles.previewPlaceholder]}>
-                    <MaterialCommunityIcons name="file-code-outline" size={28} color={colors.subtext} />
-                  </View>
-                )}
-                <View style={styles.previewText}>
-                  <Text style={styles.previewTitle}>{upload.preview.displayName}</Text>
-                </View>
-              </View>
-              <TouchableOpacity
-                style={[
-                  styles.button,
-                  (!printerReady || printStart.state === 'starting' || missingPrintTools) && styles.buttonOff,
-                ]}
-                disabled={!printerReady || printStart.state === 'starting' || Boolean(missingPrintTools)}
-                onPress={startUploadedPrint}
-                activeOpacity={0.85}
-              >
-                {printStart.state === 'starting' ? (
-                  <ActivityIndicator color={colors.text} />
-                ) : (
-                  <MaterialCommunityIcons
-                    name={printStart.state === 'done' ? 'check' : 'play'}
-                    size={18}
-                    color={colors.text}
-                  />
-                )}
-                <Text style={styles.buttonText}>
-                  {missingPrintTools
-                    ? `Load ${missingPrintTools}`
-                    : printStart.state === 'done'
-                      ? 'Print started'
-                      : 'Start print'}
-                </Text>
-              </TouchableOpacity>
-            </>
-          ) : null}
-          {upload.state === 'error' ? (
-            <Text style={[styles.value, styles.bad]}>{upload.message}</Text>
-          ) : null}
+          <TouchableOpacity
+            style={styles.secondaryButton}
+            onPress={dismissSlice}
+            activeOpacity={0.85}
+          >
+            <MaterialCommunityIcons name="close" size={18} color={colors.subtext} />
+            <Text style={[styles.buttonText, { color: colors.subtext }]}>Cancel</Text>
+          </TouchableOpacity>
           {printStart.state === 'error' ? (
             <Text style={[styles.value, styles.bad]}>{printStart.message}</Text>
           ) : null}
         </View>
       ) : null}
     </ScrollView>
+
+    <PrintPreprocessDialog
+      visible={preprocessOpen}
+      onClose={() => setPreprocessOpen(false)}
+      fileName={download.state === 'success' ? download.result.fileName : 'print.gcode'}
+      estTimeSeconds={slice.state === 'success' ? slice.result.estimatedTimeSeconds : 0}
+      estGramsTotal={slice.state === 'success' ? slice.result.estimatedFilamentGrams : 0}
+      thumbnail={sliceThumb}
+      printers={settings.printers.map((p) => ({ id: p.id, name: p.name }))}
+      activePrinterId={settings.activePrinterId}
+      onSelectPrinter={selectPrinter}
+      slots={filamentSlots}
+      perToolGrams={perToolGrams}
+      prefs={printPrefs}
+      onTogglePref={(pref) => setPrintPrefs((prev) => ({ ...prev, [pref]: !prev[pref] }))}
+      sending={printStart.state === 'starting'}
+      progress={sendProgress}
+      errorMessage={printStart.state === 'error' ? printStart.message : null}
+      onSend={uploadAndPrint}
+    />
+    </>
   );
 }
 
@@ -1042,6 +1251,59 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     backgroundColor: '#0d0f12',
     marginBottom: spacing.sm,
+  },
+  plateSection: {
+    marginTop: spacing.sm,
+    gap: spacing.xs,
+  },
+  plateHeading: {
+    color: colors.subtext,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  plateRow: {
+    gap: spacing.sm,
+    paddingVertical: spacing.xs,
+    paddingRight: spacing.sm,
+  },
+  plateCard: {
+    width: 104,
+    borderRadius: 12,
+    padding: spacing.xs,
+    backgroundColor: colors.bg,
+    borderWidth: 2,
+    borderColor: 'transparent',
+  },
+  plateCardActive: {
+    borderColor: colors.primary,
+  },
+  plateThumb: {
+    width: '100%',
+    height: 88,
+    borderRadius: 8,
+    backgroundColor: '#0d0f12',
+  },
+  platePlaceholder: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  plateName: {
+    color: colors.text,
+    fontSize: 12,
+    fontWeight: '700',
+    marginTop: 4,
+  },
+  plateMeta: {
+    color: colors.subtext,
+    fontSize: 11,
+    marginTop: 1,
+  },
+  plateCheck: {
+    position: 'absolute',
+    top: spacing.xs + 2,
+    right: spacing.xs + 2,
+    backgroundColor: colors.bg,
+    borderRadius: 10,
   },
   previewImage: {
     width: 58,

@@ -25,7 +25,7 @@ data class CameraViewState(
 
 class Camera {
     @Volatile var azimuth = -45.0       // horizontal rotation (degrees)
-    @Volatile var elevation = 45.0      // vertical rotation (degrees, 0=horizon, 90=top-down)
+    @Volatile var elevation = 45.0      // vertical rotation (degrees, 0=horizon, +/-90=top/bottom-down)
     @Volatile var distance = 300.0      // distance from target
     @Volatile var panX = 0.0            // pan offset X (bed X direction)
     @Volatile var panY = 0.0            // pan offset Y (bed Y direction)
@@ -67,7 +67,7 @@ class Camera {
 
     fun rotate(dAzimuth: Double, dElevation: Double) {
         azimuth += dAzimuth
-        elevation = (elevation + dElevation).coerceIn(5.0, 89.0)
+        elevation = (elevation + dElevation).coerceIn(-89.0, 89.0)
     }
 
     fun zoom(factor: Double) {

@@ -42,4 +42,52 @@ object FilamentSlotColors {
       null
     }
   }
+
+  /** Hex palette — matches prepare preview colour priority. */
+  fun mergedSlotHex(
+    context: Context,
+    slotColors: List<String>?,
+    loadedToolMask: Int,
+    projectPaletteHex: List<String>,
+    slotCount: Int? = null,
+  ): List<String> {
+    val saved = read(context)
+    val count =
+      slotCount ?: maxOf(4, projectPaletteHex.size, slotColors?.size ?: 0, saved.size)
+    return (0 until count).map { slot ->
+      val manual =
+        normalizeHex(slotColors?.getOrNull(slot)) ?: normalizeHex(saved.getOrNull(slot))
+      val loadedManual =
+        if (loadedToolMask < 0 || (loadedToolMask and (1 shl slot)) != 0) manual else null
+      loadedManual
+        ?: normalizeHex(projectPaletteHex.getOrNull(slot))
+        ?: manual
+        ?: normalizeHex(DEFAULTS.getOrNull(slot))
+        ?: "#808080"
+    }
+  }
+
+  fun toFloatPalette(hexColors: List<String>): List<FloatArray> =
+    hexColors.map { hex ->
+      val c = Color.parseColor(hex)
+      floatArrayOf(Color.red(c) / 255f, Color.green(c) / 255f, Color.blue(c) / 255f, 1f)
+    }
+
+  /** 3MF baked colours for mesh display — does not substitute loaded machine filaments. */
+  fun meshPaletteFromProject(
+    projectPaletteHex: List<String>,
+    fallbackHex: List<String>,
+    slotCount: Int = 4,
+  ): List<FloatArray> {
+    if (projectPaletteHex.isEmpty()) return toFloatPalette(fallbackHex)
+    val count = maxOf(slotCount, projectPaletteHex.size)
+    val hex =
+      (0 until count).map { slot ->
+        normalizeHex(projectPaletteHex.getOrNull(slot))
+          ?: normalizeHex(fallbackHex.getOrNull(slot))
+          ?: normalizeHex(DEFAULTS.getOrNull(slot))
+          ?: "#808080"
+      }
+    return toFloatPalette(hex)
+  }
 }

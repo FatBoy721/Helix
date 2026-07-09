@@ -7,7 +7,8 @@ import { SettingsProvider, useSettings } from '../hooks/useSettings';
 import { MoonrakerProvider } from '../hooks/useMoonraker';
 import FirstRunSetup from '../components/FirstRunSetup';
 import { initNotifications } from '../services/notifications';
-import { getSharedMakerWorldLink } from '../services/nativeSlicer';
+import { getSharedMakerWorldLink, getSharedModelFile } from '../services/nativeSlicer';
+import { setPendingModel } from '../services/pendingModel';
 import { colors } from '../constants/theme';
 
 const theme = {
@@ -46,6 +47,15 @@ function AppShell() {
         router.replace('/slicer');
       }
     }).catch(() => {});
+
+    // Open-with / share file — import before tabs mount when possible.
+    getSharedModelFile()
+      .then((file) => {
+        if (!file) return;
+        setPendingModel(file);
+        router.replace('/slicer');
+      })
+      .catch(() => {});
   }, [router]);
 
   return (

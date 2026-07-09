@@ -14,6 +14,7 @@ object FeatureType {
     const val BRIDGE: Byte           = 9
     const val SKIRT: Byte            = 10
     const val OTHER: Byte            = 11
+    const val IRONING: Byte          = 12
 }
 
 data class GcodeMove(

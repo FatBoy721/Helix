@@ -130,6 +130,7 @@ object GcodeParser {
                             typeName.startsWith("Skirt")                 -> FeatureType.SKIRT
                             typeName.startsWith("Brim")                  -> FeatureType.SKIRT
                             typeName.startsWith("Gap infill")            -> FeatureType.SPARSE_INFILL
+                            typeName.startsWith("Ironing")               -> FeatureType.IRONING
                             else                                         -> FeatureType.OTHER
                         }
                         // Track wipe tower E boundaries for waste estimation

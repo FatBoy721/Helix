@@ -1,7 +1,11 @@
 package org.crabcore.u1control.slicing
 
 import android.app.Activity
+import android.content.ContentResolver
 import android.content.Intent
+import android.net.Uri
+import android.os.Build
+import android.provider.OpenableColumns
 import android.webkit.CookieManager
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
@@ -22,6 +26,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.asRequestBody
 import org.json.JSONObject
 import java.io.File
+import java.io.RandomAccessFile
 import java.util.concurrent.TimeUnit
 
 class HelixSlicerModule(
@@ -31,6 +36,7 @@ class HelixSlicerModule(
 
   private var native: NativeLibrary? = null
   private var makerWorldDownloaderPromise: Promise? = null
+  private var pickModelPromise: Promise? = null
 
   init {
     reactContext.addActivityEventListener(this)
@@ -80,6 +86,235 @@ class HelixSlicerModule(
     promise.resolve(result)
   }
 
+  /**
+   * When the app was launched by tapping a .3mf/.stl (ACTION_VIEW) or receiving
+   * one via the share sheet (ACTION_SEND with a stream), copies that file into
+   * app storage and returns { fileName, filePath, sizeBytes }. Returns null when
+   * there's no model to open. Marks the intent consumed so it imports only once.
+   */
+  @ReactMethod
+  fun getSharedModelFile(promise: Promise) {
+    try {
+      val activity = getCurrentActivity()
+      val intent = activity?.intent
+      if (intent == null || intent.getBooleanExtra(EXTRA_MODEL_CONSUMED, false)) {
+        promise.resolve(null)
+        return
+      }
+
+      val uri: Uri? = when (intent.action) {
+        Intent.ACTION_VIEW -> intent.data
+        Intent.ACTION_SEND ->
+          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+          } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra(Intent.EXTRA_STREAM)
+          }
+        else -> null
+      }
+
+      val scheme = uri?.scheme?.lowercase()
+      if (uri == null || (scheme != "content" && scheme != "file")) {
+        promise.resolve(null)
+        return
+      }
+
+      val imported = importModelUri(reactApplicationContext.contentResolver, uri, "opened")
+      if (imported == null) {
+        promise.resolve(null)
+        return
+      }
+
+      // Mark handled only after a successful import so a failed copy can retry.
+      intent.putExtra(EXTRA_MODEL_CONSUMED, true)
+      activity.intent = intent
+
+      promise.resolve(imported)
+    } catch (error: Throwable) {
+      promise.reject("E_OPEN_FILE", error.message, error)
+    }
+  }
+
+  /** Opens the system file picker for .3mf / .stl and imports into app storage. */
+  @ReactMethod
+  fun pickModelFile(promise: Promise) {
+    val activity = getCurrentActivity()
+    if (activity == null) {
+      promise.reject("E_NO_ACTIVITY", "No active activity for file picker.")
+      return
+    }
+    if (pickModelPromise != null) {
+      promise.reject("E_BUSY", "A file picker is already open.")
+      return
+    }
+    pickModelPromise = promise
+    val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+      addCategory(Intent.CATEGORY_OPENABLE)
+      type = "*/*"
+      putExtra(
+        Intent.EXTRA_MIME_TYPES,
+        arrayOf(
+          "model/3mf",
+          "application/vnd.ms-package.3dmanufacturing-3dmodel+xml",
+          "application/vnd.ms-3mfdocument",
+          "model/stl",
+          "application/sla",
+          "application/vnd.ms-pki.stl",
+          "application/octet-stream",
+        ),
+      )
+    }
+    try {
+      activity.startActivityForResult(intent, REQUEST_PICK_MODEL)
+    } catch (error: Throwable) {
+      pickModelPromise = null
+      promise.reject("E_PICKER", error.message, error)
+    }
+  }
+
+  private fun importModelUri(
+    resolver: ContentResolver,
+    uri: Uri,
+    prefix: String = "picked",
+  ): com.facebook.react.bridge.WritableMap? {
+    val displayName = queryDisplayName(resolver, uri)
+      ?: uri.lastPathSegment?.substringAfterLast('/')
+    val ext = modelExtension(displayName, resolver.getType(uri))
+    if (ext == null) return null
+
+    val safeBase = (displayName ?: "model")
+      .substringAfterLast('/')
+      .substringAfterLast('\\')
+      .replace(Regex("""[/\\:*?"<>|]"""), "_")
+      .removeSuffix(".$ext")
+      .removeSuffix(".${ext.uppercase()}")
+      .ifBlank { "model" }
+    val outFile = File(reactApplicationContext.filesDir, "${prefix}_$safeBase.$ext")
+
+    val copied = try {
+      resolver.openInputStream(uri)?.use { input ->
+        outFile.outputStream().use { input.copyTo(it) }
+      } != null
+    } catch (_: Throwable) {
+      false
+    }
+
+    if (!copied || !outFile.exists() || outFile.length() == 0L) return null
+
+    return Arguments.createMap().apply {
+      putString("fileName", "$safeBase.$ext")
+      putString("filePath", outFile.absolutePath)
+      putDouble("sizeBytes", outFile.length().toDouble())
+    }
+  }
+
+  private fun queryDisplayName(resolver: ContentResolver, uri: Uri): String? {
+    if (uri.scheme?.lowercase() != "content") return null
+    return try {
+      resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+        if (c.moveToFirst()) {
+          val idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+          if (idx >= 0) c.getString(idx) else null
+        } else {
+          null
+        }
+      }
+    } catch (_: Throwable) {
+      null
+    }
+  }
+
+  private fun modelExtension(name: String?, mime: String?): String? {
+    val lower = name?.lowercase() ?: ""
+    val type = mime?.substringBefore(';')?.trim()?.lowercase()
+    return when {
+      lower.endsWith(".3mf") -> "3mf"
+      lower.endsWith(".stl") -> "stl"
+      type == "model/3mf" ||
+        type == "application/vnd.ms-package.3dmanufacturing-3dmodel+xml" ||
+        type == "application/vnd.ms-3mfdocument" -> "3mf"
+      type == "model/stl" || type == "application/sla" ||
+        type == "application/vnd.ms-pki.stl" -> "stl"
+      (type == "application/octet-stream" || type == "binary/octet-stream" ||
+        type == "application/zip" || type == "application/x-zip-compressed") &&
+        lower.endsWith(".3mf") -> "3mf"
+      (type == "application/octet-stream" || type == "binary/octet-stream") &&
+        lower.endsWith(".stl") -> "stl"
+      else -> null
+    }
+  }
+
+  /**
+   * Lists the plates in a Bambu/Orca multi-plate 3MF. Each entry:
+   * { id, name, objectCount, thumbnail (data: URI or null) }. Empty array for
+   * single-plate 3MFs and STLs.
+   */
+  @ReactMethod
+  fun getModelPlates(path: String, promise: Promise) {
+    try {
+      val file = File(path.removePrefix("file://"))
+      val arr = Arguments.createArray()
+      if (!file.exists()) {
+        promise.resolve(arr)
+        return
+      }
+      for (plate in PlateExtractor.readPlates(file)) {
+        arr.pushMap(Arguments.createMap().apply {
+          putInt("id", plate.id)
+          putString("name", plate.name)
+          putInt("objectCount", plate.objectIds.size)
+          putString("thumbnail", PlateExtractor.readThumbnailDataUri(file, plate.thumbnailEntry))
+        })
+      }
+      promise.resolve(arr)
+    } catch (error: Throwable) {
+      promise.reject("E_PLATES", error.message, error)
+    }
+  }
+
+  /**
+   * Repacks a single plate of a multi-plate 3MF into its own temp 3MF (only that
+   * plate's objects). Resolves { filePath, fileName, objectCount }. The caller
+   * should open it with autoArrange=true so the objects re-center on the bed.
+   */
+  @ReactMethod
+  fun extractPlate(path: String, plateId: Int, promise: Promise) {
+    try {
+      val file = File(path.removePrefix("file://"))
+      if (!file.exists()) {
+        promise.reject("E_NO_FILE", "Model file not found: ${file.absolutePath}")
+        return
+      }
+      val plate = PlateExtractor.readPlates(file).firstOrNull { it.id == plateId }
+      if (plate == null) {
+        promise.reject("E_NO_PLATE", "Plate $plateId not found in this model.")
+        return
+      }
+      if (plate.objectIds.isEmpty()) {
+        promise.reject("E_EMPTY_PLATE", "That plate has no printable objects.")
+        return
+      }
+      val safeName = plate.name
+        .replace(Regex("""[/\\:*?"<>|]"""), "_")
+        .trim()
+        .ifBlank { "plate_$plateId" }
+      val outFile = File(reactApplicationContext.filesDir, "plate_${plateId}_$safeName.3mf")
+      PlateExtractor.extractPlate(file, plate, outFile)
+      if (!outFile.exists() || outFile.length() == 0L) {
+        promise.reject("E_EXTRACT", "Failed to extract plate $plateId.")
+        return
+      }
+      promise.resolve(Arguments.createMap().apply {
+        putString("filePath", outFile.absolutePath)
+        putString("fileName", "$safeName.3mf")
+        putInt("objectCount", plate.objectIds.size)
+      })
+    } catch (error: Throwable) {
+      promise.reject("E_EXTRACT", error.message, error)
+    }
+  }
+
   @ReactMethod
   fun openMakerWorldDownloader(
     designId: String,
@@ -125,6 +360,7 @@ class HelixSlicerModule(
     moonrakerUrl: String?,
     initialTool: Int,
     loadedToolMask: Int,
+    autoArrange: Boolean,
     promise: Promise,
   ) {
     val activity = getCurrentActivity()
@@ -150,6 +386,7 @@ class HelixSlicerModule(
         }
         putExtra(HelixModelPreviewActivity.EXTRA_INITIAL_TOOL, initialTool.coerceIn(0, 3))
         putExtra(HelixModelPreviewActivity.EXTRA_LOADED_TOOL_MASK, loadedToolMask)
+        putExtra(HelixModelPreviewActivity.EXTRA_AUTO_ARRANGE, autoArrange)
         putExtra(HelixModelPreviewActivity.EXTRA_TITLE, title ?: file.name)
         // User-declared filament colours (Slice Lab "Your filaments" row).
         if (slotColors != null && slotColors.size() > 0) {
@@ -221,6 +458,68 @@ class HelixSlicerModule(
     }
   }
 
+  /**
+   * Per-filament weights (grams) from a sliced .gcode. OrcaSlicer writes
+   * `; filament used [g] = a, b, c` in the config block (footer), so we tail-read
+   * first, then fall back to a header scan. Index order = the slicer's filament
+   * indices. Empty when not present.
+   */
+  @ReactMethod
+  fun getGcodeFilamentGrams(path: String, promise: Promise) {
+    try {
+      val file = File(path.removePrefix("file://"))
+      val arr = Arguments.createArray()
+      if (!file.exists()) {
+        promise.resolve(arr)
+        return
+      }
+      parseFilamentGrams(file).forEach { arr.pushDouble(it) }
+      promise.resolve(arr)
+    } catch (error: Throwable) {
+      promise.reject("E_GRAMS", error.message, error)
+    }
+  }
+
+  private val filamentGramsRegex =
+    Regex("""filament used \[g\]\s*=\s*(.+)""", RegexOption.IGNORE_CASE)
+
+  private fun matchGrams(line: String): List<Double>? {
+    if (!line.startsWith(";")) return null
+    val m = filamentGramsRegex.find(line) ?: return null
+    val nums = m.groupValues[1].split(",").mapNotNull { it.trim().toDoubleOrNull() }
+    return nums.ifEmpty { null }
+  }
+
+  private fun parseFilamentGrams(file: File): List<Double> {
+    // 1) Footer (Orca's summary block lives at the end of the file).
+    tailText(file, 256 * 1024)?.lineSequence()?.forEach { line ->
+      matchGrams(line.trim())?.let { return it }
+    }
+    // 2) Header fallback.
+    file.bufferedReader().use { reader ->
+      var line: String?
+      var scanned = 0
+      while (reader.readLine().also { line = it } != null && scanned < 20000) {
+        scanned++
+        matchGrams((line ?: "").trim())?.let { return it }
+      }
+    }
+    return emptyList()
+  }
+
+  private fun tailText(file: File, maxBytes: Int): String? = try {
+    RandomAccessFile(file, "r").use { raf ->
+      val len = raf.length()
+      val from = maxOf(0L, len - maxBytes)
+      raf.seek(from)
+      val bytes = ByteArray((len - from).toInt())
+      raf.readFully(bytes)
+      String(bytes, Charsets.UTF_8)
+    }
+  } catch (_: Throwable) {
+    null
+  }
+
   @ReactMethod
   fun getLastSliceResult(promise: Promise) {
     val model = LastSliceStore.modelPath
@@ -247,6 +546,23 @@ class HelixSlicerModule(
   fun clearLastSlice(promise: Promise) {
     LastSliceStore.clear()
     promise.resolve(true)
+  }
+
+  /** Mirrors the RN printer list into native prefs for the print dialog's picker. */
+  @ReactMethod
+  fun setPrinters(printers: ReadableArray, promise: Promise) {
+    try {
+      val list = (0 until printers.size()).mapNotNull { i ->
+        val map = printers.getMap(i) ?: return@mapNotNull null
+        val url = map.getString("url")?.trim().orEmpty()
+        if (url.isEmpty()) return@mapNotNull null
+        HelixPrinterStore.Printer(map.getString("name")?.trim().orEmpty().ifEmpty { "Printer" }, url)
+      }
+      HelixPrinterStore.write(reactApplicationContext, list)
+      promise.resolve(true)
+    } catch (error: Throwable) {
+      promise.reject("E_PRINTERS", error.message, error)
+    }
   }
 
   @ReactMethod
@@ -300,6 +616,7 @@ class HelixSlicerModule(
         putExtra(HelixGcodePreviewActivity.EXTRA_INITIAL_TOOL, initialTool.coerceIn(0, 3))
         putExtra(HelixGcodePreviewActivity.EXTRA_LOADED_TOOL_MASK, loadedToolMask)
         putExtra(HelixGcodePreviewActivity.EXTRA_USED_TOOL_MASK, usedToolMask)
+        LastSliceStore.modelPath?.let { putExtra(HelixGcodePreviewActivity.EXTRA_MODEL_PATH, it) }
       }
       activity.startActivity(intent)
       promise.resolve(true)
@@ -315,7 +632,9 @@ class HelixSlicerModule(
    * estimatedFilamentGrams, errorMessage }.
    *
    * options (all optional): layerHeight, fillDensity (0..1), nozzleTemp, bedTemp,
-   * supportEnabled, brimWidth, skirtLoops.
+   * supportEnabled, supportType, supportAngle, supportFilament,
+   * supportInterfaceFilament, supportBuildPlateOnly, supportPattern,
+   * brimWidth, skirtLoops.
    */
   @ReactMethod
   fun sliceFile(path: String, options: ReadableMap?, promise: Promise) {
@@ -336,21 +655,33 @@ class HelixSlicerModule(
           ?.getInt("initialTool")
           ?.coerceIn(0, 3)
           ?: 0
+        val o = options
+        val sliceSettings = HelixSliceSettings.fromBridgeOptions(
+          supportEnabled = o?.takeIf { it.hasKey("supportEnabled") }?.getBoolean("supportEnabled"),
+          supportType = o?.takeIf { it.hasKey("supportType") }?.getString("supportType"),
+          supportAngle = o?.takeIf { it.hasKey("supportAngle") }?.getDouble("supportAngle"),
+          supportFilament = o?.takeIf { it.hasKey("supportFilament") }?.getInt("supportFilament"),
+          supportInterfaceFilament = o?.takeIf { it.hasKey("supportInterfaceFilament") }
+            ?.getInt("supportInterfaceFilament"),
+          supportBuildPlateOnly = o?.takeIf { it.hasKey("supportBuildPlateOnly") }
+            ?.getBoolean("supportBuildPlateOnly"),
+          supportPattern = o?.takeIf { it.hasKey("supportPattern") }?.getString("supportPattern"),
+          brimWidth = o?.takeIf { it.hasKey("brimWidth") }?.getDouble("brimWidth"),
+        )
         val outcome = HelixSliceRunner.run(
           reactApplicationContext,
           lib,
           path,
           onProgress = { pct, stage -> emitProgress(pct, stage) },
           initialTool = initialTool,
+          sliceSettings = sliceSettings,
         ) {
-          options?.let { o ->
-            if (o.hasKey("layerHeight")) layerHeight = o.getDouble("layerHeight").toFloat()
-            if (o.hasKey("fillDensity")) fillDensity = o.getDouble("fillDensity").toFloat()
-            if (o.hasKey("nozzleTemp")) nozzleTemp = o.getInt("nozzleTemp")
-            if (o.hasKey("bedTemp")) bedTemp = o.getInt("bedTemp")
-            if (o.hasKey("supportEnabled")) supportEnabled = o.getBoolean("supportEnabled")
-            if (o.hasKey("brimWidth")) brimWidth = o.getDouble("brimWidth").toFloat()
-            if (o.hasKey("skirtLoops")) skirtLoops = o.getInt("skirtLoops")
+          o?.let { opts ->
+            if (opts.hasKey("layerHeight")) layerHeight = opts.getDouble("layerHeight").toFloat()
+            if (opts.hasKey("fillDensity")) fillDensity = opts.getDouble("fillDensity").toFloat()
+            if (opts.hasKey("nozzleTemp")) nozzleTemp = opts.getInt("nozzleTemp")
+            if (opts.hasKey("bedTemp")) bedTemp = opts.getInt("bedTemp")
+            if (opts.hasKey("skirtLoops")) skirtLoops = opts.getInt("skirtLoops")
           }
         }
 
@@ -750,6 +1081,22 @@ class HelixSlicerModule(
   }
 
   override fun onActivityResult(activity: Activity, requestCode: Int, resultCode: Int, data: Intent?) {
+    if (requestCode == REQUEST_PICK_MODEL) {
+      val promise = pickModelPromise ?: return
+      pickModelPromise = null
+      if (resultCode != Activity.RESULT_OK || data?.data == null) {
+        promise.reject("E_CANCELLED", "File picker was cancelled.")
+        return
+      }
+      val imported = importModelUri(reactApplicationContext.contentResolver, data.data!!)
+      if (imported == null) {
+        promise.reject("E_BAD_FILE", "Choose a .3mf or .stl file.")
+        return
+      }
+      promise.resolve(imported)
+      return
+    }
+
     if (requestCode != REQUEST_MAKERWORLD_DOWNLOADER) return
 
     val promise = makerWorldDownloaderPromise ?: return
@@ -790,12 +1137,15 @@ class HelixSlicerModule(
   override fun invalidate() {
     reactApplicationContext.removeActivityEventListener(this)
     makerWorldDownloaderPromise = null
+    pickModelPromise = null
     super.invalidate()
   }
 
   companion object {
     const val NAME = "HelixSlicer"
+    private const val EXTRA_MODEL_CONSUMED = "helix_model_consumed"
     private const val REQUEST_MAKERWORLD_DOWNLOADER = 7121
+    private const val REQUEST_PICK_MODEL = 7122
     private const val KEY_MW_COOKIE = "makerworld_cookies"
     private const val KEY_MW_BEARER = "makerworld_bearer"
     private const val MW_UA =

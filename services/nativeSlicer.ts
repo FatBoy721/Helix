@@ -16,12 +16,37 @@ export type SharedMakerWorldLink = {
   hasMakerWorldUrl: boolean;
 };
 
+export type SharedModelFile = {
+  fileName: string;
+  filePath: string;
+  sizeBytes: number;
+};
+
+export type ModelPlate = {
+  id: number;
+  name: string;
+  objectCount: number;
+  thumbnail: string | null;
+};
+
+export type ExtractedPlate = {
+  filePath: string;
+  fileName: string;
+  objectCount: number;
+};
+
 export type SliceOptions = {
   layerHeight?: number;
   fillDensity?: number; // 0..1
   nozzleTemp?: number;
   bedTemp?: number;
   supportEnabled?: boolean;
+  supportType?: string;
+  supportAngle?: number;
+  supportFilament?: number;
+  supportInterfaceFilament?: number;
+  supportBuildPlateOnly?: boolean;
+  supportPattern?: string;
   brimWidth?: number;
   skirtLoops?: number;
   initialTool?: number;
@@ -67,6 +92,10 @@ export type NativeGcodeUpload = {
 type HelixSlicerModule = {
   getStatus: () => Promise<NativeSlicerStatus>;
   getSharedLink: () => Promise<SharedMakerWorldLink>;
+  getSharedModelFile: () => Promise<SharedModelFile | null>;
+  pickModelFile: () => Promise<SharedModelFile>;
+  getModelPlates: (path: string) => Promise<ModelPlate[]>;
+  extractPlate: (path: string, plateId: number) => Promise<ExtractedPlate>;
   sliceFile: (path: string, options: SliceOptions | null) => Promise<NativeSliceResult>;
   cancelSlice: () => Promise<boolean>;
   captureMakerWorldCookies: () => Promise<MakerWorldCookies>;
@@ -87,7 +116,8 @@ type HelixSlicerModule = {
     accentColor: string | null,
     moonrakerUrl: string | null,
     initialTool: number,
-    loadedToolMask: number
+    loadedToolMask: number,
+    autoArrange: boolean
   ) => Promise<boolean>;
   openGcodePreview: (
     path: string,
@@ -99,8 +129,10 @@ type HelixSlicerModule = {
     usedToolMask: number
   ) => Promise<boolean>;
   setFilamentSlotColors: (colors: string[]) => Promise<boolean>;
+  setPrinters: (printers: { name: string; url: string }[]) => Promise<boolean>;
   getLastSliceResult: () => Promise<NativeSliceResult | null>;
   getGcodeThumbnail: (path: string) => Promise<string | null>;
+  getGcodeFilamentGrams: (path: string) => Promise<number[]>;
   clearLastSlice: () => Promise<boolean>;
   uploadGcode: (baseUrl: string, filename: string, path: string) => Promise<NativeGcodeUpload>;
 };
@@ -155,6 +187,49 @@ export async function getSharedMakerWorldLink(): Promise<SharedMakerWorldLink> {
   }
 
   return nativeModule.getSharedLink();
+}
+
+/**
+ * If the app was opened by tapping a .3mf/.stl (or receiving one via share),
+ * copies it into app storage and returns its path. Null when there's nothing to
+ * open. Imports only once per launch intent (native marks it consumed).
+ */
+export async function getSharedModelFile(): Promise<SharedModelFile | null> {
+  if (Platform.OS !== 'android' || !nativeModule) return null;
+  try {
+    return await nativeModule.getSharedModelFile();
+  } catch {
+    return null;
+  }
+}
+
+/** Opens the system file picker for .3mf / .stl and imports into app storage. */
+export async function pickModelFile(): Promise<SharedModelFile> {
+  if (Platform.OS !== 'android' || !nativeModule) {
+    throw new Error('Model upload is Android-only in this build.');
+  }
+  return nativeModule.pickModelFile();
+}
+
+/**
+ * Lists the plates in a multi-plate Bambu/Orca 3MF. Empty for single-plate
+ * files and STLs (JS shows the picker only when length > 1).
+ */
+export async function getModelPlates(path: string): Promise<ModelPlate[]> {
+  if (Platform.OS !== 'android' || !nativeModule) return [];
+  try {
+    return await nativeModule.getModelPlates(path.replace(/^file:\/\//, ''));
+  } catch {
+    return [];
+  }
+}
+
+/** Repacks one plate of a multi-plate 3MF into its own temp file. */
+export async function extractModelPlate(path: string, plateId: number): Promise<ExtractedPlate> {
+  if (Platform.OS !== 'android' || !nativeModule) {
+    throw new Error('Plate extraction is Android-only.');
+  }
+  return nativeModule.extractPlate(path.replace(/^file:\/\//, ''), plateId);
 }
 
 /**
@@ -259,7 +334,8 @@ export async function openNativeModelPreview(
   accentColor?: string | null,
   moonrakerUrl?: string | null,
   initialTool = 0,
-  loadedToolMask = -1
+  loadedToolMask = -1,
+  autoArrange = false
 ): Promise<void> {
   if (Platform.OS !== 'android' || !nativeModule) {
     throw new Error('Native 3D preview is Android-only in this lab build.');
@@ -273,6 +349,7 @@ export async function openNativeModelPreview(
     moonrakerUrl ?? null,
     initialTool,
     loadedToolMask,
+    autoArrange,
   );
 }
 
@@ -280,6 +357,16 @@ export async function openNativeModelPreview(
 export async function setFilamentSlotColors(colors: string[]): Promise<void> {
   if (Platform.OS !== 'android' || !nativeModule) return;
   await nativeModule.setFilamentSlotColors(colors);
+}
+
+/** Mirrors the saved printers into native prefs for the print dialog's picker. */
+export async function setNativePrinters(printers: { name: string; url: string }[]): Promise<void> {
+  if (Platform.OS !== 'android' || !nativeModule) return;
+  try {
+    await nativeModule.setPrinters(printers);
+  } catch {
+    // Older native build without setPrinters — dialog just hides the picker.
+  }
 }
 
 export async function getLastSliceResult(): Promise<NativeSliceResult | null> {
@@ -312,6 +399,16 @@ export async function getGcodeThumbnail(path: string): Promise<string | null> {
     return await nativeModule.getGcodeThumbnail(path.replace(/^file:\/\//, ''));
   } catch {
     return null;
+  }
+}
+
+/** Per-filament weights (g) parsed from a sliced .gcode; [] when unavailable. */
+export async function getGcodeFilamentGrams(path: string): Promise<number[]> {
+  if (Platform.OS !== 'android' || !nativeModule) return [];
+  try {
+    return await nativeModule.getGcodeFilamentGrams(path.replace(/^file:\/\//, ''));
+  } catch {
+    return [];
   }
 }
 

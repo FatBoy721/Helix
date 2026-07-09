@@ -1,8 +1,11 @@
-import React from 'react';
-import { Tabs } from 'expo-router';
+import React, { useEffect } from 'react';
+import { AppState } from 'react-native';
+import { Tabs, useRouter } from 'expo-router';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSettings } from '../../hooks/useSettings';
 import { t } from '../../services/i18n';
+import { getSharedModelFile } from '../../services/nativeSlicer';
+import { setPendingModel } from '../../services/pendingModel';
 import { colors } from '../../constants/theme';
 
 type IconName = React.ComponentProps<typeof MaterialCommunityIcons>['name'];
@@ -15,6 +18,31 @@ function tabIcon(name: IconName) {
 
 export default function TabLayout() {
   useSettings();
+  const router = useRouter();
+
+  // "Open with Helix" (.3mf/.stl) can arrive on any tab, so consume the launch
+  // intent here at the root, then jump to the Slicer. The intent reads once, so
+  // the file is stashed for the Slicer screen to pick up.
+  useEffect(() => {
+    let alive = true;
+    const check = () => {
+      getSharedModelFile()
+        .then((file) => {
+          if (!alive || !file) return;
+          setPendingModel(file);
+          router.navigate('/slicer');
+        })
+        .catch(() => {});
+    };
+    check();
+    const sub = AppState.addEventListener('change', (s) => {
+      if (s === 'active') check();
+    });
+    return () => {
+      alive = false;
+      sub.remove();
+    };
+  }, [router]);
 
   return (
     <Tabs

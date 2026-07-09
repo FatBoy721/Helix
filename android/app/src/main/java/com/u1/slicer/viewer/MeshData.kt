@@ -46,6 +46,19 @@ data class MeshData(
     /** True when per-triangle extruder indices are available for coloring. */
     val hasPerVertexColor get() = batches.any { it.materialIndices != null }
 
+    /** Distinct extruder slot indices (0-based) present on this mesh, sorted T0→Tn. */
+    fun usedExtruderSlots(): List<Int> {
+        val used = sortedSetOf<Int>()
+        for (batch in batches) {
+            val mat = batch.materialIndices ?: continue
+            mat.position(0)
+            repeat(batch.triangleCount) {
+                used.add(mat.get().toInt() and 0xFF)
+            }
+        }
+        return used.toList()
+    }
+
     /**
      * Extract a flat per-triangle xyz array suitable for [ModelViewerView.setTrianglePickingPositions].
      * Layout: 9 floats per triangle (v0xyz, v1xyz, v2xyz), in the same coordinate space as the
@@ -232,6 +245,67 @@ data class MeshData(
                 cb.put(r).put(g).put(b).put(a)
             }
             
+            cb.position(0)
+            globalTriIndex += triCount
+        }
+    }
+
+    /**
+     * Per-triangle recolor: user-painted tris use [machinePalette], untouched tris keep [filePalette].
+     */
+    fun recolorWithPaintMask(
+        painted: BooleanArray,
+        filePalette: List<FloatArray>,
+        machinePalette: List<FloatArray>,
+    ) {
+        if (filePalette.isEmpty() && machinePalette.isEmpty()) return
+        val fileArr = filePalette.toTypedArray()
+        val machineArr = machinePalette.toTypedArray()
+        val fileLast = fileArr.size - 1
+        val machineLast = machineArr.size - 1
+
+        var maxTris = 0
+        for (batch in batches) {
+            if (batch.triangleCount > maxTris) maxTris = batch.triangleCount
+        }
+        if (maxTris == 0) return
+
+        val indices = ByteArray(maxTris)
+        var globalTriIndex = 0
+        val modStart = modifierBlockStartTriangle ?: Int.MAX_VALUE
+
+        for (batch in batches) {
+            val indicesBuffer = batch.materialIndices ?: continue
+            val triCount = batch.triangleCount
+            val floatCount = triCount * 3 * 4
+
+            if (batch.colorBuffer == null || batch.colorBuffer!!.capacity() < floatCount) {
+                batch.colorBuffer = ByteBuffer.allocateDirect(floatCount * 4)
+                    .order(java.nio.ByteOrder.nativeOrder())
+                    .asFloatBuffer()
+            }
+            val cb = batch.colorBuffer!!
+            cb.position(0)
+
+            indicesBuffer.position(0)
+            indicesBuffer.get(indices, 0, triCount)
+
+            for (localTri in 0 until triCount) {
+                val tri = globalTriIndex + localTri
+                val slot = indices[localTri].toInt() and 0xFF
+                val color = when {
+                    tri >= modStart -> MODIFIER_PREVIEW_COLOR
+                    tri in painted.indices && painted[tri] ->
+                        machineArr[slot.coerceAtMost(machineLast)]
+                    else ->
+                        fileArr[slot.coerceAtMost(fileLast)]
+                }
+                val r = color[0]; val g = color[1]; val b = color[2]; val a = color[3]
+                cb.put(r).put(g).put(b).put(a)
+                cb.put(r).put(g).put(b).put(a)
+                cb.put(r).put(g).put(b).put(a)
+            }
+
             cb.position(0)
             globalTriIndex += triCount
         }

@@ -44,6 +44,7 @@ object HelixSliceRunner {
     path: String,
     onProgress: (Int, String) -> Unit,
     initialTool: Int = 0,
+    sliceSettings: HelixSliceSettings = HelixSliceSettings(),
     configure: SliceConfig.() -> Unit = {},
   ): Outcome {
     if (!slicing.compareAndSet(false, true)) throw BusyError()
@@ -57,8 +58,9 @@ object HelixSliceRunner {
         val effectivePath = PrepareSession.paintedFileFor(path)
           ?.takeIf { File(it).exists() }
           ?: path
-        if (!lib.loadModel(effectivePath)) {
-          throw LoadError("Engine could not load model: $effectivePath")
+        val loadPath = SliceSettings3mfPatcher.resolvePath(context, effectivePath, sliceSettings)
+        if (!lib.loadModel(loadPath)) {
+          throw LoadError("Engine could not load model: $loadPath")
         }
 
         // Re-apply any prepare-screen edits (rotate/scale/copies/split/positions)
@@ -69,14 +71,21 @@ object HelixSliceRunner {
           runCatching { PrepareSession.replay(path, lib) }
         }
 
+        // Multicolor models carry more than one filament in their project config.
+        // For those we keep the engine's multi-tool output; only single-colour
+        // prints get pinned to the user's chosen loaded head.
+        val filamentCount = readFilamentCount(lib)
+        val multicolor = filamentCount > 1
+
         val (startGcode, endGcode) = readMachineGcode(context)
         val selectedTool = initialTool.coerceIn(0, 3)
         val config = SliceConfig(
           machineStartGcode = startGcode,
           machineEndGcode = endGcode,
         ).apply {
+          sliceSettings.applyTo(this)
           configure()
-          forceSingleTool(selectedTool)
+          if (multicolor) configureMultiTool(filamentCount) else forceSingleTool(selectedTool)
           // Wipe tower position shown/dragged on the prepare screen.
           PrepareSession.towerPositionFor(path)?.let { (tx, ty) ->
             wipeTowerX = tx
@@ -87,9 +96,22 @@ object HelixSliceRunner {
         onProgress(1, "slicing")
         val result = lib.slice(config)
         val toolResult = if (result != null && result.success && result.gcodePath.isNotBlank()) {
-          GcodeToolMapper.applyInitialTool(result.gcodePath, selectedTool)
+          // Single-colour: pin startup to the loaded head. Multicolor: keep all tools.
+          if (multicolor) GcodeToolMapper.usedMaskOnly(result.gcodePath)
+          else GcodeToolMapper.applyInitialTool(result.gcodePath, selectedTool)
         } else {
           GcodeToolMapper.Result(false, 1 shl selectedTool)
+        }
+
+        // Stamp the engine's REAL palette (what the prepare screen showed) into
+        // the gcode config comments. The engine writes default white, and the
+        // 3MF's project_settings often holds Bambu's stock palette (green/blue),
+        // not the model's — this line is what preview/dialog/Moonraker read.
+        if (result != null && result.success && result.gcodePath.isNotBlank()) {
+          val palette = readFilamentColours(lib)
+          if (palette.isNotEmpty()) {
+            runCatching { GcodeFilamentColors.embedPalette(result.gcodePath, palette) }
+          }
         }
 
         val thumbnailsInjected = if (result != null && result.success && result.gcodePath.isNotBlank()) {
@@ -124,6 +146,46 @@ object HelixSliceRunner {
     }
   }
 
+  /** Number of filaments declared in the loaded model's project config (>=1). */
+  private fun readFilamentCount(lib: NativeLibrary): Int = readFilamentColours(lib).size.coerceAtLeast(1)
+
+  /** The engine's parsed palette — the same colours the prepare screen renders. */
+  private fun readFilamentColours(lib: NativeLibrary): List<String> {
+    val json = runCatching { lib.nativeGetProjectConfig() }.getOrNull() ?: return emptyList()
+    return try {
+      val arr = JSONObject(json).optJSONArray("filamentColours") ?: return emptyList()
+      (0 until arr.length()).mapNotNull { i ->
+        val hex = arr.optString(i).trim()
+        if (hex.isEmpty()) null else if (hex.startsWith("#")) hex else "#$hex"
+      }
+    } catch (_: Throwable) {
+      emptyList()
+    }
+  }
+
+  /** Size the config for [count] filaments (U1 has 4 ACE slots) so the engine keeps
+   *  the multicolor tool changes instead of collapsing to one filament. */
+  private fun SliceConfig.configureMultiTool(count: Int) {
+    val n = count.coerceIn(1, 4)
+    extruderCount = maxOf(extruderCount, n)
+    if (filamentTypes.size < n) {
+      val e = filamentTypes
+      filamentTypes = Array(n) { i -> e.getOrNull(i) ?: filamentType }
+    }
+    if (extruderTemps.size < n) {
+      val e = extruderTemps
+      extruderTemps = IntArray(n) { i -> e.getOrNull(i) ?: nozzleTemp }
+    }
+    if (extruderRetractLength.size < n) {
+      val e = extruderRetractLength
+      extruderRetractLength = FloatArray(n) { i -> e.getOrNull(i) ?: retractLength }
+    }
+    if (extruderRetractSpeed.size < n) {
+      val e = extruderRetractSpeed
+      extruderRetractSpeed = FloatArray(n) { i -> e.getOrNull(i) ?: retractSpeed }
+    }
+  }
+
   private fun SliceConfig.forceSingleTool(tool: Int) {
     if (tool !in 0..3) return
     val count = maxOf(extruderCount, tool + 1)
@@ -144,7 +206,5 @@ object HelixSliceRunner {
       val existing = extruderRetractSpeed
       extruderRetractSpeed = FloatArray(count) { i -> existing.getOrNull(i) ?: retractSpeed }
     }
-    supportFilament = tool
-    supportInterfaceFilament = tool
   }
 }

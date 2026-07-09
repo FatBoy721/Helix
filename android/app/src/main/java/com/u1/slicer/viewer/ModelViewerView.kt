@@ -74,6 +74,9 @@ class ModelViewerView(context: Context) : BaseGLViewerView(context) {
     // The list is what the AI Paint screen passes to AiPaintViewModel.paintTriangles.
     var onBrushPaint: ((List<Int>) -> Unit)? = null
 
+    /** Paint-bucket tap on DOWN — single triangle index under the finger. */
+    var onFillTap: ((Int) -> Unit)? = null
+
     // Fired once at ACTION_DOWN of every brush touch sequence so the consumer can snapshot
     // for undo before the stroke modifies anything.
     var onBrushStrokeStart: (() -> Unit)? = null
@@ -162,7 +165,20 @@ class ModelViewerView(context: Context) : BaseGLViewerView(context) {
 
     /** Recolor the mesh using the given palette. Thread-safe: queues work on GL thread. */
     fun recolorMesh(colorPalette: List<FloatArray>) {
+        renderer.pendingRecolorPaintMask = null
         renderer.pendingRecolor = colorPalette
+        requestRender()
+    }
+
+    /** Recolor painted triangles with machine colours; keep 3MF colours elsewhere. */
+    fun recolorMeshWithPaintMask(
+        painted: BooleanArray,
+        filePalette: List<FloatArray>,
+        machinePalette: List<FloatArray>,
+    ) {
+        renderer.pendingRecolor = null
+        renderer.pendingRecolorPaintMask =
+            ModelRenderer.PaintMaskRecolor(painted.copyOf(), filePalette, machinePalette)
         requestRender()
     }
 
@@ -226,6 +242,12 @@ class ModelViewerView(context: Context) : BaseGLViewerView(context) {
             lassoPath.clear()
             lassoPath.add(event.x to event.y)
             onLassoPathUpdate?.invoke(lassoPath.toList())
+            onActionDownHandled = true
+            return
+        }
+        if (onFillTap != null && event.pointerCount == 1) {
+            val tri = pickTriangle(event.x, event.y)
+            if (tri >= 0) onFillTap?.invoke(tri)
             onActionDownHandled = true
             return
         }

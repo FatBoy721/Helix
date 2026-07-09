@@ -113,7 +113,9 @@ class GcodeRenderer(private val context: Context) : GLSurfaceView.Renderer {
         floatArrayOf(1.00f, 0.25f, 0.51f, 1.0f),
         floatArrayOf(1.00f, 0.44f, 0.26f, 1.0f),
         floatArrayOf(0.69f, 0.75f, 0.76f, 1.0f),
-        floatArrayOf(0.62f, 0.62f, 0.62f, 1.0f)
+        floatArrayOf(0.62f, 0.62f, 0.62f, 1.0f),
+        // IRONING — bright pink so the slow top-surface passes stand out.
+        floatArrayOf(1.00f, 0.70f, 0.85f, 1.0f)
     )
 
     fun setExtruderColors(hexColors: List<String>) {

@@ -116,7 +116,15 @@ class ModelRenderer(private val context: Context) : GLSurfaceView.Renderer {
     @Volatile
     var pendingCameraReset = false
 
-    data class WipeTowerInfo(val x: Float, val y: Float, val width: Float, val depth: Float)
+    data class WipeTowerInfo(
+        val x: Float,
+        val y: Float,
+        val width: Float,
+        val depth: Float,
+        /** Filament colours for stacked preview bands (T0 bottom → Tn top). */
+        val bandColors: List<FloatArray> = emptyList(),
+        val heightMm: Float = 30f,
+    )
 
     /**
      * Describes a contiguous vertex range in the (sorted) combined VBO belonging to one object,
@@ -188,6 +196,16 @@ class ModelRenderer(private val context: Context) : GLSurfaceView.Renderer {
     // Pending recolor: set from main thread, consumed on GL thread
     @Volatile
     var pendingRecolor: List<FloatArray>? = null
+
+    /** Per-triangle paint mask recolor (3MF colors on untouched tris). */
+    @Volatile
+    var pendingRecolorPaintMask: PaintMaskRecolor? = null
+
+    data class PaintMaskRecolor(
+        val painted: BooleanArray,
+        val filePalette: List<FloatArray>,
+        val machinePalette: List<FloatArray>,
+    )
 
     // Pending VBO refresh: re-uploads vertex buffer without recolor (used after recolorByZBands)
     @Volatile
@@ -263,7 +281,15 @@ class ModelRenderer(private val context: Context) : GLSurfaceView.Renderer {
         }
 
         // Process pending recolor for existing mesh (no new mesh upload)
-        if (pendingRecolor != null) {
+        if (pendingRecolorPaintMask != null) {
+            meshData?.let { mesh ->
+                pendingRecolorPaintMask?.let { mask ->
+                    mesh.recolorWithPaintMask(mask.painted, mask.filePalette, mask.machinePalette)
+                    updateColorData(mesh)
+                    pendingRecolorPaintMask = null
+                }
+            }
+        } else if (pendingRecolor != null) {
             meshData?.let { mesh ->
                 pendingRecolor?.let { palette ->
                     mesh.recolor(palette)
@@ -760,24 +786,40 @@ class ModelRenderer(private val context: Context) : GLSurfaceView.Renderer {
     }
 
     private fun drawWipeTower(tower: WipeTowerInfo, highlighted: Boolean) {
+        val bands = tower.bandColors.filter { it.size >= 3 }
+        if (bands.isEmpty()) {
+            drawWipeTowerBand(tower, 0f, tower.heightMm, wipeTowerColor, highlighted)
+            return
+        }
+        val bandH = tower.heightMm / bands.size
+        bands.forEachIndexed { i, color ->
+            val rgba = floatArrayOf(color[0], color[1], color[2], 0.88f)
+            drawWipeTowerBand(tower, i * bandH, bandH, rgba, highlighted && i == bands.lastIndex)
+        }
+    }
+
+    private fun drawWipeTowerBand(
+        tower: WipeTowerInfo,
+        zOffset: Float,
+        zHeight: Float,
+        color: FloatArray,
+        highlighted: Boolean,
+    ) {
         val shader = modelShader ?: return
         shader.use()
 
         val modelMatrix = FloatArray(16)
         Matrix.setIdentityM(modelMatrix, 0)
-        Matrix.translateM(modelMatrix, 0, tower.x, tower.y, 0f)
-        Matrix.scaleM(modelMatrix, 0, tower.width, tower.depth, 30f) // 30mm tall
+        Matrix.translateM(modelMatrix, 0, tower.x, tower.y, zOffset)
+        Matrix.scaleM(modelMatrix, 0, tower.width, tower.depth, zHeight)
 
         camera.computeMVP(modelMatrix)
         GLES30.glUniformMatrix4fv(shader.getUniformLocation("u_MVPMatrix"), 1, false, camera.mvpMatrix, 0)
         GLES30.glUniformMatrix4fv(shader.getUniformLocation("u_NormalMatrix"), 1, false, camera.normalMatrix, 0)
 
-        GLES30.glUniform4fv(shader.getUniformLocation("u_Color"), 1, wipeTowerColor, 0)
+        GLES30.glUniform4fv(shader.getUniformLocation("u_Color"), 1, color, 0)
         GLES30.glUniform1f(useVertexColorLoc, 0f)
         GLES30.glVertexAttrib4f(2, 1f, 1f, 1f, 1f)
-        // F66: wipe tower drag-highlight via u_Highlight (was previously a
-        // hard u_Color swap which worked for the wipe tower since it has no
-        // per-vertex colour, but unifies the code path with model highlight).
         if (highlighted) {
             GLES30.glUniform4f(shader.getUniformLocation("u_Highlight"), 1f, 0.85f, 0.2f, 0.6f)
         } else {

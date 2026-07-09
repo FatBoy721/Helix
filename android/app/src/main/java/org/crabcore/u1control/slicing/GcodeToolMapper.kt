@@ -100,4 +100,56 @@ object GcodeToolMapper {
 
     return if (mask == 0) 1 shl fallbackTool.coerceIn(0, 3) else mask
   }
+
+  /**
+   * Multicolor slices keep every tool change as the engine emitted them — no
+   * startup remap. This just reports which tools the gcode actually uses.
+   */
+  fun usedMaskOnly(path: String): Result {
+    val file = File(path)
+    val lines = runCatching { file.readLines() }.getOrNull() ?: return Result(false, 1)
+    return Result(false, scanUsedToolMask(lines, 0))
+  }
+
+  private val extruderParamAny = Regex("""\b(EXTRUDER|INDEX|TOOL)=([0-3])\b""", RegexOption.IGNORE_CASE)
+
+  /**
+   * Rewrites every tool reference through [mapping] (index = slicer tool,
+   * value = physical U1 slot chosen in the print dialog). Writes the remapped
+   * gcode to [outPath] so the original slice stays untouched. Single pass per
+   * line, so chained collisions (T0→T1 while T1→T0) are safe.
+   */
+  fun applyToolMapping(srcPath: String, outPath: String, mapping: IntArray): Boolean {
+    if (mapping.size != 4 || mapping.withIndex().all { (i, v) -> i == v }) return false
+    val src = File(srcPath)
+    if (!src.exists()) return false
+
+    return try {
+      var inThumbnail = false
+      File(outPath).bufferedWriter().use { out ->
+        src.bufferedReader().useLines { lines ->
+          lines.forEach { line ->
+            val trimmed = line.trimStart()
+            if (trimmed.startsWith("; thumbnail begin", ignoreCase = true)) inThumbnail = true
+            var next = line
+            if (!inThumbnail && !trimmed.startsWith(";")) {
+              next = toolAnyToken.replace(next) { m ->
+                "T${mapping[m.groupValues[1].toInt()].coerceIn(0, 3)}"
+              }
+              next = extruderParamAny.replace(next) { m ->
+                "${m.groupValues[1]}=${mapping[m.groupValues[2].toInt()].coerceIn(0, 3)}"
+              }
+            }
+            if (trimmed.startsWith("; thumbnail end", ignoreCase = true)) inThumbnail = false
+            out.write(next)
+            out.newLine()
+          }
+        }
+      }
+      true
+    } catch (_: Throwable) {
+      runCatching { File(outPath).delete() }
+      false
+    }
+  }
 }
