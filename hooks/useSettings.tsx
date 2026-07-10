@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { setLanguage } from '../services/i18n';
 import { colors } from '../constants/theme';
@@ -39,6 +39,9 @@ const SettingsContext = createContext<SettingsContextValue | null>(null);
 export function SettingsProvider({ children }: { children: React.ReactNode }) {
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [loaded, setLoaded] = useState(false);
+  // Source of truth for update(): updated synchronously so rapid updates
+  // compose and the persisted JSON never captures a stale snapshot.
+  const latestRef = useRef<Settings>(DEFAULT_SETTINGS);
 
   useEffect(() => {
     (async () => {
@@ -48,6 +51,7 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
         const migrated = migrateSettings(parsed);
         applyAppearance(migrated);
         AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(migrated)).catch(() => {});
+        latestRef.current = migrated;
         setSettings(migrated);
       } catch {
         // corrupt/missing settings — fall back to defaults
@@ -58,14 +62,11 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const update = useCallback(async (patch: Partial<Settings>) => {
-    let nextSettings = DEFAULT_SETTINGS;
-    setSettings((prev) => {
-      const next = migrateSettings({ ...prev, ...patch });
-      nextSettings = next;
-      applyAppearance(next);
-      return next;
-    });
-    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(nextSettings));
+    const next = migrateSettings({ ...latestRef.current, ...patch });
+    latestRef.current = next;
+    applyAppearance(next);
+    setSettings(next);
+    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next));
   }, []);
 
   const value = useMemo(() => ({ settings, loaded, update }), [settings, loaded, update]);

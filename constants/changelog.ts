@@ -25,6 +25,13 @@ export const NOTIFICATIONS_URL =
 /** Fallback feed baked into the app. Remote entries with the same id override these. */
 export const BAKED_NOTIFICATIONS: AppNotification[] = [
   {
+    id: '2026-07-10-signing-upgrade',
+    type: 'alert',
+    title: 'Heads up: one-time reinstall coming',
+    date: '2026-07-10',
+    body: 'The next Helix update switches to a proper release signing key. It is needed for update security and a future Play Store listing. Android treats the new key as a new app, so you will need to uninstall and reinstall once. Before that: Settings > Backup > Export settings to save your printers and preferences, then Import after reinstalling. MakerWorld needs a fresh login. We will post here when the new build is live.',
+  },
+  {
     id: '2026-07-08-notifications',
     type: 'info',
     title: 'Notifications are here',

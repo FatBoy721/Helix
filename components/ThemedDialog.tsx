@@ -21,6 +21,7 @@ interface Props {
   placement?: 'bottom' | 'center';
   onClose: () => void;
   actions: DialogAction[];
+  children?: React.ReactNode;
 }
 
 function actionStyle(variant: DialogAction['variant']) {
@@ -41,6 +42,7 @@ export default function ThemedDialog({
   placement = 'bottom',
   onClose,
   actions,
+  children,
 }: Props) {
   const centered = placement === 'center';
   return (
@@ -62,6 +64,8 @@ export default function ThemedDialog({
           </View>
 
           {message ? <Text style={styles.message}>{message}</Text> : null}
+
+          {children}
 
           <View style={styles.actions}>
             {actions.map((action) => {

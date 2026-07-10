@@ -23,6 +23,7 @@ import {
 } from '../../hooks/useSettings';
 import { useMoonraker } from '../../hooks/useMoonraker';
 import AboutCard from '../../components/settings/AboutCard';
+import BackupCard from '../../components/settings/BackupCard';
 import MacroDisplayCard from '../../components/settings/MacroDisplayCard';
 import ThemedDialog from '../../components/ThemedDialog';
 import { buildSettingsSavePatch, hasDraftChanges } from '../../services/settingsDraft';
@@ -631,6 +632,10 @@ export default function SettingsScreen() {
         )}
 
         <MakerWorldCard />
+
+        {/* Import replaces saved settings behind the draft's back — drop the
+            draft so it re-seeds from the imported values. */}
+        <BackupCard onImported={() => setDraft(null)} />
 
         <AboutCard />
       </ScrollView>
