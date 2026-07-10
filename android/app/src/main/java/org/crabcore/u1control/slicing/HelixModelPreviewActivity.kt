@@ -592,7 +592,16 @@ class HelixModelPreviewActivity : Activity() {
     val maxCopies = CopyArrangeCalculator.maxCopies(boxes[0], boxes[1], BED_SIZE, BED_SIZE)
     copiesSeek?.max = (maxCopies - 1).coerceAtLeast(0)
     copiesSeek?.progress = copyCount - 1
-    copiesLabel?.text = "Copies: $copyCount"
+    // Dead slider with no explanation reads as broken — say why it won't move.
+    if (maxCopies <= 1) {
+      copiesLabel?.text = "Copies: 1 (bed fits 1)"
+      copiesSeek?.isEnabled = false
+      copiesSeek?.alpha = 0.4f
+    } else {
+      copiesLabel?.text = "Copies: $copyCount"
+      copiesSeek?.isEnabled = true
+      copiesSeek?.alpha = 1f
+    }
     row.visibility = View.VISIBLE
   }
 

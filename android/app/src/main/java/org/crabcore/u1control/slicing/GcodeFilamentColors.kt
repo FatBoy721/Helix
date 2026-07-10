@@ -50,29 +50,45 @@ object GcodeFilamentColors {
     val file = File(path)
     if (!file.exists()) return false
     val value = colours.joinToString(";")
+    // Streamed line-by-line: gcode for large prints runs to tens of MB, and
+    // readLines()+writeText() of the whole file OOMs on-device — which used to
+    // silently skip the stamp and leave the engine's default-white palette.
+    val tmp = File(file.parentFile, file.name + ".palette.tmp")
     return try {
-      val lines = file.readLines()
       var replaced = false
-      val mapped = lines.map { line ->
-        val trimmed = line.trim().removePrefix(";").trim()
-        val isColourLine =
-          (trimmed.startsWith("filament_colour", ignoreCase = true) ||
-            trimmed.startsWith("extruder_colour", ignoreCase = true)) &&
-            !trimmed.startsWith("default_filament_colour", ignoreCase = true) &&
-            trimmed.contains('=')
-        if (isColourLine) {
-          replaced = true
-          val key = trimmed.substringBefore('=').trim()
-          "; $key = $value"
-        } else {
-          line
+      tmp.bufferedWriter().use { out ->
+        file.bufferedReader().use { reader ->
+          reader.forEachLine { line ->
+            val trimmed = line.trim().removePrefix(";").trim()
+            val isColourLine =
+              (trimmed.startsWith("filament_colour", ignoreCase = true) ||
+                trimmed.startsWith("extruder_colour", ignoreCase = true)) &&
+                !trimmed.startsWith("default_filament_colour", ignoreCase = true) &&
+                trimmed.contains('=')
+            if (isColourLine) {
+              replaced = true
+              val key = trimmed.substringBefore('=').trim()
+              out.write("; $key = $value")
+            } else {
+              out.write(line)
+            }
+            out.write(System.lineSeparator())
+          }
+        }
+        if (!replaced) {
+          out.write("; filament_colour = $value")
+          out.write(System.lineSeparator())
         }
       }
-      val out = if (replaced) mapped else mapped + listOf("; filament_colour = $value")
-      val newline = System.lineSeparator()
-      file.writeText(out.joinToString(newline) + newline)
+      // rename(2) replaces the target atomically on Android — no window where
+      // the gcode is missing.
+      if (!tmp.renameTo(file)) {
+        tmp.delete()
+        return false
+      }
       true
     } catch (_: Throwable) {
+      runCatching { tmp.delete() }
       false
     }
   }
@@ -148,8 +164,12 @@ object GcodeFilamentColors {
           filament = parseDelimitedColours(trimmed.substringAfter('='))
       }
     }
-    return extruder?.takeIf { it.isNotEmpty() }
-      ?: filament?.takeIf { it.isNotEmpty() }
+    // filament_colour is the print's real palette; extruder_colour is the
+    // machine's physical-extruder colour (often a single arbitrary swatch in
+    // Bambu/Orca project settings) — only fall back to it when no filament
+    // palette exists.
+    return filament?.takeIf { it.isNotEmpty() }
+      ?: extruder?.takeIf { it.isNotEmpty() }
       ?: emptyList()
   }
 
@@ -158,8 +178,8 @@ object GcodeFilamentColors {
     if (trimmed.startsWith("{")) {
       return try {
         val json = JSONObject(trimmed)
-        coloursFromJson(json.optJSONArray("extruder_colour"))
-          ?: coloursFromJson(json.optJSONArray("filament_colour"))
+        coloursFromJson(json.optJSONArray("filament_colour"))
+          ?: coloursFromJson(json.optJSONArray("extruder_colour"))
       } catch (_: Throwable) {
         null
       }

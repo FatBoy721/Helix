@@ -23,53 +23,92 @@ object GcodeToolMapper {
     val tool = initialTool.coerceIn(0, 3)
     if (!file.exists() || !file.isFile) return Result(false, 1 shl tool)
 
-    val original = runCatching { file.readLines() }.getOrNull()
-      ?: return Result(false, 1 shl tool)
+    // Streamed to a temp file: gcode for large prints runs to tens of MB, and
+    // readLines()+writeText() of the whole file OOMs on-device — which used to
+    // silently skip the remap and start huge prints from T0.
+    val tmp = File(file.parentFile, file.name + ".tool.tmp")
     var changed = false
-    var inThumbnail = false
-    var inStartup = true
+    var mask = 0
+    val rewritten = runCatching {
+      var inThumbnail = false
+      var inStartup = true
+      tmp.bufferedWriter().use { out ->
+        file.bufferedReader().use { reader ->
+          reader.forEachLine { line ->
+            val trimmed = line.trimStart()
+            if (trimmed.startsWith("; thumbnail begin", ignoreCase = true)) {
+              inThumbnail = true
+            }
 
-    val mapped = original.map { line ->
-      val trimmed = line.trimStart()
-      if (trimmed.startsWith("; thumbnail begin", ignoreCase = true)) {
-        inThumbnail = true
-      }
+            var next = line
+            if (!inThumbnail && tool != 0 && inStartup && !trimmed.startsWith(";")) {
+              next = toolParamZero.replace(next, "TOOL=$tool")
+              next = extruderZero.replace(next, "EXTRUDER=$tool")
+              next = indexZero.replace(next, "INDEX=$tool")
+              next = toolZeroToken.replace(next, "T$tool")
+            }
+            if (next != line) changed = true
+            mask = mask or scanToolMaskLine(next, inThumbnail)
 
-      var next = line
-      if (!inThumbnail && tool != 0 && inStartup && !trimmed.startsWith(";")) {
-        next = toolParamZero.replace(next, "TOOL=$tool")
-        next = extruderZero.replace(next, "EXTRUDER=$tool")
-        next = indexZero.replace(next, "INDEX=$tool")
-        next = toolZeroToken.replace(next, "T$tool")
+            if (trimmed.equals("TIMELAPSE_START", ignoreCase = true) ||
+              trimmed.startsWith(";LAYER", ignoreCase = true) ||
+              trimmed.startsWith("; LAYER", ignoreCase = true)
+            ) {
+              inStartup = false
+            }
+            if (trimmed.startsWith("; thumbnail end", ignoreCase = true)) {
+              inThumbnail = false
+            }
+            out.write(next)
+            out.write(System.lineSeparator())
+          }
+        }
       }
-      if (next != line) changed = true
+      true
+    }.getOrDefault(false)
 
-      if (trimmed.equals("TIMELAPSE_START", ignoreCase = true) ||
-        trimmed.startsWith(";LAYER", ignoreCase = true) ||
-        trimmed.startsWith("; LAYER", ignoreCase = true)
-      ) {
-        inStartup = false
-      }
-      if (trimmed.startsWith("; thumbnail end", ignoreCase = true)) {
-        inThumbnail = false
-      }
-      next
+    if (!rewritten) {
+      tmp.delete()
+      // Rewrite pass failed — report the mask from a scan-only pass so the
+      // caller still gets truthful used-tool data.
+      val scanned = runCatching {
+        file.bufferedReader().useLines { lines -> scanUsedToolMask(lines, tool) }
+      }.getOrNull() ?: (1 shl tool)
+      return Result(false, scanned)
     }
 
     if (changed) {
-      val newline = System.lineSeparator()
-      val hadTrailingNewline = original.isNotEmpty()
-      runCatching {
-        file.writeText(mapped.joinToString(newline) + if (hadTrailingNewline) newline else "")
-      }.onFailure {
-        return Result(false, scanUsedToolMask(original, tool))
+      // rename(2) replaces the target atomically on Android.
+      if (!tmp.renameTo(file)) {
+        tmp.delete()
+        return Result(false, if (mask == 0) 1 shl tool else mask)
       }
+    } else {
+      tmp.delete()
     }
-
-    return Result(changed, scanUsedToolMask(if (changed) mapped else original, tool))
+    return Result(changed, if (mask == 0) 1 shl tool else mask)
   }
 
-  private fun scanUsedToolMask(lines: List<String>, fallbackTool: Int): Int {
+  /** Tool bits used by [line]; 0 when inside a thumbnail block or a comment. */
+  private fun scanToolMaskLine(line: String, inThumbnail: Boolean): Int {
+    val trimmed = line.trimStart()
+    if (inThumbnail || trimmed.startsWith(";")) return 0
+    var mask = 0
+    toolAnyToken.findAll(line).forEach { match ->
+      mask = mask or (1 shl match.groupValues[1].toInt())
+    }
+    if (trimmed.startsWith("SM_PRINT_", ignoreCase = true)) {
+      extruderAny.findAll(line).forEach { match ->
+        mask = mask or (1 shl match.groupValues[1].toInt())
+      }
+      indexAny.findAll(line).forEach { match ->
+        mask = mask or (1 shl match.groupValues[1].toInt())
+      }
+    }
+    return mask
+  }
+
+  private fun scanUsedToolMask(lines: Sequence<String>, fallbackTool: Int): Int {
     var mask = 0
     var inThumbnail = false
 
@@ -79,19 +118,7 @@ object GcodeToolMapper {
         inThumbnail = true
       }
 
-      if (!inThumbnail && !trimmed.startsWith(";")) {
-        toolAnyToken.findAll(line).forEach { match ->
-          mask = mask or (1 shl match.groupValues[1].toInt())
-        }
-        if (trimmed.startsWith("SM_PRINT_", ignoreCase = true)) {
-          extruderAny.findAll(line).forEach { match ->
-            mask = mask or (1 shl match.groupValues[1].toInt())
-          }
-          indexAny.findAll(line).forEach { match ->
-            mask = mask or (1 shl match.groupValues[1].toInt())
-          }
-        }
-      }
+      mask = mask or scanToolMaskLine(line, inThumbnail)
 
       if (trimmed.startsWith("; thumbnail end", ignoreCase = true)) {
         inThumbnail = false
@@ -107,8 +134,12 @@ object GcodeToolMapper {
    */
   fun usedMaskOnly(path: String): Result {
     val file = File(path)
-    val lines = runCatching { file.readLines() }.getOrNull() ?: return Result(false, 1)
-    return Result(false, scanUsedToolMask(lines, 0))
+    // Streamed: multicolor gcode runs to tens of MB; readLines() of the whole
+    // file OOMs on-device and used to silently report "T0 only".
+    val mask = runCatching {
+      file.bufferedReader().useLines { lines -> scanUsedToolMask(lines, 0) }
+    }.getOrNull() ?: return Result(false, 1)
+    return Result(false, mask)
   }
 
   private val extruderParamAny = Regex("""\b(EXTRUDER|INDEX|TOOL)=([0-3])\b""", RegexOption.IGNORE_CASE)
