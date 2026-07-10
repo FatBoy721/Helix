@@ -12,6 +12,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
 import {
@@ -800,6 +801,8 @@ function PrinterEditorModal({
   const [cameraUrl, setCameraUrl] = useState('');
   const [connectionMode, setConnectionMode] = useState<ConnectionMode>('lan');
   const [saving, setSaving] = useState(false);
+  // Issue #5: bottom sheets draw edge-to-edge, so pad past the Android nav bar.
+  const insets = useSafeAreaInsets();
 
   useEffect(() => {
     if (!printer) return;
@@ -830,11 +833,10 @@ function PrinterEditorModal({
 
   return (
     <Modal visible transparent animationType="slide" onRequestClose={onClose}>
-      <KeyboardAvoidingView
-        style={styles.modalWrap}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      >
-        <View style={styles.modalCard}>
+      {/* Modal hosts its own window, so the activity's keyboard resize doesn't
+          apply — "padding" is needed on Android too (issue #5). */}
+      <KeyboardAvoidingView style={styles.modalWrap} behavior="padding">
+        <View style={[styles.modalCard, { paddingBottom: spacing.lg + insets.bottom }]}>
           <View style={styles.modalHeader}>
             <View style={styles.modalTitleRow}>
               <View style={styles.modalIcon}>

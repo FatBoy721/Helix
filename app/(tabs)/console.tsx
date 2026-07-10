@@ -11,6 +11,7 @@ import {
   View,
 } from 'react-native';
 import { TextInput } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ConsoleLine, useMoonraker } from '../../hooks/useMoonraker';
 import { t } from '../../services/i18n';
 import { colors, spacing } from '../../constants/theme';
@@ -29,6 +30,7 @@ export default function ConsoleScreen() {
   const [input, setInput] = useState('');
   const [helpOpen, setHelpOpen] = useState(false);
   const [helpFilter, setHelpFilter] = useState('');
+  const insets = useSafeAreaInsets();
 
   const data = useMemo(() => [...consoleLines].reverse(), [consoleLines]);
   const helpCommands = useMemo(
@@ -117,8 +119,15 @@ export default function ConsoleScreen() {
       </View>
 
       <Modal visible={helpOpen} transparent animationType="fade" onRequestClose={() => setHelpOpen(false)}>
-        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setHelpOpen(false)}>
-          <View style={styles.helpSheet} onStartShouldSetResponder={() => true}>
+        {/* Modal hosts its own window, so the screen-level KeyboardAvoidingView
+            doesn't reach it — lift the sheet above the keyboard here, and pad
+            past the Android nav bar (issue #5). */}
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
+          <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setHelpOpen(false)}>
+            <View
+              style={[styles.helpSheet, { paddingBottom: spacing.lg + insets.bottom }]}
+              onStartShouldSetResponder={() => true}
+            >
             <View style={styles.helpHeader}>
               <View style={styles.helpTitleWrap}>
                 <Text style={styles.helpTitle}>{t('Printer commands')}</Text>
@@ -161,8 +170,9 @@ export default function ConsoleScreen() {
                 </Text>
               )}
             </ScrollView>
-          </View>
-        </TouchableOpacity>
+            </View>
+          </TouchableOpacity>
+        </KeyboardAvoidingView>
       </Modal>
     </KeyboardAvoidingView>
   );

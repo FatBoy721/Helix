@@ -1,10 +1,10 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Alert,
   FlatList,
+  Keyboard,
   KeyboardAvoidingView,
   Modal,
-  Platform,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -13,6 +13,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useMoonraker } from '../../hooks/useMoonraker';
 import { useSettings } from '../../hooks/useSettings';
@@ -219,7 +220,9 @@ export default function SpoolmanScreen() {
 
   if (connection === 'connected' && unavailable !== 'none' && !loading) {
     return (
-      <View style={[styles.screen, styles.emptyScreen]}>
+      // KeyboardAvoidingView so the server-address input stays above the
+      // keyboard on Android edge-to-edge (issue #5).
+      <KeyboardAvoidingView style={[styles.screen, styles.emptyScreen]} behavior="padding">
         <MaterialCommunityIcons name="paper-roll-outline" size={40} color={colors.subtext} />
         <Text style={styles.emptyTitle}>
           {unavailable === 'no-component'
@@ -257,7 +260,7 @@ export default function SpoolmanScreen() {
         <TouchableOpacity style={styles.retryBtn} onPress={refresh}>
           <Text style={styles.retryText}>{t('Retry')}</Text>
         </TouchableOpacity>
-      </View>
+      </KeyboardAvoidingView>
     );
   }
 
@@ -463,20 +466,51 @@ function FormModal({
   children: React.ReactNode;
   onClose: () => void;
 }) {
+  // Issue #5: bottom sheets draw edge-to-edge, so pad past the Android nav bar.
+  const insets = useSafeAreaInsets();
+  const scrollRef = useRef<ScrollView>(null);
+  const scrollY = useRef(0);
+  // These forms are taller than the keyboard-shrunk sheet, and Android only
+  // auto-scrolls the focused input into view on window resize — which never
+  // happens inside a Modal's own window. Do the scroll ourselves (issue #5).
+  useEffect(() => {
+    const sub = Keyboard.addListener('keyboardDidShow', (e) => {
+      // let the KeyboardAvoidingView finish lifting the sheet before measuring
+      setTimeout(() => {
+        const input = TextInput.State.currentlyFocusedInput();
+        if (!input || !scrollRef.current) return;
+        input.measureInWindow((_x, y, _w, h) => {
+          const overlap = y + h + spacing.lg - e.endCoordinates.screenY;
+          if (overlap > 0) {
+            scrollRef.current?.scrollTo({ y: scrollY.current + overlap, animated: true });
+          }
+        });
+      }, 80);
+    });
+    return () => sub.remove();
+  }, []);
   return (
     <Modal visible animationType="slide" transparent onRequestClose={onClose}>
-      <KeyboardAvoidingView
-        style={styles.modalWrap}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      >
-        <View style={styles.modalCard}>
+      {/* Modal hosts its own window, so the activity's keyboard resize doesn't
+          apply — "padding" is needed on Android too (issue #5). */}
+      <KeyboardAvoidingView style={styles.modalWrap} behavior="padding">
+        <View style={[styles.modalCard, { paddingBottom: spacing.lg + insets.bottom }]}>
           <View style={styles.modalHeader}>
             <Text style={styles.modalTitle}>{title}</Text>
             <TouchableOpacity onPress={onClose}>
               <MaterialCommunityIcons name="close" size={22} color={colors.subtext} />
             </TouchableOpacity>
           </View>
-          <ScrollView keyboardShouldPersistTaps="handled">{children}</ScrollView>
+          <ScrollView
+            ref={scrollRef}
+            keyboardShouldPersistTaps="handled"
+            onScroll={(e) => {
+              scrollY.current = e.nativeEvent.contentOffset.y;
+            }}
+            scrollEventThrottle={16}
+          >
+            {children}
+          </ScrollView>
         </View>
       </KeyboardAvoidingView>
     </Modal>

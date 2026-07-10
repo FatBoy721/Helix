@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import {
   FlatList,
+  KeyboardAvoidingView,
   Modal,
   StyleSheet,
   Text,
@@ -8,6 +9,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { t } from '../services/i18n';
 import { colors, spacing } from '../constants/theme';
@@ -42,6 +44,8 @@ export default function Dropdown({
 }: Props) {
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState('');
+  // Issue #5: bottom sheets draw edge-to-edge, so pad past the Android nav bar.
+  const insets = useSafeAreaInsets();
 
   const selected = options.find((o) => o.key === value) ?? null;
   const searchable = options.length > 8;
@@ -75,8 +79,14 @@ export default function Dropdown({
       </TouchableOpacity>
 
       <Modal visible={open} transparent animationType="fade" onRequestClose={close}>
-        <TouchableOpacity style={styles.overlay} activeOpacity={1} onPress={close}>
-          <View style={styles.sheet} onStartShouldSetResponder={() => true}>
+        {/* Modal hosts its own window, so the activity's keyboard resize doesn't
+            apply — lift the sheet above the keyboard ourselves (issue #5). */}
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
+          <TouchableOpacity style={styles.overlay} activeOpacity={1} onPress={close}>
+            <View
+              style={[styles.sheet, { paddingBottom: spacing.xl + insets.bottom }]}
+              onStartShouldSetResponder={() => true}
+            >
             <View style={styles.sheetHeader}>
               <Text style={styles.sheetTitle}>{label}</Text>
               <TouchableOpacity hitSlop={8} onPress={close}>
@@ -131,8 +141,9 @@ export default function Dropdown({
               }}
               ListEmptyComponent={<Text style={styles.empty}>{t('No matches')}</Text>}
             />
-          </View>
-        </TouchableOpacity>
+            </View>
+          </TouchableOpacity>
+        </KeyboardAvoidingView>
       </Modal>
     </View>
   );

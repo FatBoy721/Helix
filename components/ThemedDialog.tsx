@@ -1,5 +1,6 @@
 import React from 'react';
 import { Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { colors, spacing } from '../constants/theme';
 
@@ -45,10 +46,17 @@ export default function ThemedDialog({
   children,
 }: Props) {
   const centered = placement === 'center';
+  // Issue #5: bottom sheets draw edge-to-edge, so pad past the Android nav bar.
+  const insets = useSafeAreaInsets();
   return (
     <Modal visible={visible} animationType={centered ? 'fade' : 'slide'} transparent onRequestClose={onClose}>
       <View style={[styles.wrap, centered && styles.wrapCenter]}>
-        <View style={[styles.card, centered && styles.cardCenter]}>
+        <View
+          style={[
+            styles.card,
+            centered ? styles.cardCenter : { paddingBottom: spacing.lg + insets.bottom },
+          ]}
+        >
           <View style={styles.header}>
             <View style={styles.titleRow}>
               {icon ? (
