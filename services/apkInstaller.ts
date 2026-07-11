@@ -9,6 +9,11 @@ const FLAG_GRANT_READ_URI_PERMISSION = 1;
 
 export type UpdateOpenResult = 'browser' | 'installer' | 'share';
 
+export interface DownloadProgress {
+  written: number;
+  total: number;
+}
+
 function apkFileName(buildId?: string): string {
   const suffix = buildId?.replace(/[^a-z0-9_-]/gi, '').slice(0, 12) || 'latest';
   return `helix-${suffix}.apk`;
@@ -46,7 +51,11 @@ async function shareApk(fileUri: string): Promise<void> {
   });
 }
 
-export async function downloadAndOpenApk(downloadUrl: string, buildId?: string): Promise<UpdateOpenResult> {
+export async function downloadAndOpenApk(
+  downloadUrl: string,
+  buildId?: string,
+  onProgress?: (progress: DownloadProgress) => void
+): Promise<UpdateOpenResult> {
   if (Platform.OS !== 'android' || !isApkUrl(downloadUrl)) {
     await openUrl(downloadUrl);
     return 'browser';
@@ -58,9 +67,17 @@ export async function downloadAndOpenApk(downloadUrl: string, buildId?: string):
   const fileUri = `${cacheDir}${apkFileName(buildId)}`;
   await FileSystem.deleteAsync(fileUri, { idempotent: true }).catch(() => {});
 
-  const result = await FileSystem.downloadAsync(downloadUrl, fileUri, {
-    headers: { Accept: APK_MIME },
-  });
+  const download = FileSystem.createDownloadResumable(
+    downloadUrl,
+    fileUri,
+    { headers: { Accept: APK_MIME } },
+    onProgress
+      ? (p) => onProgress({ written: p.totalBytesWritten, total: p.totalBytesExpectedToWrite })
+      : undefined
+  );
+
+  const result = await download.downloadAsync();
+  if (!result) throw new Error('APK download was interrupted.');
 
   if (result.status < 200 || result.status >= 300) {
     throw new Error(`APK download failed with HTTP ${result.status}.`);

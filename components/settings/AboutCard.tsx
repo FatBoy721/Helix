@@ -1,10 +1,11 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import Constants from 'expo-constants';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import ThemedDialog, { DialogAction } from '../ThemedDialog';
+import { ProgressBar } from '../ui';
 import { colors, spacing } from '../../constants/theme';
-import { downloadAndOpenApk, openUrl } from '../../services/apkInstaller';
+import { DownloadProgress, downloadAndOpenApk, openUrl } from '../../services/apkInstaller';
 import { t } from '../../services/i18n';
 import {
   GitHubRelease,
@@ -34,7 +35,10 @@ function buildCommit(): string {
 export default function AboutCard() {
   const [checkingUpdates, setCheckingUpdates] = useState(false);
   const [downloadingUpdate, setDownloadingUpdate] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState<DownloadProgress | null>(null);
+  const [progressVisible, setProgressVisible] = useState(true);
   const [dialog, setDialog] = useState<DialogState | null>(null);
+  const lastPctRef = useRef(-1);
   const currentBuild = buildCommit();
 
   const closeDialog = () => setDialog(null);
@@ -51,8 +55,20 @@ export default function AboutCard() {
   const installUpdate = async (downloadUrl: string, latest: string) => {
     if (downloadingUpdate) return;
     setDownloadingUpdate(true);
+    setDownloadProgress({ written: 0, total: 0 });
+    setProgressVisible(true);
+    lastPctRef.current = -1;
     try {
-      await downloadAndOpenApk(downloadUrl, latest);
+      await downloadAndOpenApk(downloadUrl, latest, (p) => {
+        // Throttle re-renders: only update when the whole percent (or MB when
+        // the size is unknown) actually changes.
+        const pct = p.total > 0
+          ? Math.round((p.written / p.total) * 100)
+          : Math.floor(p.written / (1024 * 1024));
+        if (pct === lastPctRef.current) return;
+        lastPctRef.current = pct;
+        setDownloadProgress(p);
+      });
     } catch (e: any) {
       setDialog({
         title: t('Update download failed'),
@@ -73,6 +89,7 @@ export default function AboutCard() {
       });
     } finally {
       setDownloadingUpdate(false);
+      setDownloadProgress(null);
     }
   };
 
@@ -186,8 +203,36 @@ export default function AboutCard() {
         actions={dialog?.actions ?? []}
         onClose={closeDialog}
       />
+      <ThemedDialog
+        visible={downloadingUpdate && progressVisible && !!downloadProgress}
+        title={t('Downloading update')}
+        message={t('The installer opens when the download finishes.')}
+        icon="download-circle-outline"
+        actions={[{ text: t('Hide'), onPress: () => setProgressVisible(false) }]}
+        onClose={() => setProgressVisible(false)}
+      >
+        <View style={styles.progressWrap}>
+          <ProgressBar
+            progress={downloadProgress && downloadProgress.total > 0
+              ? downloadProgress.written / downloadProgress.total
+              : 0}
+            color={colors.primary}
+          />
+          <Text style={styles.progressText}>{formatProgress(downloadProgress)}</Text>
+        </View>
+      </ThemedDialog>
     </>
   );
+}
+
+function formatProgress(progress: DownloadProgress | null): string {
+  if (!progress) return '';
+  const mb = (n: number) => (n / (1024 * 1024)).toFixed(1);
+  if (progress.total > 0) {
+    const pct = Math.round((progress.written / progress.total) * 100);
+    return `${pct}%  (${mb(progress.written)} / ${mb(progress.total)} MB)`;
+  }
+  return `${mb(progress.written)} MB`;
 }
 
 const styles = StyleSheet.create({
@@ -219,5 +264,14 @@ const styles = StyleSheet.create({
     color: colors.subtext,
     fontSize: 11,
     marginTop: spacing.sm,
+  },
+  progressWrap: {
+    gap: spacing.sm,
+    marginBottom: spacing.lg,
+  },
+  progressText: {
+    color: colors.subtext,
+    fontSize: 12,
+    textAlign: 'center',
   },
 });
