@@ -20,6 +20,8 @@ import {
 
 type DialogIcon = React.ComponentProps<typeof MaterialCommunityIcons>['name'];
 
+const SUPPORT_URL = 'https://ko-fi.com/crabcore';
+
 interface DialogState {
   title: string;
   message?: string;
@@ -174,6 +176,14 @@ export default function AboutCard() {
           <Text style={styles.linkText}>GitHub - Helix</Text>
           <MaterialCommunityIcons name="open-in-new" size={16} color={colors.subtext} />
         </TouchableOpacity>
+        <TouchableOpacity style={styles.linkRow} onPress={() => openUrl(SUPPORT_URL).catch(() => {})}>
+          <MaterialCommunityIcons name="coffee-outline" size={20} color={colors.text} />
+          <Text style={styles.linkText}>{t('Support Helix')}</Text>
+          <MaterialCommunityIcons name="open-in-new" size={16} color={colors.subtext} />
+        </TouchableOpacity>
+        <Text style={styles.supportNote}>
+          {t('Totally optional. Helix is free and always will be, but if you want to chip in it really helps me out as a college student.')}
+        </Text>
         <TouchableOpacity
           style={styles.linkRow}
           onPress={() =>
@@ -264,6 +274,12 @@ const styles = StyleSheet.create({
     color: colors.subtext,
     fontSize: 11,
     marginTop: spacing.sm,
+  },
+  supportNote: {
+    color: colors.subtext,
+    fontSize: 11,
+    lineHeight: 16,
+    marginLeft: 20 + spacing.sm,
   },
   progressWrap: {
     gap: spacing.sm,
