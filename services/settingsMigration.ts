@@ -41,6 +41,8 @@ export interface Settings {
   printers: PrinterEntry[];
   activePrinterId: string;
   dashboard: DashboardSections;
+  /** Show a confirmation dialog before firing the emergency stop. */
+  estopConfirm: boolean;
   macroDisplayByPrinter: Record<string, MacroDisplaySettings>;
   notificationMode: NotificationMode;
   ntfyServer: string;
@@ -87,6 +89,7 @@ export const DEFAULT_SETTINGS: Settings = {
     camera: true,
     macros: false,
   },
+  estopConfirm: true,
   macroDisplayByPrinter: {},
   notificationMode: 'local',
   ntfyServer: 'https://ntfy.sh',
@@ -193,6 +196,7 @@ export function migrateSettings(raw: Partial<Settings>): Settings {
     cameraUrl: stringValue(parsed.cameraUrl) || DEFAULT_SETTINGS.cameraUrl,
     connectionMode: parsedConnectionMode,
     dashboard: normalizeDashboard(parsed.dashboard),
+    estopConfirm: booleanValue(parsed.estopConfirm, DEFAULT_SETTINGS.estopConfirm),
     macroDisplayByPrinter: normalizeMacroDisplayByPrinter(parsed.macroDisplayByPrinter),
     notificationMode: notificationMode(parsed.notificationMode, parsed.ntfyTopic),
     ntfyServer: stringValue(parsed.ntfyServer) || DEFAULT_SETTINGS.ntfyServer,

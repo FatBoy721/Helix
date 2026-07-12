@@ -438,6 +438,11 @@ export default function SettingsScreen() {
               />
             ))}
           </View>
+          <Toggle
+            label={t('Confirm emergency stop')}
+            value={settings.estopConfirm}
+            onChange={(v) => update({ estopConfirm: v })}
+          />
         </View>
 
         <MacroDisplayCard />

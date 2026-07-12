@@ -31,6 +31,7 @@ import {
 import { formatDuration } from '../../components/PrintProgress';
 import CameraFeed, { CameraStat } from '../../components/CameraFeed';
 import NotificationBell from '../../components/NotificationBell';
+import ThemedDialog from '../../components/ThemedDialog';
 import ControlsPanel from '../../components/ControlsPanel';
 import MacrosPanel from '../../components/MacrosPanel';
 import {
@@ -180,6 +181,8 @@ export default function Dashboard() {
   const [thumb, setThumb] = useState<string | null>(null);
   const [subtitle, setSubtitle] = useState('');
   const [ledOverride, setLedOverride] = useState<{ key: string; on: boolean } | null>(null);
+  const [estopConfirmOpen, setEstopConfirmOpen] = useState(false);
+  const [estopDontAsk, setEstopDontAsk] = useState(false);
 
   const ledKey = useMemo(
     () => Object.keys(status).find((k) => /^(led|neopixel|dotstar) /.test(k)),
@@ -224,12 +227,25 @@ export default function Dashboard() {
       { text: t('No'), style: 'cancel' },
       { text: t('Yes, cancel'), style: 'destructive', onPress: () => rpc('printer.print.cancel').catch(showErr) },
     ]);
-  const doEstop = () => {
+  const fireEstop = () => {
     rpc('printer.emergency_stop').catch(() => {});
     const primary = normalizeMoonrakerUrl(settings.primaryUrl);
     const tailscale = normalizeMoonrakerUrl(settings.tailscaleUrl);
     if (primary) api.emergencyStop(primary).catch(() => {});
     if (tailscale && tailscale !== primary) api.emergencyStop(tailscale).catch(() => {});
+  };
+  const doEstop = () => {
+    if (!settings.estopConfirm) {
+      fireEstop();
+      return;
+    }
+    setEstopDontAsk(false);
+    setEstopConfirmOpen(true);
+  };
+  const confirmEstop = () => {
+    setEstopConfirmOpen(false);
+    fireEstop();
+    if (estopDontAsk) update({ estopConfirm: false }).catch(() => {});
   };
 
   const extruderNames = ['extruder', 'extruder1', 'extruder2', 'extruder3'];
@@ -736,6 +752,33 @@ export default function Dashboard() {
           </PopIn>
         </View>
       </Modal>
+
+      <ThemedDialog
+        visible={estopConfirmOpen}
+        title={t('Emergency stop?')}
+        message={t('Halts the printer immediately. Requires a firmware restart before printing again.')}
+        icon="alert-octagon"
+        placement="center"
+        onClose={() => setEstopConfirmOpen(false)}
+        actions={[
+          { text: t('Cancel'), onPress: () => setEstopConfirmOpen(false) },
+          { text: t('Stop now'), variant: 'danger', icon: 'alert-octagon', onPress: confirmEstop },
+        ]}
+      >
+        <Pressable
+          style={styles.estopDontAskRow}
+          onPress={() => setEstopDontAsk((v) => !v)}
+          accessibilityRole="checkbox"
+          accessibilityState={{ checked: estopDontAsk }}
+        >
+          <MaterialCommunityIcons
+            name={estopDontAsk ? 'checkbox-marked' : 'checkbox-blank-outline'}
+            size={20}
+            color={estopDontAsk ? colors.primary : colors.subtext}
+          />
+          <Text style={styles.estopDontAskText}>{t("Don't ask again")}</Text>
+        </Pressable>
+      </ThemedDialog>
     </SafeAreaView>
   );
 }
@@ -999,6 +1042,13 @@ const styles = StyleSheet.create({
     ...shadow.card,
   },
   estopText: { color: '#fff', fontSize: 14, fontWeight: '900', letterSpacing: 1.2 },
+  estopDontAskRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    marginBottom: spacing.lg,
+  },
+  estopDontAskText: { color: colors.text, fontSize: 13, fontWeight: '600' },
   extraCamera: { gap: spacing.xs },
   cameraName: { color: colors.subtext, fontSize: 12, fontWeight: '700' },
   pickerModalLayer: {
