@@ -14,7 +14,7 @@ export interface SettingsBackup {
   settings: Settings;
 }
 
-function buildSettingsBackup(settings: Settings): string {
+export function buildSettingsBackup(settings: Settings): string {
   const backup: SettingsBackup = {
     kind: BACKUP_KIND,
     version: 1,

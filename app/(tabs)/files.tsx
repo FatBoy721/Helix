@@ -15,7 +15,6 @@ import { api, FileEntry, thumbnailUrl } from '../../services/moonraker';
 import HistoryView from '../../components/HistoryView';
 import TimelapseView from '../../components/TimelapseView';
 import { t } from '../../services/i18n';
-import { formatSize } from '../../services/format';
 import { colors, spacing } from '../../constants/theme';
 
 // path|modified -> thumbnail URL, null = file genuinely has no thumbnail.
@@ -59,6 +58,12 @@ function FileThumb({ base, file }: { base: string; file: FileEntry }) {
       <MaterialCommunityIcons name="file-code-outline" size={24} color={colors.subtext} />
     </View>
   );
+}
+
+function formatSize(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${bytes} B`;
 }
 
 function formatDate(epoch: number): string {

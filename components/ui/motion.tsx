@@ -1,7 +1,7 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Animated, Pressable, StyleProp, View, ViewStyle } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { colors } from '../../constants/theme';
+import { colors, radius } from '../../constants/theme';
 
 // Built with RN's built-in Animated only (no reanimated dep). Transform/opacity
 // loops use the native driver; layout (height/width) animations run on JS.
@@ -68,6 +68,73 @@ export function LiveDot({ color, size = 9 }: { color: string; size?: number }) {
       />
       <View style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: color }} />
     </View>
+  );
+}
+
+export function Skeleton({
+  width,
+  height = 14,
+  style,
+}: {
+  width?: number | `${number}%`;
+  height?: number;
+  style?: StyleProp<ViewStyle>;
+}) {
+  const a = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(a, { toValue: 1, duration: 780, useNativeDriver: true }),
+        Animated.timing(a, { toValue: 0, duration: 780, useNativeDriver: true }),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [a]);
+  const opacity = a.interpolate({ inputRange: [0, 1], outputRange: [0.35, 0.75] });
+  return (
+    <Animated.View
+      style={[
+        { width, height, borderRadius: radius.sm, backgroundColor: colors.cardAlt, opacity },
+        style,
+      ]}
+    />
+  );
+}
+
+// Animated expand/collapse. Content stays mounted+measured; height animates
+// during the transition and is left `auto` when fully open so dynamic content
+// (e.g. filtered macro lists) never clips.
+export function Collapsible({ open, children }: { open: boolean; children: React.ReactNode }) {
+  const [measured, setMeasured] = useState(0);
+  const [animating, setAnimating] = useState(false);
+  const anim = useRef(new Animated.Value(open ? 1 : 0)).current;
+  const mounted = useRef(false);
+
+  useEffect(() => {
+    if (!mounted.current) {
+      mounted.current = true;
+      return;
+    }
+    setAnimating(true);
+    Animated.timing(anim, {
+      toValue: open ? 1 : 0,
+      duration: 240,
+      useNativeDriver: false,
+    }).start(() => setAnimating(false));
+  }, [open, anim]);
+
+  const animatedHeight = anim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, Math.max(measured, 1)],
+  });
+  const height = animating ? animatedHeight : open ? undefined : 0;
+  const opacity = animating ? anim : open ? 1 : 0;
+
+  return (
+    <Animated.View style={{ height, opacity, overflow: 'hidden' }}>
+      <View onLayout={(e) => setMeasured(e.nativeEvent.layout.height)}>{children}</View>
+    </Animated.View>
   );
 }
 

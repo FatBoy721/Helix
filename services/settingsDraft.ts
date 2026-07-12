@@ -1,4 +1,4 @@
-const DRAFT_SETTING_KEYS = [
+export const DRAFT_SETTING_KEYS = [
   'primaryUrl',
   'tailscaleUrl',
   'cameraUrl',
