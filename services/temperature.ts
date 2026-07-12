@@ -4,11 +4,11 @@ export function normalizeTemperatureUnit(raw: unknown): TemperatureUnit {
   return raw === 'f' ? 'f' : 'c';
 }
 
-export function celsiusToFahrenheit(celsius: number): number {
+function celsiusToFahrenheit(celsius: number): number {
   return (celsius * 9) / 5 + 32;
 }
 
-export function fahrenheitToCelsius(fahrenheit: number): number {
+function fahrenheitToCelsius(fahrenheit: number): number {
   return (fahrenheit - 32) * 5 / 9;
 }
 

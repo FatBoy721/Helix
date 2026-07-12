@@ -1,10 +1,7 @@
 import React, { useMemo } from 'react';
-import { StyleProp, StyleSheet, Text, View, ViewStyle } from 'react-native';
+import { StyleProp, StyleSheet, View, ViewStyle } from 'react-native';
 import Svg, { Circle, Defs, RadialGradient, Stop } from 'react-native-svg';
-import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { colors, radius, shadow, spacing, withAlpha } from '../../constants/theme';
-
-type IconName = React.ComponentProps<typeof MaterialCommunityIcons>['name'];
 
 export function Card({
   children,
@@ -30,37 +27,6 @@ export function Card({
       ]}
     >
       {children}
-    </View>
-  );
-}
-
-export function Chip({
-  label,
-  color = colors.subtext,
-  icon,
-  filled,
-  style,
-}: {
-  label: string;
-  color?: string;
-  icon?: IconName;
-  filled?: boolean;
-  style?: StyleProp<ViewStyle>;
-}) {
-  return (
-    <View
-      style={[
-        styles.chip,
-        filled
-          ? { backgroundColor: withAlpha(color, 0.16), borderColor: withAlpha(color, 0.4) }
-          : null,
-        style,
-      ]}
-    >
-      {icon ? <MaterialCommunityIcons name={icon} size={13} color={color} /> : null}
-      <Text style={[styles.chipText, { color }]} numberOfLines={1}>
-        {label}
-      </Text>
     </View>
   );
 }
@@ -100,21 +66,5 @@ const styles = StyleSheet.create({
     borderRadius: radius.lg,
     borderWidth: 1,
     borderColor: colors.border,
-  },
-  chip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    borderRadius: radius.pill,
-    borderWidth: 1,
-    borderColor: 'transparent',
-    backgroundColor: colors.cardAlt,
-    paddingVertical: 5,
-    paddingHorizontal: 10,
-  },
-  chipText: {
-    fontSize: 11,
-    fontWeight: '800',
-    flexShrink: 1,
   },
 });

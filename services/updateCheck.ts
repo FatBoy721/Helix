@@ -1,7 +1,7 @@
 export const REPO_URL = 'https://github.com/FatBoy721/Helix';
-export const BUG_URL = `${REPO_URL}/issues/new`;
+const BUG_URL = `${REPO_URL}/issues/new`;
 export const RELEASE_API_URL = 'https://api.github.com/repos/FatBoy721/Helix/releases/latest';
-export const LATEST_RELEASE_URL = `${REPO_URL}/releases/latest`;
+const LATEST_RELEASE_URL = `${REPO_URL}/releases/latest`;
 
 export interface GitHubReleaseAsset {
   name: string;

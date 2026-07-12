@@ -66,7 +66,6 @@ export interface Settings {
 }
 
 export const STORAGE_VERSION = 9;
-export const LEGACY_DEFAULT_PRIMARY_URL = 'http://192.168.1.17:7125';
 
 export const DEFAULT_SETTINGS: Settings = {
   settingsVersion: STORAGE_VERSION,
@@ -125,7 +124,7 @@ function notificationMode(raw: unknown, ntfyTopic?: unknown): NotificationMode {
   return stringValue(ntfyTopic)?.trim() ? 'ntfy' : DEFAULT_SETTINGS.notificationMode;
 }
 
-export function normalizeConnectionMode(raw: unknown): ConnectionMode {
+function normalizeConnectionMode(raw: unknown): ConnectionMode {
   return raw === 'auto' || raw === 'lan' || raw === 'tailscale'
     ? raw
     : DEFAULT_SETTINGS.connectionMode;

@@ -17,3 +17,4 @@ android/local.properties
 .firecrawl/
 *.apk
 tools/
+.omc/

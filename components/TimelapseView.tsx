@@ -14,16 +14,12 @@ import { WebView } from 'react-native-webview';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { api, FileEntry, fileUrl } from '../services/moonraker';
 import { t } from '../services/i18n';
+import { formatSize } from '../services/format';
 import { colors, spacing } from '../constants/theme';
 
 interface Clip {
   video: FileEntry;
   thumbUrl: string | null;
-}
-
-function fmtSize(bytes: number): string {
-  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(bytes / 1024).toFixed(0)} KB`;
 }
 
 function fmtDate(epoch: number): string {
@@ -113,7 +109,7 @@ export default function TimelapseView({ base, connected }: { base: string; conne
               </Text>
               <View style={styles.clipMetaRow}>
                 <Text style={styles.clipMeta}>
-                  {fmtSize(item.video.size)} · {fmtDate(item.video.modified)}
+                  {formatSize(item.video.size)} · {fmtDate(item.video.modified)}
                 </Text>
                 <TouchableOpacity
                   style={styles.dlBtn}

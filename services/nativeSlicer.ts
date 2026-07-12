@@ -1,4 +1,4 @@
-import { DeviceEventEmitter, NativeModules, Platform } from 'react-native';
+import { NativeModules, Platform } from 'react-native';
 
 export type NativeSlicerStatus = {
   platform: string;
@@ -33,23 +33,6 @@ export type ExtractedPlate = {
   filePath: string;
   fileName: string;
   objectCount: number;
-};
-
-export type SliceOptions = {
-  layerHeight?: number;
-  fillDensity?: number; // 0..1
-  nozzleTemp?: number;
-  bedTemp?: number;
-  supportEnabled?: boolean;
-  supportType?: string;
-  supportAngle?: number;
-  supportFilament?: number;
-  supportInterfaceFilament?: number;
-  supportBuildPlateOnly?: boolean;
-  supportPattern?: string;
-  brimWidth?: number;
-  skirtLoops?: number;
-  initialTool?: number;
 };
 
 export type NativeSliceResult = {
@@ -96,14 +79,9 @@ type HelixSlicerModule = {
   pickModelFile: () => Promise<SharedModelFile>;
   getModelPlates: (path: string) => Promise<ModelPlate[]>;
   extractPlate: (path: string, plateId: number) => Promise<ExtractedPlate>;
-  sliceFile: (path: string, options: SliceOptions | null) => Promise<NativeSliceResult>;
-  cancelSlice: () => Promise<boolean>;
   captureMakerWorldCookies: () => Promise<MakerWorldCookies>;
   getMakerWorldCookies: () => Promise<MakerWorldCookies>;
-  getMakerWorldCookieDebug: () => Promise<MakerWorldCookieDebug>;
   saveMakerWorldBearer: (jwt: string) => Promise<boolean>;
-  clearMakerWorldCookies: () => Promise<boolean>;
-  downloadMakerWorld: (shareUrl: string) => Promise<NativeMakerWorldDownload>;
   openMakerWorldDownloader: (
     designId: string,
     instanceId: string | null,
@@ -135,17 +113,6 @@ type HelixSlicerModule = {
   getGcodeFilamentGrams: (path: string) => Promise<number[]>;
   clearLastSlice: () => Promise<boolean>;
   uploadGcode: (baseUrl: string, filename: string, path: string) => Promise<NativeGcodeUpload>;
-};
-
-export type MakerWorldCookieDebug = {
-  storedLength: number;
-  liveLength: number;
-  storedHasToken: boolean;
-  liveHasToken: boolean;
-  storedNames: string;
-  liveNames: string;
-  bearerLength: number;
-  hasBearer: boolean;
 };
 
 const nativeModule = NativeModules.HelixSlicer as HelixSlicerModule | undefined;
@@ -236,31 +203,6 @@ export async function extractModelPlate(path: string, plateId: number): Promise<
  * Slices an STL/3MF with the native engine. Accepts a file:// uri or plain path.
  * onProgress receives native "HelixSliceProgress" events while the slice runs.
  */
-export async function sliceModelFile(
-  uriOrPath: string,
-  options: SliceOptions | null,
-  onProgress?: (percentage: number, stage: string) => void
-): Promise<NativeSliceResult> {
-  if (Platform.OS !== 'android' || !nativeModule) {
-    throw new Error('Native slicer is Android-only in this lab build.');
-  }
-  const path = uriOrPath.replace(/^file:\/\//, '');
-  const sub = onProgress
-    ? DeviceEventEmitter.addListener('HelixSliceProgress', (e: { percentage: number; stage: string }) =>
-        onProgress(e.percentage, e.stage)
-      )
-    : null;
-  try {
-    return await nativeModule.sliceFile(path, options);
-  } finally {
-    sub?.remove();
-  }
-}
-
-export async function cancelNativeSlice(): Promise<void> {
-  if (Platform.OS === 'android' && nativeModule) await nativeModule.cancelSlice();
-}
-
 const NO_COOKIES: MakerWorldCookies = { cookies: '', hasAuth: false, length: 0 };
 
 /** Reads live WebView cookies (post-login), persists them encrypted, returns them. */
@@ -275,40 +217,9 @@ export async function getMakerWorldCookies(): Promise<MakerWorldCookies> {
   return nativeModule.getMakerWorldCookies();
 }
 
-export async function clearMakerWorldCookies(): Promise<void> {
-  if (Platform.OS === 'android' && nativeModule) await nativeModule.clearMakerWorldCookies();
-}
-
-const NO_DEBUG: MakerWorldCookieDebug = {
-  storedLength: 0,
-  liveLength: 0,
-  storedHasToken: false,
-  liveHasToken: false,
-  storedNames: '',
-  liveNames: '',
-  bearerLength: 0,
-  hasBearer: false,
-};
-
-export async function getMakerWorldCookieDebug(): Promise<MakerWorldCookieDebug> {
-  if (Platform.OS !== 'android' || !nativeModule) return NO_DEBUG;
-  return nativeModule.getMakerWorldCookieDebug();
-}
-
 /** Stores the MakerWorld API JWT captured from the web app's localStorage. */
 export async function saveMakerWorldBearer(jwt: string): Promise<void> {
   if (Platform.OS === 'android' && nativeModule) await nativeModule.saveMakerWorldBearer(jwt);
-}
-
-/**
- * Downloads a MakerWorld model natively (OkHttp + stored cookie). More reliable
- * than JS fetch, which mangles a manual Cookie header on Android.
- */
-export async function downloadMakerWorldNative(shareUrl: string): Promise<NativeMakerWorldDownload> {
-  if (Platform.OS !== 'android' || !nativeModule) {
-    throw new Error('Native MakerWorld download is Android-only in this lab build.');
-  }
-  return nativeModule.downloadMakerWorld(shareUrl);
 }
 
 /**

@@ -12,6 +12,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { api, HistoryJob, HistoryTotals, thumbnailUrl } from '../services/moonraker';
 import UsageChart from './UsageChart';
 import { t } from '../services/i18n';
+import { formatSize } from '../services/format';
 import { colors, spacing } from '../constants/theme';
 
 const PAGE = 30;
@@ -34,12 +35,6 @@ function fmtDate(epoch: number): string {
     ' ' +
     d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
   );
-}
-
-function fmtSize(bytes?: number): string {
-  if (!bytes) return '';
-  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(bytes / 1024).toFixed(0)} KB`;
 }
 
 function fmtFilament(mm: number): string {
@@ -188,7 +183,7 @@ export default function HistoryView({ base, connected }: { base: string; connect
                 {fmtDate(item.start_time)} · {fmtDur(item.print_duration || item.total_duration)}
               </Text>
               <Text style={styles.jobMeta}>
-                {[fmtSize(item.metadata?.size), item.filament_used > 0 ? fmtFilament(item.filament_used) : '']
+                {[formatSize(item.metadata?.size), item.filament_used > 0 ? fmtFilament(item.filament_used) : '']
                   .filter(Boolean)
                   .join(' · ')}
               </Text>
