@@ -11,6 +11,10 @@ class GcodeViewerView(context: Context) : BaseGLViewerView(context) {
 
     init {
         setEGLContextClientVersion(3)
+        // Keep the GPU context across short pauses such as screen lock when
+        // the device permits it. GcodeRenderer also restores its cached data
+        // if Android still recreates the surface/context.
+        setPreserveEGLContextOnPause(true)
         setRenderer(renderer)
         renderMode = RENDERMODE_WHEN_DIRTY
     }

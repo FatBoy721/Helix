@@ -180,6 +180,15 @@ class GcodeRenderer(private val context: Context) : GLSurfaceView.Renderer {
             camera.elevation = 62.0
             camera.azimuth = -90.0
         }
+
+        // A screen lock or background/foreground transition may destroy the
+        // EGL context. The ParsedGcode object survives in lastGcode, but all
+        // GPU textures/VAOs do not, so schedule a full upload on the first
+        // frame after the new surface is ready.
+        lastGcode?.let {
+            pendingGcode = it
+            preserveCameraOnNextUpload = true
+        }
     }
 
     private fun createSegmentTemplate() {

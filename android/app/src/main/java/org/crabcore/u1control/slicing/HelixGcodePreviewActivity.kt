@@ -134,7 +134,12 @@ class HelixGcodePreviewActivity : Activity() {
 
   override fun onResume() {
     super.onResume()
-    viewer?.onResume()
+    viewer?.let {
+      it.onResume()
+      // The viewer renders only when dirty; ensure a resumed/surface-recreated
+      // preview gets a frame even when Android does not deliver another input.
+      it.requestRender()
+    }
   }
 
   private fun buildLayout(title: String): View {
