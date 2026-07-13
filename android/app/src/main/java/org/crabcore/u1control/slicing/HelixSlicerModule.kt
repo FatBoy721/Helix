@@ -151,19 +151,11 @@ class HelixSlicerModule(
     pickModelPromise = promise
     val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
       addCategory(Intent.CATEGORY_OPENABLE)
+      // Keep the picker unfiltered. Android/Files providers disagree on
+      // the MIME type for 3MF (model/3mf, application/zip, octet-stream),
+      // and provider-side filtering can grey out valid model files before
+      // Helix gets a chance to inspect their name and contents.
       type = "*/*"
-      putExtra(
-        Intent.EXTRA_MIME_TYPES,
-        arrayOf(
-          "model/3mf",
-          "application/vnd.ms-package.3dmanufacturing-3dmodel+xml",
-          "application/vnd.ms-3mfdocument",
-          "model/stl",
-          "application/sla",
-          "application/vnd.ms-pki.stl",
-          "application/octet-stream",
-        ),
-      )
     }
     try {
       activity.startActivityForResult(intent, REQUEST_PICK_MODEL)
