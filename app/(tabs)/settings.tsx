@@ -437,12 +437,12 @@ export default function SettingsScreen() {
                 onChange={(v) => updateDashboardSection(key, v)}
               />
             ))}
+            <DashboardSectionTile
+              label={t('Confirm emergency stop')}
+              value={settings.estopConfirm}
+              onChange={(v) => update({ estopConfirm: v })}
+            />
           </View>
-          <Toggle
-            label={t('Confirm emergency stop')}
-            value={settings.estopConfirm}
-            onChange={(v) => update({ estopConfirm: v })}
-          />
         </View>
 
         <MacroDisplayCard />
