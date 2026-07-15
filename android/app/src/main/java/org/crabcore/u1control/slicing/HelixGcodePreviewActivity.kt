@@ -7,6 +7,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.drawable.GradientDrawable
+import android.net.Uri
 import android.os.Bundle
 import android.content.res.ColorStateList
 import android.view.Gravity
@@ -18,6 +19,8 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
+import org.json.JSONObject
+import org.crabcore.u1control.MainActivity
 import org.crabcore.u1control.R
 import com.u1.slicer.gcode.GcodeParser
 import com.u1.slicer.gcode.ParsedGcode
@@ -801,11 +804,19 @@ class HelixGcodePreviewActivity : Activity() {
         return
       }
     }
+    val requestedTimelapse = alsoPrint && prefTimelapse
+    val requestedAutoLevel = alsoPrint && prefAutoLevel
+    val requestedFlowCalibration = alsoPrint && prefFlowCal
+    val requestedPhysicalExtruders = physicalUsedExtruders()
     sending = true
-    setSendStatus("Uploading $uploadName...")
+    setSendStatus(if (requestedTimelapse) "Preparing timelapse..." else "Uploading $uploadName...")
     Thread {
       try {
-        val file = remappedGcodeFile()
+        var file = remappedGcodeFile()
+        if (requestedTimelapse) {
+          file = GcodeTimelapseInjector.inject(file.absolutePath, cacheDir)
+          setSendStatus("Uploading $uploadName...")
+        }
         // Default OkHttp timeouts are 10s — a multi-MB gcode over WiFi/Tailscale
         // needs the same size-scaled window HelixSlicerModule.uploadGcode uses.
         val sizeMb = file.length() / (1024L * 1024L)
@@ -824,19 +835,126 @@ class HelixGcodePreviewActivity : Activity() {
             if (!resp.isSuccessful) throw IllegalStateException("Upload HTTP ${resp.code}")
           }
         if (alsoPrint) {
+          setSendStatus("Applying print preferences...")
+          applyPrintPreferences(
+            client,
+            base,
+            requestedAutoLevel,
+            requestedTimelapse,
+            requestedFlowCalibration,
+            requestedPhysicalExtruders,
+          )
+          setSendStatus("Starting $uploadName...")
           val enc = URLEncoder.encode(uploadName, "UTF-8")
           client.newCall(
             Request.Builder().url("$base/printer/print/start?filename=$enc")
               .post("".toRequestBody(null)).build(),
-          ).execute().use { }
+          ).execute().use { resp ->
+            if (!resp.isSuccessful) throw IllegalStateException("Print start HTTP ${resp.code}")
+          }
         }
         setSendStatus(if (alsoPrint) "Sent — printing $uploadName" else "Uploaded $uploadName")
+        if (alsoPrint) returnToHomeWithPrintSuccess(uploadName)
       } catch (error: Throwable) {
         setSendStatus("Send failed: ${error.message ?: error::class.java.simpleName}")
       } finally {
         sending = false
       }
     }.start()
+  }
+
+  private fun applyPrintPreferences(
+    client: OkHttpClient,
+    base: String,
+    autoLevel: Boolean,
+    timelapse: Boolean,
+    flowCalibration: Boolean,
+    usedExtruders: List<Int>,
+  ) {
+    val state = moonrakerJson(
+      client,
+      Request.Builder().url("$base/printer/objects/query?print_stats").get().build(),
+      "Printer status",
+    ).optJSONObject("result")
+      ?.optJSONObject("status")
+      ?.optJSONObject("print_stats")
+      ?.optString("state")
+    if (state == "printing" || state == "paused") {
+      throw IllegalStateException("Printer is already $state")
+    }
+
+    val script = "SET_MAIN_STATE MAIN_STATE=IDLE\n" +
+      "SET_PRINT_USED_EXTRUDERS EXTRUDERS=${usedExtruders.joinToString(",")}\n" +
+      "SET_PRINT_PREFERENCES BED_LEVEL=${if (autoLevel) 1 else 0} " +
+      "TIME_LAPSE_CAMERA=${if (timelapse) 1 else 0} " +
+      "FLOW_CALIBRATE=${if (flowCalibration) 1 else 0} " +
+      "FLOW_CALIBRATE_EXTRUDERS=0,1,2,3"
+    val encodedScript = URLEncoder.encode(script, "UTF-8")
+    moonrakerJson(
+      client,
+      Request.Builder().url("$base/printer/gcode/script?script=$encodedScript")
+        .post("".toRequestBody(null)).build(),
+      "Print preferences",
+    )
+
+    val config = moonrakerJson(
+      client,
+      Request.Builder().url("$base/printer/objects/query?print_task_config").get().build(),
+      "Print preference verification",
+    ).optJSONObject("result")
+      ?.optJSONObject("status")
+      ?.optJSONObject("print_task_config")
+      ?: throw IllegalStateException("Printer returned no print preference state")
+    val flowCalibrationExtruders = config.optJSONArray("flow_calib_extruders")
+    val configuredExtruders = config.optJSONArray("extruders_used")
+    if (
+      !config.has("auto_bed_leveling") ||
+      !config.has("time_lapse_camera") ||
+      !config.has("flow_calibrate") ||
+      config.optBoolean("auto_bed_leveling") != autoLevel ||
+      config.optBoolean("time_lapse_camera") != timelapse ||
+      config.optBoolean("flow_calibrate") != flowCalibration ||
+      flowCalibrationExtruders == null ||
+      flowCalibrationExtruders.length() < 4 ||
+      (0 until 4).any { !flowCalibrationExtruders.optBoolean(it) } ||
+      configuredExtruders == null ||
+      configuredExtruders.length() < 4 ||
+      (0 until 4).any { configuredExtruders.optBoolean(it) != usedExtruders.contains(it) }
+    ) {
+      throw IllegalStateException("Printer rejected the selected print preferences")
+    }
+  }
+
+  private fun moonrakerJson(
+    client: OkHttpClient,
+    request: Request,
+    operation: String,
+  ): JSONObject = client.newCall(request).execute().use { response ->
+    val body = response.body?.string().orEmpty()
+    if (!response.isSuccessful) {
+      throw IllegalStateException("$operation HTTP ${response.code}")
+    }
+    try {
+      JSONObject(body)
+    } catch (error: Throwable) {
+      throw IllegalStateException("$operation returned invalid JSON", error)
+    }
+  }
+
+  private fun returnToHomeWithPrintSuccess(filename: String) {
+    runOnUiThread {
+      val homeIntent = Intent(
+        Intent.ACTION_VIEW,
+        Uri.parse("u1control:///"),
+        this,
+        MainActivity::class.java,
+      ).apply {
+        putExtra(HelixSlicerModule.EXTRA_PRINT_SENT_FILENAME, filename)
+        addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+      }
+      startActivity(homeIntent)
+      finish()
+    }
   }
 
   // Dialog remap: rewrite tool changes onto the slots the user picked.
@@ -890,6 +1008,13 @@ class HelixGcodePreviewActivity : Activity() {
     val mask = usedToolMask and 0x0F
     return if (mask != 0) mask else (1 shl initialTool.coerceIn(0, 3))
   }
+
+  private fun physicalUsedExtruders(): List<Int> =
+    (0..3)
+      .filter { (requiredToolMask() and (1 shl it)) != 0 }
+      .map { toolSlotMap[it] }
+      .distinct()
+      .sorted()
 
   private fun missingLoadedTools(): String? {
     if (loadedToolMask < 0) return null

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Image,
@@ -11,7 +11,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useMoonraker } from '../../hooks/useMoonraker';
 import { useSettings } from '../../hooks/useSettings';
@@ -46,6 +46,7 @@ import {
   ProgressBar,
 } from '../../components/ui';
 import { t } from '../../services/i18n';
+import { takePrintSentNotice, type PrintSentNotice } from '../../services/printSentBus';
 import { displayTemperature } from '../../services/temperature';
 import type { TemperatureUnit } from '../../services/temperature';
 import { colors, radius, shadow, spacing, withAlpha } from '../../constants/theme';
@@ -181,8 +182,17 @@ export default function Dashboard() {
   const [thumb, setThumb] = useState<string | null>(null);
   const [subtitle, setSubtitle] = useState('');
   const [ledOverride, setLedOverride] = useState<{ key: string; on: boolean } | null>(null);
+  const [cancelConfirmOpen, setCancelConfirmOpen] = useState(false);
   const [estopConfirmOpen, setEstopConfirmOpen] = useState(false);
   const [estopDontAsk, setEstopDontAsk] = useState(false);
+  const [printSentNotice, setPrintSentNotice] = useState<PrintSentNotice | null>(null);
+
+  useFocusEffect(
+    useCallback(() => {
+      const notice = takePrintSentNotice();
+      if (notice) setPrintSentNotice(notice);
+    }, [])
+  );
 
   const ledKey = useMemo(
     () => Object.keys(status).find((k) => /^(led|neopixel|dotstar) /.test(k)),
@@ -222,11 +232,11 @@ export default function Dashboard() {
   const showErr = (e: unknown) => Alert.alert('Error', e instanceof Error ? e.message : String(e));
   const doPause = () => rpc('printer.print.pause').catch(showErr);
   const doResume = () => rpc('printer.print.resume').catch(showErr);
-  const doCancel = () =>
-    Alert.alert(t('Cancel print?'), t('This stops the current print.'), [
-      { text: t('No'), style: 'cancel' },
-      { text: t('Yes, cancel'), style: 'destructive', onPress: () => rpc('printer.print.cancel').catch(showErr) },
-    ]);
+  const doCancel = () => setCancelConfirmOpen(true);
+  const confirmCancel = () => {
+    setCancelConfirmOpen(false);
+    rpc('printer.print.cancel').catch(showErr);
+  };
   const fireEstop = () => {
     rpc('printer.emergency_stop').catch(() => {});
     const primary = normalizeMoonrakerUrl(settings.primaryUrl);
@@ -752,6 +762,40 @@ export default function Dashboard() {
           </PopIn>
         </View>
       </Modal>
+
+      <ThemedDialog
+        visible={!!printSentNotice}
+        placement="center"
+        title="Print sent successfully"
+        message={printSentNotice ? `${fileLabel(printSentNotice.filename)} is now starting on the printer.` : undefined}
+        icon="check-circle-outline"
+        onClose={() => setPrintSentNotice(null)}
+        actions={[
+          {
+            text: t('OK'),
+            icon: 'check',
+            variant: 'primary',
+            onPress: () => setPrintSentNotice(null),
+          },
+        ]}
+      />
+
+      <ThemedDialog
+        visible={cancelConfirmOpen}
+        placement="center"
+        title={t('Cancel print?')}
+        message={t('This stops the current print.')}
+        icon="stop-circle-outline"
+        onClose={() => setCancelConfirmOpen(false)}
+        actions={[
+          { text: t('No'), onPress: () => setCancelConfirmOpen(false) },
+          {
+            text: t('Yes, cancel'),
+            variant: 'danger',
+            onPress: confirmCancel,
+          },
+        ]}
+      />
 
       <ThemedDialog
         visible={estopConfirmOpen}

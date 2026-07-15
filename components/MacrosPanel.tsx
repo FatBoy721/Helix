@@ -1,11 +1,12 @@
 import React, { useMemo, useState } from 'react';
-import { Alert, StyleSheet, Text, TextInput, View } from 'react-native';
+import { StyleSheet, Text, TextInput, View } from 'react-native';
 import { useMoonraker } from '../hooks/useMoonraker';
 import { useSettings } from '../hooks/useSettings';
 import { filterMacrosForDisplay, getMacroDisplay } from '../services/macroDisplay';
 import MacroButton from './MacroButton';
 import { t } from '../services/i18n';
 import { colors, spacing } from '../constants/theme';
+import { useThemedAlert } from '../hooks/useThemedAlert';
 
 // PAXX exposes many macros. First matching category wins, with virtual tool
 // macros grouped separately from manual filament actions.
@@ -29,6 +30,7 @@ export default function MacrosPanel() {
   const { macros, sendGcode, connection } = useMoonraker();
   const { settings } = useSettings();
   const [filter, setFilter] = useState('');
+  const { showAlert, alertDialog } = useThemedAlert();
   const macroDisplay = useMemo(() => getMacroDisplay(settings), [settings]);
 
   const configuredMacros = useMemo(() => {
@@ -55,18 +57,24 @@ export default function MacrosPanel() {
   const run = (name: string) => {
     // multiACE macros get a confirmation for safety
     if (/ace/i.test(name)) {
-      Alert.alert(t('Run ACE macro?'), name, [
-        { text: t('Cancel'), style: 'cancel' },
-        { text: 'Run', onPress: () => sendGcode(name) },
-      ]);
+      showAlert({
+        title: t('Run ACE macro?'),
+        message: name,
+        icon: 'play-circle-outline',
+        actions: [
+          { text: t('Cancel') },
+          { text: t('Run'), variant: 'primary', onPress: () => sendGcode(name) },
+        ],
+      });
     } else {
       sendGcode(name);
     }
   };
 
   return (
-    <View style={styles.wrap}>
-      <TextInput
+    <>
+      <View style={styles.wrap}>
+        <TextInput
         style={styles.search}
         placeholder={t('Filter macros…')}
         placeholderTextColor={colors.subtext}
@@ -101,7 +109,9 @@ export default function MacrosPanel() {
             : t('Not connected')}
         </Text>
       )}
-    </View>
+      </View>
+      {alertDialog}
+    </>
   );
 }
 

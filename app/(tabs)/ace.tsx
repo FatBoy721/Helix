@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Alert,
   ScrollView,
   StyleSheet,
   Text,
@@ -22,11 +21,13 @@ import {
 } from '../../services/temperature';
 import type { TemperatureUnit } from '../../services/temperature';
 import { colors, spacing } from '../../constants/theme';
+import { useThemedAlert } from '../../hooks/useThemedAlert';
 
 export default function ACEScreen() {
   const { units, aceMacros, hardwareDetected, sendGcode, activeAceIndex } = useACE();
   const { connection } = useMoonraker();
   const { settings } = useSettings();
+  const { showAlert, alertDialog } = useThemedAlert();
   const disabled = connection !== 'connected';
 
   if (connection === 'connected' && !hardwareDetected) {
@@ -45,23 +46,29 @@ export default function ACEScreen() {
 
   // Safety: every ACE action is confirmed before execution.
   const confirmRun = (title: string, script: string) => {
-    Alert.alert(title, script, [
-      { text: t('Cancel'), style: 'cancel' },
-      { text: 'Run', onPress: () => sendGcode(script) },
-    ]);
+    showAlert({
+      title,
+      message: script,
+      icon: 'play-circle-outline',
+      actions: [
+        { text: t('Cancel') },
+        { text: t('Run'), variant: 'primary', onPress: () => sendGcode(script) },
+      ],
+    });
   };
 
   return (
-    <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
-      {units.map((unit) => (
-        <AceUnitCard
-          key={unit.index}
-          unit={unit}
-          disabled={disabled}
-          confirmRun={confirmRun}
-          temperatureUnit={settings.temperatureUnit}
-        />
-      ))}
+    <>
+      <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
+        {units.map((unit) => (
+          <AceUnitCard
+            key={unit.index}
+            unit={unit}
+            disabled={disabled}
+            confirmRun={confirmRun}
+            temperatureUnit={settings.temperatureUnit}
+          />
+        ))}
 
       {units.length > 1 && (
         <View style={styles.card}>
@@ -108,7 +115,9 @@ export default function ACEScreen() {
           </View>
         </View>
       )}
-    </ScrollView>
+      </ScrollView>
+      {alertDialog}
+    </>
   );
 }
 

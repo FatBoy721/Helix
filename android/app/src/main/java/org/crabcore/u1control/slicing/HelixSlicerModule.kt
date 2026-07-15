@@ -136,6 +136,26 @@ class HelixSlicerModule(
     }
   }
 
+  @ReactMethod
+  fun takePrintSentNotice(promise: Promise) {
+    val activity = getCurrentActivity()
+    val intent = activity?.intent
+    if (intent == null || intent.getBooleanExtra(EXTRA_PRINT_SENT_CONSUMED, false)) {
+      promise.resolve(null)
+      return
+    }
+
+    val filename = intent.getStringExtra(EXTRA_PRINT_SENT_FILENAME)
+    if (filename.isNullOrBlank()) {
+      promise.resolve(null)
+      return
+    }
+
+    intent.putExtra(EXTRA_PRINT_SENT_CONSUMED, true)
+    activity.intent = intent
+    promise.resolve(filename)
+  }
+
   /** Opens the system file picker for .3mf / .stl and imports into app storage. */
   @ReactMethod
   fun pickModelFile(promise: Promise) {
@@ -977,6 +997,18 @@ class HelixSlicerModule(
   }
 
   @ReactMethod
+  fun prepareTimelapseGcode(path: String, promise: Promise) {
+    Thread {
+      try {
+        val output = GcodeTimelapseInjector.inject(path, reactApplicationContext.cacheDir)
+        promise.resolve(output.absolutePath)
+      } catch (error: Throwable) {
+        promise.reject("E_TIMELAPSE_GCODE", error.message, error)
+      }
+    }.start()
+  }
+
+  @ReactMethod
   fun uploadGcode(baseUrl: String, filename: String, path: String, promise: Promise) {
     val file = File(path.removePrefix("file://"))
     if (baseUrl.isBlank()) {
@@ -1135,7 +1167,9 @@ class HelixSlicerModule(
 
   companion object {
     const val NAME = "HelixSlicer"
+    const val EXTRA_PRINT_SENT_FILENAME = "helix_print_sent_filename"
     private const val EXTRA_MODEL_CONSUMED = "helix_model_consumed"
+    private const val EXTRA_PRINT_SENT_CONSUMED = "helix_print_sent_consumed"
     private const val REQUEST_MAKERWORLD_DOWNLOADER = 7121
     private const val REQUEST_PICK_MODEL = 7122
     private const val KEY_MW_COOKIE = "makerworld_cookies"

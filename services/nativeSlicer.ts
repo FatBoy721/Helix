@@ -93,6 +93,7 @@ type HelixSlicerModule = {
   getStatus: () => Promise<NativeSlicerStatus>;
   getSharedLink: () => Promise<SharedMakerWorldLink>;
   getSharedModelFile: () => Promise<SharedModelFile | null>;
+  takePrintSentNotice: () => Promise<string | null>;
   pickModelFile: () => Promise<SharedModelFile>;
   getModelPlates: (path: string) => Promise<ModelPlate[]>;
   extractPlate: (path: string, plateId: number) => Promise<ExtractedPlate>;
@@ -134,6 +135,7 @@ type HelixSlicerModule = {
   getGcodeThumbnail: (path: string) => Promise<string | null>;
   getGcodeFilamentGrams: (path: string) => Promise<number[]>;
   clearLastSlice: () => Promise<boolean>;
+  prepareTimelapseGcode: (path: string) => Promise<string>;
   uploadGcode: (baseUrl: string, filename: string, path: string) => Promise<NativeGcodeUpload>;
 };
 
@@ -201,6 +203,11 @@ export async function getSharedModelFile(): Promise<SharedModelFile | null> {
   } catch {
     return null;
   }
+}
+
+export async function takeNativePrintSentNotice(): Promise<string | null> {
+  if (Platform.OS !== 'android' || !nativeModule) return null;
+  return nativeModule.takePrintSentNotice();
 }
 
 /** Opens the system file picker for .3mf / .stl and imports into app storage. */
@@ -437,6 +444,61 @@ export async function openNativeGcodePreview(
 }
 
 /** Uploads a sliced gcode file into Moonraker's gcodes root. */
+/**
+ * Injects moonraker-timelapse frame-capture macros into a sliced gcode so the
+ * printer actually records a timelapse. The native slicer only emits
+ * `;LAYER_CHANGE` markers — PAXX firmware captures nothing on its own (its
+ * timelapse component is a stub), so the gcode itself must call the macros:
+ * `TIMELAPSE_START` before the first layer, `TIMELAPSE_TAKE_FRAME` after every
+ * `;LAYER_CHANGE`, and `TIMELAPSE_STOP` at the end. Writes the modified gcode to
+ * the cache dir and returns its path. Existing executable timelapse commands
+ * are normalized so profile metadata cannot produce duplicate start/stop calls.
+ * Returns the original path unchanged when it is already normalized or there
+ * are no layer-change anchors.
+ */
+export async function injectTimelapseMacros(gcodePath: string): Promise<string> {
+  if (Platform.OS === 'android' && nativeModule) {
+    return nativeModule.prepareTimelapseGcode(gcodePath.replace(/^file:\/\//, ''));
+  }
+
+  const FileSystem = await import('expo-file-system/legacy');
+  const uri = gcodePath.startsWith('file://') ? gcodePath : `file://${gcodePath}`;
+  const content = await FileSystem.readAsStringAsync(uri);
+  const eol = content.includes('\r\n') ? '\r\n' : '\n';
+  const lines = content.split(/\r?\n/);
+  const startCommand = /^\s*TIMELAPSE_START(?:\s+.*)?$/i;
+  const stopCommand = /^\s*TIMELAPSE_STOP(?:\s+.*)?$/i;
+  const takeFrameCommand = /^\s*TIMELAPSE_TAKE_FRAME(?:\s+.*)?$/i;
+  const isLayerChange = (line: string) => /^;LAYER_CHANGE(?:\s.*)?$/i.test(line);
+  const layerCount = lines.filter(isLayerChange).length;
+  if (layerCount === 0) return gcodePath;
+
+  const hasStart = lines.some((line) => startCommand.test(line));
+  const hasStop = lines.some((line) => stopCommand.test(line));
+  const framesAlreadyNormalized = lines.every((line, index) =>
+    !isLayerChange(line) || takeFrameCommand.test(lines[index + 1] ?? '')
+  );
+  if (hasStart && hasStop && framesAlreadyNormalized) return gcodePath;
+
+  const withoutFrames = lines.filter((line) => !takeFrameCommand.test(line));
+  const out: string[] = [];
+  let startWritten = hasStart;
+  for (const line of withoutFrames) {
+    if (isLayerChange(line) && !startWritten) {
+      out.push('TIMELAPSE_START');
+      startWritten = true;
+    }
+    out.push(line);
+    if (isLayerChange(line)) out.push('TIMELAPSE_TAKE_FRAME');
+  }
+  if (!hasStop) out.push('TIMELAPSE_STOP');
+
+  const base = uri.split('/').pop() || 'print.gcode';
+  const outPath = `${FileSystem.cacheDirectory}tl_${base}`;
+  await FileSystem.writeAsStringAsync(outPath, out.join(eol));
+  return outPath;
+}
+
 export async function uploadGcodeToPrinter(
   base: string,
   filename: string,

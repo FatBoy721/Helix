@@ -3,6 +3,7 @@ import { Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { colors, spacing } from '../constants/theme';
+import { useSettings } from '../hooks/useSettings';
 
 type IconName = React.ComponentProps<typeof MaterialCommunityIcons>['name'];
 
@@ -25,8 +26,8 @@ interface Props {
   children?: React.ReactNode;
 }
 
-function actionStyle(variant: DialogAction['variant']) {
-  if (variant === 'primary') return styles.primaryBtn;
+function actionStyle(variant: DialogAction['variant'], accentColor: string) {
+  if (variant === 'primary') return { backgroundColor: accentColor };
   if (variant === 'danger') return styles.dangerBtn;
   return styles.secondaryBtn;
 }
@@ -46,6 +47,8 @@ export default function ThemedDialog({
   children,
 }: Props) {
   const centered = placement === 'center';
+  const { settings } = useSettings();
+  const accentColor = settings.accentColor || colors.primary;
   // Issue #5: bottom sheets draw edge-to-edge, so pad past the Android nav bar.
   const insets = useSafeAreaInsets();
   return (
@@ -61,7 +64,7 @@ export default function ThemedDialog({
             <View style={styles.titleRow}>
               {icon ? (
                 <View style={styles.iconBadge}>
-                  <MaterialCommunityIcons name={icon} size={20} color={colors.primary} />
+                  <MaterialCommunityIcons name={icon} size={20} color={accentColor} />
                 </View>
               ) : null}
               <Text style={styles.title}>{title}</Text>
@@ -75,7 +78,7 @@ export default function ThemedDialog({
 
           {children}
 
-          <View style={styles.actions}>
+          <View style={[styles.actions, actions.length > 2 && styles.actionsStacked]}>
             {actions.map((action) => {
               const variant = action.variant ?? 'secondary';
               return (
@@ -83,7 +86,7 @@ export default function ThemedDialog({
                   key={action.text}
                   style={[
                     styles.actionBtn,
-                    actionStyle(variant),
+                    actionStyle(variant, accentColor),
                     action.disabled && styles.disabledBtn,
                   ]}
                   disabled={action.disabled}
@@ -170,6 +173,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: spacing.sm,
   },
+  actionsStacked: {
+    flexDirection: 'column',
+  },
   actionBtn: {
     flex: 1,
     minHeight: 44,
@@ -180,9 +186,6 @@ const styles = StyleSheet.create({
     gap: 6,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
-  },
-  primaryBtn: {
-    backgroundColor: colors.primary,
   },
   secondaryBtn: {
     backgroundColor: colors.cardAlt,

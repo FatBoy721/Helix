@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { Alert, Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import QRCode from 'react-native-qrcode-svg';
 import ViewShot from 'react-native-view-shot';
 import * as MediaLibrary from 'expo-media-library';
@@ -7,6 +7,7 @@ import * as Sharing from 'expo-sharing';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { t } from '../services/i18n';
 import { colors, spacing } from '../constants/theme';
+import { useThemedAlert } from '../hooks/useThemedAlert';
 
 interface Props {
   spoolId: number;
@@ -25,13 +26,18 @@ export function spoolQrValue(id: number): string {
 export default function SpoolLabel({ spoolId, title, material, colorHex, onClose }: Props) {
   const shotRef = useRef<ViewShot>(null);
   const [busy, setBusy] = useState(false);
+  const { showAlert, alertDialog } = useThemedAlert();
 
   const capture = async (): Promise<string | null> => {
     try {
       const uri = await shotRef.current?.capture?.();
       return uri ?? null;
     } catch (e: any) {
-      Alert.alert(t('Error'), String(e?.message ?? e));
+      showAlert({
+        title: t('Error'),
+        message: String(e?.message ?? e),
+        icon: 'alert-circle-outline',
+      });
       return null;
     }
   };
@@ -41,15 +47,27 @@ export default function SpoolLabel({ spoolId, title, material, colorHex, onClose
     try {
       const { status } = await MediaLibrary.requestPermissionsAsync();
       if (status !== 'granted') {
-        Alert.alert(t('Error'), t('Photo library permission denied'));
+        showAlert({
+          title: t('Error'),
+          message: t('Photo library permission denied'),
+          icon: 'image-off-outline',
+        });
         return;
       }
       const uri = await capture();
       if (!uri) return;
       await MediaLibrary.saveToLibraryAsync(uri);
-      Alert.alert(t('Saved'), t('Label saved to your gallery — print it from there.'));
+      showAlert({
+        title: t('Saved'),
+        message: t('Label saved to your gallery — print it from there.'),
+        icon: 'check-circle',
+      });
     } catch (e: any) {
-      Alert.alert(t('Error'), String(e?.message ?? e));
+      showAlert({
+        title: t('Error'),
+        message: String(e?.message ?? e),
+        icon: 'alert-circle-outline',
+      });
     } finally {
       setBusy(false);
     }
@@ -65,15 +83,20 @@ export default function SpoolLabel({ spoolId, title, material, colorHex, onClose
         await Sharing.shareAsync(uri, { mimeType: 'image/png' });
       }
     } catch (e: any) {
-      Alert.alert(t('Error'), String(e?.message ?? e));
+      showAlert({
+        title: t('Error'),
+        message: String(e?.message ?? e),
+        icon: 'alert-circle-outline',
+      });
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <Modal visible animationType="fade" transparent onRequestClose={onClose}>
-      <View style={styles.wrap}>
+    <>
+      <Modal visible animationType="fade" transparent onRequestClose={onClose}>
+        <View style={styles.wrap}>
         <View style={styles.card}>
           <View style={styles.header}>
             <Text style={styles.headerTitle}>{t('Spool label')}</Text>
@@ -119,8 +142,10 @@ export default function SpoolLabel({ spoolId, title, material, colorHex, onClose
             </TouchableOpacity>
           </View>
         </View>
-      </View>
-    </Modal>
+        </View>
+      </Modal>
+      {alertDialog}
+    </>
   );
 }
 

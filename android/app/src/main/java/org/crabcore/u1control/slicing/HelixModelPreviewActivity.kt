@@ -67,6 +67,19 @@ class HelixModelPreviewActivity : Activity() {
   private var brimTileIcon: ImageView? = null
   private var brimTileText: TextView? = null
   private var deleteTile: View? = null
+  private var undoTile: View? = null
+  private var redoTile: View? = null
+
+  // The untouched file as first opened — Reset reloads this, discarding every
+  // edit made this session (rotate/scale/duplicate/split/delete).
+  private var originalModelPath: String = ""
+  // Delete produces a whole new file per step, so undo/redo for it is just a
+  // stack of prior file paths — no inverse-operation logic needed. Other edit
+  // types (rotate/scale/duplicate/split) mutate the live engine in place and
+  // aren't covered: the native engine has no state-snapshot/save primitive to
+  // build a cheap undo for them.
+  private val deleteUndoStack = ArrayDeque<String>()
+  private val deleteRedoStack = ArrayDeque<String>()
 
   private fun parseAccent(hex: String?): Int =
     try {
@@ -127,6 +140,7 @@ class HelixModelPreviewActivity : Activity() {
       return
     }
 
+    originalModelPath = file.absolutePath
     PrepareSession.begin(file.absolutePath)
     loadModel(file)
   }
@@ -193,7 +207,7 @@ class HelixModelPreviewActivity : Activity() {
       textSize = 13f
       gravity = Gravity.CENTER
       setTextColor(Color.WHITE)
-      setOnClickListener { viewer?.resetView() }
+      setOnClickListener { resetToOriginal() }
       layoutParams = LinearLayout.LayoutParams(dp(64), dp(40))
     }
 
@@ -283,11 +297,18 @@ class HelixModelPreviewActivity : Activity() {
     val delTile = tile(R.drawable.ic_tool_delete, "Delete") { deleteSelected() }
     deleteTile = delTile
     addTool(delTile)
+    val undoTileView = tile(R.drawable.ic_tool_undo, "Undo") { undoDelete() }
+    undoTile = undoTileView
+    addTool(undoTileView)
+    val redoTileView = tile(R.drawable.ic_tool_redo, "Redo") { redoDelete() }
+    redoTile = redoTileView
+    addTool(redoTileView)
     addTool(buildSupportsTile())
     addTool(buildInfillTile())
     addTool(buildIroningTile())
     addTool(buildBrimTile())
     refreshDeleteTile()
+    refreshUndoRedoTiles()
 
     val toolScroll = android.widget.HorizontalScrollView(this).apply {
       isHorizontalScrollBarEnabled = false
@@ -476,6 +497,7 @@ class HelixModelPreviewActivity : Activity() {
     positions = newPositions.copyOf()
     if (selectedObject >= count) selectedObject = -1
     refreshDeleteTile()
+    refreshUndoRedoTiles()
     if (count > 1 && copyCount > 1) {
       // Bed became multi-object (split/duplicate) — copies no longer apply.
       copyCount = 1
@@ -750,6 +772,7 @@ class HelixModelPreviewActivity : Activity() {
   private fun selectObject(index: Int) {
     selectedObject = index
     refreshDeleteTile()
+    refreshUndoRedoTiles()
     val view = viewer ?: return
     view.persistentSelectionIndex = index
     view.renderer.highlightIndex = index
@@ -761,6 +784,19 @@ class HelixModelPreviewActivity : Activity() {
   private fun refreshDeleteTile() {
     val on = interactive && selectedObject >= 0
     deleteTile?.let {
+      it.isEnabled = on
+      it.alpha = if (on) 1f else 0.35f
+    }
+  }
+
+  private fun refreshUndoRedoTiles() {
+    undoTile?.let {
+      val on = interactive && deleteUndoStack.isNotEmpty()
+      it.isEnabled = on
+      it.alpha = if (on) 1f else 0.35f
+    }
+    redoTile?.let {
+      val on = interactive && deleteRedoStack.isNotEmpty()
       it.isEnabled = on
       it.alpha = if (on) 1f else 0.35f
     }
@@ -963,6 +999,19 @@ class HelixModelPreviewActivity : Activity() {
       return
     }
     val index = selectedObject
+    // Keep every surviving object exactly where it was — splice the removed
+    // object's [x,y] out of the current layout instead of auto-arranging
+    // everyone (autoArrange was scrambling positions on every delete).
+    val survivorPositions = positions.takeIf { it.size / 2 == objectCount }?.let { pos ->
+      val kept = FloatArray(pos.size - 2)
+      var w = 0
+      for (i in 0 until objectCount) {
+        if (i == index) continue
+        kept[w++] = pos[i * 2]
+        kept[w++] = pos[i * 2 + 1]
+      }
+      kept
+    }
     showBusy("Removing object...")
     Thread {
       try {
@@ -979,16 +1028,16 @@ class HelixModelPreviewActivity : Activity() {
           if (!lib.loadModel(out.absolutePath)) {
             throw IllegalStateException("Engine could not reload after delete.")
           }
+          deleteUndoStack.addLast(modelPath)
+          deleteRedoStack.clear()
           modelPath = out.absolutePath
           PrepareSession.begin(modelPath)
           selectedObject = -1
           runCatching {
-            val boxes = lib.getObjectBoundingBoxes()
-            val incoming = lib.nativeGetObjectWorldAABBMins()
-            if (boxes.isNotEmpty()) {
-              val result = CopyArrangeCalculator.autoArrange(boxes, null, incoming, BED_SIZE)
-              lib.setObjectPositions(result.positions)
-              PrepareSession.setPositions(result.positions)
+            val newCount = lib.nativeGetObjectCount()
+            if (survivorPositions != null && survivorPositions.size / 2 == newCount) {
+              lib.setObjectPositions(survivorPositions)
+              PrepareSession.setPositions(survivorPositions)
             }
           }
           fetchSceneAndShowLocked(lib)
@@ -998,6 +1047,112 @@ class HelixModelPreviewActivity : Activity() {
         runOnUiThread {
           hideBusy()
           toast("Delete failed: ${error.message ?: error::class.java.simpleName}")
+        }
+      }
+    }.start()
+  }
+
+  private fun undoDelete() {
+    if (!interactive || deleteUndoStack.isEmpty()) return
+    val target = deleteUndoStack.removeLast()
+    val current = modelPath
+    showBusy("Undoing...")
+    Thread {
+      try {
+        synchronized(NativeEngineGuard.LOCK) {
+          val lib = native ?: NativeLibrary().also { native = it }
+          if (!lib.loadModel(target)) {
+            throw IllegalStateException("Engine could not reload previous state.")
+          }
+          deleteRedoStack.addLast(current)
+          modelPath = target
+          PrepareSession.begin(modelPath)
+          selectedObject = -1
+          fetchSceneAndShowLocked(lib)
+        }
+        runOnUiThread { hideBusy() }
+      } catch (error: Throwable) {
+        runOnUiThread {
+          hideBusy()
+          toast("Undo failed: ${error.message ?: error::class.java.simpleName}")
+        }
+      }
+    }.start()
+  }
+
+  private fun redoDelete() {
+    if (!interactive || deleteRedoStack.isEmpty()) return
+    val target = deleteRedoStack.removeLast()
+    val current = modelPath
+    showBusy("Redoing...")
+    Thread {
+      try {
+        synchronized(NativeEngineGuard.LOCK) {
+          val lib = native ?: NativeLibrary().also { native = it }
+          if (!lib.loadModel(target)) {
+            throw IllegalStateException("Engine could not reload next state.")
+          }
+          deleteUndoStack.addLast(current)
+          modelPath = target
+          PrepareSession.begin(modelPath)
+          selectedObject = -1
+          fetchSceneAndShowLocked(lib)
+        }
+        runOnUiThread { hideBusy() }
+      } catch (error: Throwable) {
+        runOnUiThread {
+          hideBusy()
+          toast("Redo failed: ${error.message ?: error::class.java.simpleName}")
+        }
+      }
+    }.start()
+  }
+
+  /** Discards every edit made this session and reloads the file exactly as first opened. */
+  private fun resetToOriginal() {
+    if (!interactive || originalModelPath.isBlank()) {
+      viewer?.resetView()
+      return
+    }
+    if (modelPath == originalModelPath && deleteUndoStack.isEmpty()) {
+      viewer?.resetView()
+      return
+    }
+    showBusy("Resetting...")
+    Thread {
+      try {
+        val file = File(originalModelPath)
+        synchronized(NativeEngineGuard.LOCK) {
+          val lib = native ?: NativeLibrary().also { native = it }
+          if (!lib.loadModel(file.absolutePath)) {
+            throw IllegalStateException("Engine could not reload the original model.")
+          }
+          deleteUndoStack.clear()
+          deleteRedoStack.clear()
+          modelPath = originalModelPath
+          PrepareSession.begin(modelPath)
+          selectedObject = -1
+          if (autoArrangeOnLoad) {
+            runCatching {
+              val liveBoxes = lib.getObjectBoundingBoxes()
+              val incoming = lib.nativeGetObjectWorldAABBMins()
+              if (liveBoxes.isNotEmpty()) {
+                val result = CopyArrangeCalculator.autoArrange(liveBoxes, null, incoming, BED_SIZE)
+                lib.setObjectPositions(result.positions)
+                PrepareSession.setPositions(result.positions)
+              }
+            }
+          }
+          fetchSceneAndShowLocked(lib)
+        }
+        runOnUiThread {
+          hideBusy()
+          viewer?.resetView()
+        }
+      } catch (error: Throwable) {
+        runOnUiThread {
+          hideBusy()
+          toast("Reset failed: ${error.message ?: error::class.java.simpleName}")
         }
       }
     }.start()

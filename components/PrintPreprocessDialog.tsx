@@ -35,7 +35,7 @@ type Props = {
   sending: boolean;
   progress: number;
   errorMessage?: string | null;
-  onSend: () => void;
+  onSend: (prefs: Readonly<Record<PrintPref, boolean>>) => void;
 };
 
 const PREF_LABELS: { key: PrintPref; label: string }[] = [
@@ -169,7 +169,7 @@ export default function PrintPreprocessDialog({
             <Pressable
               style={[styles.send, sending && styles.sendOff]}
               disabled={sending}
-              onPress={onSend}
+              onPress={() => onSend(prefs)}
             >
               {sending ? (
                 <ActivityIndicator color="#fff" />

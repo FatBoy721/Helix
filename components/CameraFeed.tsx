@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Alert, Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -7,6 +7,7 @@ import * as MediaLibrary from 'expo-media-library';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import { colors, spacing } from '../constants/theme';
 import { cacheBustUrl, cameraSnapshotFileName } from '../services/cameraSnapshot';
+import { useThemedAlert } from '../hooks/useThemedAlert';
 
 export interface CameraStat {
   label: string;
@@ -165,6 +166,7 @@ export default function CameraFeed({
   const [fullscreen, setFullscreen] = useState(false);
   const [showStats, setShowStats] = useState(false);
   const [savingSnapshot, setSavingSnapshot] = useState(false);
+  const { showAlert, alertDialog } = useThemedAlert();
 
   // /webcam/webrtc and /screen/ serve their own player pages.
   const isWebrtcPage = /webrtc|\/screen\/?($|\?)/i.test(url);
@@ -201,7 +203,11 @@ export default function CameraFeed({
     try {
       const available = await MediaLibrary.isAvailableAsync();
       if (!available) {
-        Alert.alert('Photos unavailable', 'This device does not expose a media library.');
+        showAlert({
+          title: 'Photos unavailable',
+          message: 'This device does not expose a media library.',
+          icon: 'image-off-outline',
+        });
         return;
       }
 
@@ -219,9 +225,17 @@ export default function CameraFeed({
       }
 
       await MediaLibrary.saveToLibraryAsync(result.uri);
-      Alert.alert('Saved', 'Camera snapshot saved to Photos.');
+      showAlert({
+        title: 'Saved',
+        message: 'Camera snapshot saved to Photos.',
+        icon: 'check-circle',
+      });
     } catch (e: unknown) {
-      Alert.alert('Snapshot failed', snapshotSaveErrorMessage(e));
+      showAlert({
+        title: 'Snapshot failed',
+        message: snapshotSaveErrorMessage(e),
+        icon: 'alert-circle-outline',
+      });
     } finally {
       if (localUri) {
         FileSystem.deleteAsync(localUri, { idempotent: true }).catch(() => {});
@@ -330,6 +344,7 @@ export default function CameraFeed({
           {controls}
         </View>
       </Modal>
+      {alertDialog}
     </>
   );
 }

@@ -1,11 +1,12 @@
 import React, { useCallback, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Linking, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Linking, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { WebView, type WebViewNavigation } from 'react-native-webview';
 import { useRouter } from 'expo-router';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { colors, spacing } from '../constants/theme';
 import { captureMakerWorldCookies, saveMakerWorldBearer } from '../services/nativeSlicer';
+import { useThemedAlert } from '../hooks/useThemedAlert';
 
 // Runs on each page load: scan localStorage for a JWT (MakerWorld's API access
 // token lives there, not in the cookie) and report keys + any JWT back to RN.
@@ -56,6 +57,7 @@ export default function MakerWorldLoginScreen() {
   const [authed, setAuthed] = useState(false);
   const [checking, setChecking] = useState(false);
   const lastCheck = useRef(0);
+  const { showAlert, alertDialog } = useThemedAlert();
 
   const checkCookies = useCallback(async () => {
     const now = Date.now();
@@ -83,21 +85,22 @@ export default function MakerWorldLoginScreen() {
 
   const onRequest = useCallback((req: WebViewNavigation): boolean => {
     if (isBlockedAuthHost(req.url)) {
-      Alert.alert(
-        'Use Email Login',
-        'Google / Apple / Facebook block their sign-in inside in-app browsers. ' +
+      showAlert({
+        title: 'Use Email Login',
+        message: 'Google / Apple / Facebook block their sign-in inside in-app browsers. ' +
           'Log in with your MakerWorld (Bambu) email + password on this screen instead — ' +
           'that keeps you signed in here so downloads work.',
-        [{ text: 'OK' }]
-      );
+        icon: 'email-outline',
+      });
       return false; // block the SSO nav in-webview
     }
     return true;
-  }, []);
+  }, [showAlert]);
 
   return (
-    <SafeAreaView style={styles.screen} edges={['top', 'bottom']}>
-      <View style={styles.header}>
+    <>
+      <SafeAreaView style={styles.screen} edges={['top', 'bottom']}>
+        <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()} style={styles.iconBtn} hitSlop={10}>
           <MaterialCommunityIcons name="close" size={22} color={colors.text} />
         </TouchableOpacity>
@@ -146,7 +149,9 @@ export default function MakerWorldLoginScreen() {
         />
         <Text style={styles.doneText}>{authed ? 'Done — Back to Slice' : 'Finish signing in first'}</Text>
       </TouchableOpacity>
-    </SafeAreaView>
+      </SafeAreaView>
+      {alertDialog}
+    </>
   );
 }
 

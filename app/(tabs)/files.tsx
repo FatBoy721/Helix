@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Alert,
   FlatList,
   Image,
   RefreshControl,
@@ -16,6 +15,7 @@ import HistoryView from '../../components/HistoryView';
 import TimelapseView from '../../components/TimelapseView';
 import { t } from '../../services/i18n';
 import { colors, spacing } from '../../constants/theme';
+import { useThemedAlert } from '../../hooks/useThemedAlert';
 
 // path|modified -> thumbnail URL, null = file genuinely has no thumbnail.
 // cached at module level so scrolling doesn't re-hit /server/files/metadata
@@ -77,6 +77,7 @@ export default function FilesScreen() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [mode, setMode] = useState<'files' | 'history' | 'timelapse'>('files');
+  const { showAlert, alertDialog } = useThemedAlert();
 
   const printState: string = status.print_stats?.state ?? '';
 
@@ -100,23 +101,37 @@ export default function FilesScreen() {
 
   const startPrint = (file: FileEntry) => {
     if (printState === 'printing' || printState === 'paused') {
-      Alert.alert(t('Printer busy'), t('A print is already in progress.'));
+      showAlert({
+        title: t('Printer busy'),
+        message: t('A print is already in progress.'),
+        icon: 'printer-alert',
+      });
       return;
     }
-    Alert.alert(t('Start print?'), file.path, [
-      { text: t('Cancel'), style: 'cancel' },
-      {
-        text: t('Print'),
-        onPress: async () => {
-          try {
-            await api.startPrint(activeUrl, file.path);
-            Alert.alert(t('Print started'), file.path);
-          } catch (e: any) {
-            Alert.alert(t('Error'), String(e?.message ?? e));
-          }
+    showAlert({
+      title: t('Start print?'),
+      message: file.path,
+      icon: 'printer-3d',
+      actions: [
+        { text: t('Cancel') },
+        {
+          text: t('Print'),
+          variant: 'primary',
+          onPress: async () => {
+            try {
+              await api.startPrint(activeUrl, file.path);
+              showAlert({ title: t('Print started'), message: file.path, icon: 'check-circle' });
+            } catch (e: any) {
+              showAlert({
+                title: t('Error'),
+                message: String(e?.message ?? e),
+                icon: 'alert-circle-outline',
+              });
+            }
+          },
         },
-      },
-    ]);
+      ],
+    });
   };
 
   const empty = useMemo(
@@ -133,8 +148,9 @@ export default function FilesScreen() {
   );
 
   return (
-    <View style={styles.screen}>
-      <View style={styles.segmentRow}>
+    <>
+      <View style={styles.screen}>
+        <View style={styles.segmentRow}>
         {(['files', 'history', 'timelapse'] as const).map((m) => (
           <TouchableOpacity
             key={m}
@@ -177,7 +193,9 @@ export default function FilesScreen() {
         )}
       />
       )}
-    </View>
+      </View>
+      {alertDialog}
+    </>
   );
 }
 

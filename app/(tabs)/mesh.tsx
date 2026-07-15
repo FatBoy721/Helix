@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Alert, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useMoonraker } from '../../hooks/useMoonraker';
@@ -7,6 +7,7 @@ import BedMesh3D from '../../components/BedMesh3D';
 import { Card, FadeInUp, GlowBackdrop, PressableScale } from '../../components/ui';
 import { t } from '../../services/i18n';
 import { colors, radius, shadow, spacing, withAlpha } from '../../constants/theme';
+import { useThemedAlert } from '../../hooks/useThemedAlert';
 
 type IconName = React.ComponentProps<typeof MaterialCommunityIcons>['name'];
 
@@ -63,6 +64,7 @@ export default function MeshScreen() {
   const bm = (status.bed_mesh ?? {}) as BedMeshStatus;
   const [selectedProfile, setSelectedProfile] = useState<string | null>(null);
   const [scrollEnabled, setScrollEnabled] = useState(true);
+  const { showAlert, alertDialog } = useThemedAlert();
 
   const activeMatrix: number[][] = useMemo(() => {
     const probed = bm.probed_matrix;
@@ -99,10 +101,15 @@ export default function MeshScreen() {
     : [bm.mesh_min?.[1] ?? 0, bm.mesh_max?.[1] ?? 270];
 
   const runCalibration = () => {
-    Alert.alert(t('Run bed mesh?'), t('This starts BED_MESH_CALIBRATE on the active printer.'), [
-      { text: t('Cancel'), style: 'cancel' },
-      { text: t('Run'), onPress: () => sendGcode('BED_MESH_CALIBRATE') },
-    ]);
+    showAlert({
+      title: t('Run bed mesh?'),
+      message: t('This starts BED_MESH_CALIBRATE on the active printer.'),
+      icon: 'grid',
+      actions: [
+        { text: t('Cancel') },
+        { text: t('Run'), variant: 'primary', onPress: () => sendGcode('BED_MESH_CALIBRATE') },
+      ],
+    });
   };
 
   const loadProfile = (name: string) => {
@@ -111,8 +118,9 @@ export default function MeshScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.safe} edges={['top']}>
-      <ScrollView
+    <>
+      <SafeAreaView style={styles.safe} edges={['top']}>
+        <ScrollView
         style={styles.screen}
         contentContainerStyle={styles.content}
         scrollEnabled={scrollEnabled}
@@ -232,8 +240,10 @@ export default function MeshScreen() {
           </Card>
         </FadeInUp>
       )}
-      </ScrollView>
-    </SafeAreaView>
+        </ScrollView>
+      </SafeAreaView>
+      {alertDialog}
+    </>
   );
 }
 

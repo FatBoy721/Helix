@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Alert, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { t } from '../services/i18n';
 import {
   displayTemperature,
@@ -8,6 +8,7 @@ import {
 } from '../services/temperature';
 import type { TemperatureUnit } from '../services/temperature';
 import { colors, spacing } from '../constants/theme';
+import { useThemedAlert } from '../hooks/useThemedAlert';
 
 interface Props {
   status: Record<string, any>;
@@ -147,6 +148,7 @@ export default function ControlsPanel({
 }: Props) {
   const [bedTarget, setBedTarget] = useState(() => defaultTargetInput(60, temperatureUnit));
   const [pandaTarget, setPandaTarget] = useState(() => defaultTargetInput(45, temperatureUnit));
+  const { showAlert, alertDialog } = useThemedAlert();
 
   useEffect(() => {
     setBedTarget(defaultTargetInput(60, temperatureUnit));
@@ -180,13 +182,19 @@ export default function ControlsPanel({
   };
 
   const choosePandaDryPreset = () => {
-    Alert.alert(t('Dry filament'), t('Choose a drying preset.'), [
-      { text: t('Cancel'), style: 'cancel' },
-      ...PANDA_DRY_PRESETS.map((preset) => ({
-        text: `${preset.material} ${formatTemperature(preset.temp, temperatureUnit, 0)} ${preset.hours}h`,
-        onPress: () => startPandaDry(preset),
-      })),
-    ]);
+    showAlert({
+      title: t('Dry filament'),
+      message: t('Choose a drying preset.'),
+      icon: 'radiator',
+      actions: [
+        ...PANDA_DRY_PRESETS.map((preset) => ({
+          text: `${preset.material} ${formatTemperature(preset.temp, temperatureUnit, 0)} ${preset.hours}h`,
+          variant: 'primary' as const,
+          onPress: () => startPandaDry(preset),
+        })),
+        { text: t('Cancel') },
+      ],
+    });
   };
 
   const stopPandaBreath = () => {
@@ -202,7 +210,8 @@ export default function ControlsPanel({
   };
 
   return (
-    <View style={styles.card}>
+    <>
+      <View style={styles.card}>
       {/* bed heater */}
       <View style={styles.row}>
         <Text style={styles.rowLabel}>
@@ -359,7 +368,9 @@ export default function ControlsPanel({
         />
       )}
 
-    </View>
+      </View>
+      {alertDialog}
+    </>
   );
 }
 

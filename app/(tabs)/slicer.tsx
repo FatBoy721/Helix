@@ -30,6 +30,7 @@ import {
   openMakerWorldDownloader,
   openNativeGcodePreview,
   openNativeModelPreview,
+  injectTimelapseMacros,
   pickModelFile,
   setFilamentSlotColors,
   setNativePrinters,
@@ -45,6 +46,7 @@ import FilamentSlotsEditor, { type FilamentSlotDisplay } from '../../components/
 import { normalizeFilamentSlotColors } from '../../constants/filamentColors';
 import { takeMwDownload } from '../../services/mwBus';
 import { subscribePendingModel, takePendingModel } from '../../services/pendingModel';
+import { setPrintSentNotice } from '../../services/printSentBus';
 import PrintPreprocessDialog, { type PrintPref } from '../../components/PrintPreprocessDialog';
 import { api, printerConnectionUrl, thumbnailUrl } from '../../services/moonraker';
 
@@ -219,6 +221,19 @@ export default function SliceLabScreen() {
       Alert.alert('Upload', message);
     }
   }, [applyOpenedFile]);
+
+  const clearModel = useCallback(() => {
+    handledUrlRef.current = null;
+    awaitingInteractive.current = false;
+    clearLastSlice().catch(() => {});
+    setSlice({ state: 'idle' });
+    setUpload({ state: 'idle' });
+    setPrintStart({ state: 'idle' });
+    setPlates([]);
+    setSelectedPlate(null);
+    setPlatesFor(null);
+    setDownload({ state: 'idle', message: '' });
+  }, []);
 
   // Open-with can finish importing after the Slice tab first paints — subscribe
   // so we still show the model when the native handoff lands late.
@@ -589,7 +604,9 @@ export default function SliceLabScreen() {
 
   // The dialog's Print button: upload the sliced gcode, verify it, then start —
   // all in one go, driving the dialog's progress bar.
-  const uploadAndPrint = useCallback(async () => {
+  const uploadAndPrint = useCallback(async (
+    requestedPrefs: Readonly<Record<PrintPref, boolean>>,
+  ) => {
     if (slice.state !== 'success') return;
     if (!activeUrl) {
       setPrintStart({ state: 'error', message: 'Printer URL is blank.' });
@@ -597,6 +614,7 @@ export default function SliceLabScreen() {
     }
     const initialTool = slice.result.initialTool ?? toolLoad.selectedTool;
     const requiredToolMask = slice.result.usedToolMask ?? (1 << initialTool);
+    const usedExtruders = [0, 1, 2, 3].filter((tool) => (requiredToolMask & (1 << tool)) !== 0);
     const missingTools = missingLoadedTools(toolLoad, requiredToolMask);
     if (missingTools) {
       setPrintStart({ state: 'error', message: `Load filament in ${missingTools} before printing.` });
@@ -608,20 +626,68 @@ export default function SliceLabScreen() {
     setPrintStart({ state: 'starting', message: 'Uploading…' });
     setSendProgress(0.12);
     try {
+      // Timelapse is gcode-driven: the printer only records frames if the gcode
+      // itself calls the TIMELAPSE_* macros at each layer. Inject them before
+      // upload when the toggle is on (SET_PRINT_PREFERENCES below just arms the
+      // firmware preference; the frame captures have to live in the gcode).
+      let uploadPath = gcodePath;
+      if (requestedPrefs.timelapse) {
+        setPrintStart({ state: 'starting', message: 'Preparing timelapse…' });
+        uploadPath = await injectTimelapseMacros(gcodePath);
+      }
       const requestedName = buildPrinterUploadFilename(sourceName, gcodePath);
-      const uploaded = await uploadGcodeToPrinter(activeUrl, requestedName, gcodePath);
+      const uploaded = await uploadGcodeToPrinter(activeUrl, requestedName, uploadPath);
       setSendProgress(0.55);
       const uploadedName = uploaded && 'filename' in uploaded ? uploaded.filename : requestedName;
       const moonrakerPath = uploadedPathFromResponse(uploaded, uploadedName);
       setPrintStart({ state: 'starting', message: 'Verifying…' });
       const verifiedPath = await verifyUploadedGcode(activeUrl, moonrakerPath, uploadedName);
       setSendProgress(0.8);
+      // Firmware caches these per-printer, so always send every preference explicitly —
+      // otherwise a previous print's toggle state can leak into this one.
+      setPrintStart({ state: 'starting', message: 'Applying print preferences…' });
+      const before = await api.queryObjects<{
+        print_stats?: { state?: string };
+      }>(activeUrl, ['print_stats']);
+      const currentState = before.status?.print_stats?.state;
+      if (currentState === 'printing' || currentState === 'paused') {
+        throw new Error(`Printer is already ${currentState}.`);
+      }
+      await api.runGcode(
+        activeUrl,
+        `SET_MAIN_STATE MAIN_STATE=IDLE\nSET_PRINT_USED_EXTRUDERS EXTRUDERS=${usedExtruders.join(',')}\nSET_PRINT_PREFERENCES BED_LEVEL=${requestedPrefs.autoLevel ? 1 : 0} TIME_LAPSE_CAMERA=${requestedPrefs.timelapse ? 1 : 0} FLOW_CALIBRATE=${requestedPrefs.flowCal ? 1 : 0} FLOW_CALIBRATE_EXTRUDERS=0,1,2,3`,
+      );
+      const applied = await api.queryObjects<{
+        print_task_config?: {
+          auto_bed_leveling?: boolean;
+          time_lapse_camera?: boolean;
+          flow_calibrate?: boolean;
+          flow_calib_extruders?: boolean[];
+          extruders_used?: boolean[];
+        };
+      }>(activeUrl, ['print_task_config']);
+      const taskConfig = applied.status?.print_task_config;
+      if (
+        taskConfig?.auto_bed_leveling !== requestedPrefs.autoLevel ||
+        taskConfig?.time_lapse_camera !== requestedPrefs.timelapse ||
+        taskConfig?.flow_calibrate !== requestedPrefs.flowCal ||
+        taskConfig?.flow_calib_extruders?.length !== 4 ||
+        !taskConfig?.flow_calib_extruders?.every(Boolean) ||
+        taskConfig?.extruders_used?.length !== 4 ||
+        !taskConfig?.extruders_used?.every((used, tool) => used === usedExtruders.includes(tool))
+      ) {
+        throw new Error('Printer rejected the selected print preferences.');
+      }
       setPrintStart({ state: 'starting', message: 'Starting print…' });
       await api.startPrint(activeUrl, verifiedPath);
       setSendProgress(1);
       setPrintStart({ state: 'done', message: `Print started: ${verifiedPath}` });
       setPreprocessOpen(false);
-      router.replace('/');
+      setPrintSentNotice({ filename: verifiedPath });
+      // Push a concrete Home route after staging the one-shot notice. Unlike a
+      // tab-level navigate to an already-mounted route, this cannot be ignored
+      // as a no-op by the nested navigator.
+      router.push('/');
     } catch (error) {
       setSendProgress(0);
       setPrintStart({
@@ -629,7 +695,7 @@ export default function SliceLabScreen() {
         message: `Send failed: ${error instanceof Error ? error.message : String(error)}`,
       });
     }
-  }, [activeUrl, router, slice, toolLoad, download]);
+  }, [activeUrl, slice, toolLoad, download, router]);
 
   const refresh = async () => {
     setRefreshing(true);
@@ -726,7 +792,18 @@ export default function SliceLabScreen() {
           </View>
         ) : null}
         {hasModel ? (
-          <Text style={styles.fileName}>{download.result.fileName}</Text>
+          <View style={styles.modelFileRow}>
+            <Text style={[styles.fileName, styles.modelFileName]} numberOfLines={1}>
+              {download.result.fileName}
+            </Text>
+            <TouchableOpacity
+              onPress={clearModel}
+              hitSlop={8}
+              accessibilityLabel="Remove model"
+            >
+              <MaterialCommunityIcons name="trash-can-outline" size={20} color={colors.subtext} />
+            </TouchableOpacity>
+          </View>
         ) : null}
         {!mwAuthed ? (
           <Text style={styles.hintText}>
@@ -1391,6 +1468,16 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
     marginTop: spacing.xs,
+  },
+  modelFileRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+  },
+  modelFileName: {
+    flex: 1,
+    marginTop: 0,
   },
   hintText: {
     color: colors.subtext,
