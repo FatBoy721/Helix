@@ -1135,13 +1135,15 @@ function resolveFilamentSlots(
     const printerMaterial = loadStatus !== 'empty' ? materialLabelFromPrintTask(ptc, index) : '';
     const fallbackColor = normalizeFilamentSlotColors(manualColors)[index];
     const fallbackMaterial = manualMaterials[index] || 'PLA';
+    const genericBlack = printerColor === '#000000' && !printerMaterial;
+    const hasPrinterMetadata = !genericBlack && Boolean(printerColor || printerMaterial);
 
     return {
       index,
       status: loadStatus,
-      color: loadStatus === 'empty' ? '#30343A' : printerColor ?? fallbackColor,
+      color: loadStatus === 'empty' ? '#30343A' : (hasPrinterMetadata ? printerColor : null) ?? fallbackColor,
       material: loadStatus === 'empty' ? 'Empty' : printerMaterial || fallbackMaterial,
-      source: printerColor || printerMaterial ? 'printer' : 'manual',
+      source: hasPrinterMetadata ? 'printer' : 'manual',
     };
   });
 }

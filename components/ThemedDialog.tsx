@@ -1,5 +1,5 @@
 import React from 'react';
-import { Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { KeyboardAvoidingView, Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { colors, spacing } from '../constants/theme';
@@ -53,59 +53,61 @@ export default function ThemedDialog({
   const insets = useSafeAreaInsets();
   return (
     <Modal visible={visible} animationType={centered ? 'fade' : 'slide'} transparent onRequestClose={onClose}>
-      <View style={[styles.wrap, centered && styles.wrapCenter]}>
-        <View
-          style={[
-            styles.card,
-            centered ? styles.cardCenter : { paddingBottom: spacing.lg + insets.bottom },
-          ]}
-        >
-          <View style={styles.header}>
-            <View style={styles.titleRow}>
-              {icon ? (
-                <View style={styles.iconBadge}>
-                  <MaterialCommunityIcons name={icon} size={20} color={accentColor} />
-                </View>
-              ) : null}
-              <Text style={styles.title}>{title}</Text>
+      <KeyboardAvoidingView style={styles.keyboardWrap} behavior="padding">
+        <View style={[styles.wrap, centered && styles.wrapCenter]}>
+          <View
+            style={[
+              styles.card,
+              centered ? styles.cardCenter : { paddingBottom: spacing.lg + insets.bottom },
+            ]}
+          >
+            <View style={styles.header}>
+              <View style={styles.titleRow}>
+                {icon ? (
+                  <View style={styles.iconBadge}>
+                    <MaterialCommunityIcons name={icon} size={20} color={accentColor} />
+                  </View>
+                ) : null}
+                <Text style={styles.title}>{title}</Text>
+              </View>
+              <TouchableOpacity hitSlop={8} onPress={onClose}>
+                <MaterialCommunityIcons name="close" size={22} color={colors.subtext} />
+              </TouchableOpacity>
             </View>
-            <TouchableOpacity hitSlop={8} onPress={onClose}>
-              <MaterialCommunityIcons name="close" size={22} color={colors.subtext} />
-            </TouchableOpacity>
-          </View>
 
-          {message ? <Text style={styles.message}>{message}</Text> : null}
+            {message ? <Text style={styles.message}>{message}</Text> : null}
 
-          {children}
+            {children}
 
-          <View style={[styles.actions, actions.length > 2 && styles.actionsStacked]}>
-            {actions.map((action) => {
-              const variant = action.variant ?? 'secondary';
-              return (
-                <TouchableOpacity
-                  key={action.text}
-                  style={[
-                    styles.actionBtn,
-                    actionStyle(variant, accentColor),
-                    action.disabled && styles.disabledBtn,
-                  ]}
-                  disabled={action.disabled}
-                  onPress={action.onPress}
-                >
-                  {action.icon ? (
-                    <MaterialCommunityIcons
-                      name={action.icon}
-                      size={16}
-                      color={variant === 'secondary' ? colors.text : '#fff'}
-                    />
-                  ) : null}
-                  <Text style={actionTextStyle(variant)}>{action.text}</Text>
-                </TouchableOpacity>
-              );
-            })}
+            <View style={[styles.actions, actions.length > 2 && styles.actionsStacked]}>
+              {actions.map((action) => {
+                const variant = action.variant ?? 'secondary';
+                return (
+                  <TouchableOpacity
+                    key={action.text}
+                    style={[
+                      styles.actionBtn,
+                      actionStyle(variant, accentColor),
+                      action.disabled && styles.disabledBtn,
+                    ]}
+                    disabled={action.disabled}
+                    onPress={action.onPress}
+                  >
+                    {action.icon ? (
+                      <MaterialCommunityIcons
+                        name={action.icon}
+                        size={16}
+                        color={variant === 'secondary' ? colors.text : '#fff'}
+                      />
+                    ) : null}
+                    <Text style={actionTextStyle(variant)}>{action.text}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
           </View>
         </View>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
@@ -115,6 +117,9 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.6)',
     justifyContent: 'flex-end',
+  },
+  keyboardWrap: {
+    flex: 1,
   },
   wrapCenter: {
     justifyContent: 'center',

@@ -1,5 +1,6 @@
 import React from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { colors, spacing } from '../constants/theme';
 import { t } from '../services/i18n';
 import type { AceLane, LaneStatus } from '../hooks/useACE';
@@ -8,6 +9,8 @@ interface Props {
   lane: AceLane;
   onLoad: () => void;
   onUnload: () => void;
+  onEdit?: () => void;
+  fallbackColor?: string;
   disabled?: boolean;
 }
 
@@ -19,32 +22,41 @@ const STATUS_COLORS: Record<LaneStatus, string> = {
   unknown: colors.border,
 };
 
-export default function ACELaneRow({ lane, onLoad, onUnload, disabled }: Props) {
+export default function ACELaneRow({ lane, onLoad, onUnload, onEdit, fallbackColor, disabled }: Props) {
   const info = [lane.brand, lane.material, lane.sku].filter(Boolean).join(' · ');
+  const color = lane.colorHex ?? fallbackColor;
 
   return (
     <View style={styles.row}>
-      <View
-        style={[
-          styles.colorDot,
-          lane.colorHex
-            ? { backgroundColor: lane.colorHex }
-            : { borderWidth: 1, borderColor: colors.border, borderStyle: 'dashed' },
-        ]}
-      />
-      <View style={styles.info}>
-        <View style={styles.titleRow}>
-          <Text style={styles.laneName}>{t('Lane')} {lane.index + 1}</Text>
-          <View style={[styles.chip, { backgroundColor: STATUS_COLORS[lane.status] + '33' }]}>
-            <Text style={[styles.chipText, { color: STATUS_COLORS[lane.status] }]}>
-              {lane.status.toUpperCase()}
-            </Text>
+      <TouchableOpacity
+        style={styles.editTarget}
+        onPress={onEdit}
+        disabled={!onEdit || disabled}
+        accessibilityLabel={`Edit lane ${lane.index + 1} filament`}
+      >
+        <View
+          style={[
+            styles.colorDot,
+            color
+              ? { backgroundColor: color }
+              : { borderWidth: 1, borderColor: colors.border, borderStyle: 'dashed' },
+          ]}
+        />
+        <View style={styles.info}>
+          <View style={styles.titleRow}>
+            <Text style={styles.laneName}>{t('Lane')} {lane.index + 1}</Text>
+            <View style={[styles.chip, { backgroundColor: STATUS_COLORS[lane.status] + '33' }]}>
+              <Text style={[styles.chipText, { color: STATUS_COLORS[lane.status] }]}> 
+                {lane.status.toUpperCase()}
+              </Text>
+            </View>
           </View>
+          <Text style={styles.detail} numberOfLines={1}>
+            {info || t('No RFID data')}
+          </Text>
         </View>
-        <Text style={styles.detail} numberOfLines={1}>
-          {info || t('No RFID data')}
-        </Text>
-      </View>
+        {onEdit ? <MaterialCommunityIcons name="pencil-outline" size={17} color={colors.subtext} /> : null}
+      </TouchableOpacity>
       <TouchableOpacity
         style={[styles.actionBtn, { backgroundColor: colors.primary }, disabled && styles.disabled]}
         onPress={onLoad}
@@ -74,6 +86,13 @@ const styles = StyleSheet.create({
     width: 18,
     height: 18,
     borderRadius: 9,
+  },
+  editTarget: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    minWidth: 0,
   },
   info: { flex: 1 },
   titleRow: {

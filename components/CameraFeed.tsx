@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -167,9 +167,11 @@ export default function CameraFeed({
   const [showStats, setShowStats] = useState(false);
   const [savingSnapshot, setSavingSnapshot] = useState(false);
   const { showAlert, alertDialog } = useThemedAlert();
+  const remoteScreenRef = useRef<WebView>(null);
 
   // /webcam/webrtc and /screen/ serve their own player pages.
-  const isWebrtcPage = /webrtc|\/screen\/?($|\?)/i.test(url);
+  const isRemoteScreen = /\/screen\/?($|\?)/i.test(url);
+  const isWebrtcPage = /webrtc/i.test(url) || isRemoteScreen;
   const isSnapshot = /snapshot/i.test(url);
 
   // Same-origin baseUrl so the in-page fetch of the stream avoids CORS.
@@ -179,6 +181,12 @@ export default function CameraFeed({
   }, [url]);
 
   const html = useMemo(() => buildPlayerHtml(url, isSnapshot), [url, isSnapshot]);
+
+  const sendRemoteTouch = (action: 'Down' | 'Move' | 'Up', x: number, y: number) => {
+    remoteScreenRef.current?.injectJavaScript(
+      `typeof on${action} === 'function' && on${action}(${Math.round(x)}, ${Math.round(y)}); true;`,
+    );
+  };
 
   const openFullscreen = async () => {
     setFullscreen(true);
@@ -253,17 +261,32 @@ export default function CameraFeed({
   }
 
   const feed = (
-    <WebView
-      key={`${url}-${nonce}-${fullscreen ? 'fs' : 'card'}`}
-      source={isWebrtcPage ? { uri: url } : { html, baseUrl: origin }}
-      style={styles.webview}
-      originWhitelist={['*']}
-      scrollEnabled={false}
-      javaScriptEnabled
-      mixedContentMode="always"
-      mediaPlaybackRequiresUserAction={false}
-      allowsInlineMediaPlayback
-    />
+    <View style={styles.feedContainer}>
+      <WebView
+        ref={isRemoteScreen ? remoteScreenRef : undefined}
+        key={`${url}-${nonce}-${fullscreen ? 'fs' : 'card'}`}
+        source={isWebrtcPage ? { uri: url } : { html, baseUrl: origin }}
+        style={styles.webview}
+        originWhitelist={['*']}
+        scrollEnabled={false}
+        overScrollMode="never"
+        javaScriptEnabled
+        mixedContentMode="always"
+        mediaPlaybackRequiresUserAction={false}
+        allowsInlineMediaPlayback
+      />
+      {isRemoteScreen && (
+        <View
+          style={styles.remoteTouchOverlay}
+          onStartShouldSetResponder={() => true}
+          onMoveShouldSetResponder={() => true}
+          onResponderGrant={({ nativeEvent }) => sendRemoteTouch('Down', nativeEvent.locationX, nativeEvent.locationY)}
+          onResponderMove={({ nativeEvent }) => sendRemoteTouch('Move', nativeEvent.locationX, nativeEvent.locationY)}
+          onResponderRelease={({ nativeEvent }) => sendRemoteTouch('Up', nativeEvent.locationX, nativeEvent.locationY)}
+          onResponderTerminate={({ nativeEvent }) => sendRemoteTouch('Up', nativeEvent.locationX, nativeEvent.locationY)}
+        />
+      )}
+    </View>
   );
 
   const controls = (
@@ -370,6 +393,12 @@ const styles = StyleSheet.create({
   webview: {
     flex: 1,
     backgroundColor: '#000',
+  },
+  feedContainer: {
+    flex: 1,
+  },
+  remoteTouchOverlay: {
+    ...StyleSheet.absoluteFillObject,
   },
   controls: {
     position: 'absolute',

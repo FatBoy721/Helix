@@ -66,6 +66,14 @@ function parseColor(c: any): string | undefined {
   return undefined;
 }
 
+function isGenericBlack(color: string | undefined, source: any): boolean {
+  if (color !== '#000000') return false;
+  const material = String(source?.material ?? source?.type ?? '').trim();
+  const brand = String(source?.brand ?? '').trim();
+  const sku = String(source?.sku ?? '').trim();
+  return !material && !sku && (!brand || brand.toLowerCase() === 'generic');
+}
+
 function parseLanes(slots: any[], dryerActive: boolean): AceLane[] {
   const lanes: AceLane[] = [];
   for (let l = 0; l < 4; l++) {
@@ -83,7 +91,10 @@ function parseLanes(slots: any[], dryerActive: boolean): AceLane[] {
       brand: slot?.brand || undefined,
       material: slot?.material || slot?.type || undefined,
       sku: slot?.sku || undefined,
-      colorHex: parseColor(slot?.color ?? slot?.rgb),
+      colorHex: (() => {
+        const color = parseColor(slot?.color ?? slot?.rgb);
+        return isGenericBlack(color, slot) ? undefined : color;
+      })(),
     });
   }
   return lanes;
@@ -158,7 +169,10 @@ export function useACE() {
             aceIndex: src.ace_index,
             slot: typeof src.slot === 'number' ? src.slot : 0,
             material: src.type || undefined,
-            colorHex: parseColor(src.color),
+            colorHex: (() => {
+              const color = parseColor(src.color);
+              return isGenericBlack(color, src) ? undefined : color;
+            })(),
             brand: src.brand || undefined,
           };
         }

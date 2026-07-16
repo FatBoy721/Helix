@@ -12,6 +12,7 @@ import { ACE_MACROS, AceUnit, useACE } from '../../hooks/useACE';
 import { useMoonraker } from '../../hooks/useMoonraker';
 import { useSettings } from '../../hooks/useSettings';
 import ACELaneRow from '../../components/ACELane';
+import AceSlotEditor, { AceSlotDraft } from '../../components/AceSlotEditor';
 import { t } from '../../services/i18n';
 import {
   displayTemperature,
@@ -23,12 +24,78 @@ import type { TemperatureUnit } from '../../services/temperature';
 import { colors, spacing } from '../../constants/theme';
 import { useThemedAlert } from '../../hooks/useThemedAlert';
 
+function resolveAceSlotColors(status: Record<string, any>, fallback: string[]): string[] {
+  const raw = status.print_task_config?.filament_color_rgba;
+  return fallback.map((fallbackColor, index) => {
+    const value = Array.isArray(raw) && typeof raw[index] === 'string'
+      ? raw[index].trim().toUpperCase()
+      : '';
+    const hex = /^[0-9A-F]{6}(?:[0-9A-F]{2})?$/.test(value) ? value.slice(0, 6) : '';
+    return hex && hex !== '000000' ? `#${hex}` : fallbackColor;
+  });
+}
+
+function printerSlotValue(status: Record<string, any>, field: string, index: number): string {
+  const value = status.print_task_config?.[field];
+  return Array.isArray(value) && typeof value[index] === 'string' ? value[index].trim() : '';
+}
+
+function multiAceOverrideUrl(activeUrl: string): string {
+  const url = new URL(activeUrl);
+  url.port = '';
+  url.pathname = '/multiace/api/slot-override';
+  url.search = '';
+  url.hash = '';
+  return url.toString();
+}
+
 export default function ACEScreen() {
   const { units, aceMacros, hardwareDetected, sendGcode, activeAceIndex } = useACE();
-  const { connection } = useMoonraker();
+  const { connection, status, activeUrl } = useMoonraker();
   const { settings } = useSettings();
   const { showAlert, alertDialog } = useThemedAlert();
   const disabled = connection !== 'connected';
+  const slotColors = resolveAceSlotColors(status, settings.filamentSlotColors);
+  const [editingSlot, setEditingSlot] = useState<AceSlotDraft | null>(null);
+  const [savingSlot, setSavingSlot] = useState(false);
+
+  const saveSlot = async (draft: AceSlotDraft) => {
+    if (!activeUrl) {
+      showAlert({ title: 'Printer unavailable', message: 'Reconnect to the printer, then try again.' });
+      return;
+    }
+
+    setSavingSlot(true);
+    try {
+      const response = await fetch(multiAceOverrideUrl(activeUrl), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(draft),
+      });
+      if (!response.ok) throw new Error(`MultiACE returned ${response.status}`);
+      await sendGcode('MULTIACE_REFRESH_OVERRIDES');
+      setEditingSlot(null);
+    } catch (error) {
+      showAlert({
+        title: 'Could not save filament',
+        message: error instanceof Error ? error.message : 'The MultiACE service did not accept the update.',
+      });
+    } finally {
+      setSavingSlot(false);
+    }
+  };
+
+  const editLane = (unit: AceUnit, lane: AceUnit['lanes'][number]) => {
+    const slot = lane.index;
+    setEditingSlot({
+      ace: unit.aceIndex,
+      slot,
+      color: lane.colorHex ?? slotColors[slot] ?? '#161616',
+      material: lane.material || printerSlotValue(status, 'filament_type', slot) || 'PLA',
+      brand: lane.brand || printerSlotValue(status, 'filament_vendor', slot) || 'Generic',
+      subtype: printerSlotValue(status, 'filament_sub_type', slot) || 'Basic',
+    });
+  };
 
   if (connection === 'connected' && !hardwareDetected) {
     return (
@@ -67,6 +134,8 @@ export default function ACEScreen() {
             disabled={disabled}
             confirmRun={confirmRun}
             temperatureUnit={settings.temperatureUnit}
+            slotColors={slotColors}
+            onEditLane={editLane}
           />
         ))}
 
@@ -116,6 +185,13 @@ export default function ACEScreen() {
         </View>
       )}
       </ScrollView>
+      <AceSlotEditor
+        visible={editingSlot != null}
+        draft={editingSlot}
+        saving={savingSlot}
+        onClose={() => !savingSlot && setEditingSlot(null)}
+        onSave={saveSlot}
+      />
       {alertDialog}
     </>
   );
@@ -126,11 +202,15 @@ function AceUnitCard({
   disabled,
   confirmRun,
   temperatureUnit,
+  slotColors,
+  onEditLane,
 }: {
   unit: AceUnit;
   disabled: boolean;
   confirmRun: (title: string, script: string) => void;
   temperatureUnit: TemperatureUnit;
+  slotColors: string[];
+  onEditLane: (unit: AceUnit, lane: AceUnit['lanes'][number]) => void;
 }) {
   const [dryTemp, setDryTemp] = useState(() =>
     Math.round(displayTemperature(45, temperatureUnit)).toString()
@@ -173,7 +253,9 @@ function AceUnitCard({
         <ACELaneRow
           key={lane.index}
           lane={lane}
+          fallbackColor={slotColors[lane.index]}
           disabled={disabled}
+          onEdit={() => onEditLane(unit, lane)}
           onLoad={() =>
             confirmRun(
               `Load ACE ${unit.index} lane ${lane.index + 1} → head ${lane.index}?`,
