@@ -13,6 +13,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history + tags, needed to diff commits since the last release
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -30,7 +33,15 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Decode release keystore
+        if: ${{ secrets.RELEASE_KEYSTORE_B64 != '' }}
+        run: echo "${{ secrets.RELEASE_KEYSTORE_B64 }}" | base64 -d > android/app/release.keystore
+
       - name: Build release APK
+        env:
+          RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
         run: chmod +x android/gradlew && cd android && ./gradlew assembleRelease --no-daemon
 
       - name: Rename APK
@@ -41,12 +52,30 @@ jobs:
           name: helix-apk
           path: helix.apk
 
+      - name: Build release notes
+        if: github.ref == 'refs/heads/main'
+        run: |
+          # The "latest" tag still points at the previous release's commit,
+          # so latest..HEAD is exactly what changed since the last build.
+          if git rev-parse -q --verify refs/tags/latest >/dev/null; then
+            NOTES="$(git log latest..HEAD --no-merges --pretty='- %s (%h)')"
+          else
+            NOTES="$(git log -10 --no-merges --pretty='- %s (%h)')"
+          fi
+          [ -z "$NOTES" ] && NOTES="- Rebuild of $(git rev-parse --short HEAD) (no new commits)"
+          {
+            echo 'RELEASE_NOTES<<NOTES_EOF'
+            echo "## What's changed"
+            echo "$NOTES"
+            echo 'NOTES_EOF'
+          } >> "$GITHUB_ENV"
+
       - name: Update "latest" release
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
           name: Helix (latest)
-          body: Automated build from ${{ github.sha }}
+          body: ${{ env.RELEASE_NOTES }}
           files: helix.apk
           prerelease: false
