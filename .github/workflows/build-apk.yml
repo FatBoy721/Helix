@@ -34,8 +34,13 @@ jobs:
         run: npm ci
 
       - name: Decode release keystore
-        if: ${{ secrets.RELEASE_KEYSTORE_B64 != '' }}
-        run: echo "${{ secrets.RELEASE_KEYSTORE_B64 }}" | base64 -d > android/app/release.keystore
+        env:
+          RELEASE_KEYSTORE_B64: ${{ secrets.RELEASE_KEYSTORE_B64 }}
+        run: |
+          # Skipped on forks: they have no secrets, so they build debug-signed.
+          if [ -n "$RELEASE_KEYSTORE_B64" ]; then
+            echo "$RELEASE_KEYSTORE_B64" | base64 -d > android/app/release.keystore
+          fi
 
       - name: Build release APK
         env:
