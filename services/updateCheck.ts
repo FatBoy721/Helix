@@ -28,6 +28,25 @@ export function isCurrentRelease(currentCommit: string, latestCommit: string): b
   return Boolean(current && latest && current !== 'dev' && current === latest);
 }
 
+/**
+ * Human-readable changelog bullets from a release body. Drops the heading,
+ * the trailing commit hashes, and the `Build: <sha>` footer (that line is
+ * machine data for releaseCommit, not for display).
+ */
+export function releaseNotes(body?: string, maxLines = 8): string {
+  const bullets = (body ?? '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith('- '))
+    .map((line) => line.slice(2).replace(/\s*\([0-9a-f]{7,40}\)$/i, '').trim())
+    .filter(Boolean);
+  if (!bullets.length) return '';
+  const shown = bullets.slice(0, maxLines).map((line) => `• ${line}`);
+  const hidden = bullets.length - maxLines;
+  if (hidden > 0) shown.push(`• plus ${hidden} more on GitHub`);
+  return shown.join('\n');
+}
+
 export function releaseDownloadUrl(release: GitHubRelease): string {
   const assets = Array.isArray(release.assets) ? release.assets : [];
   const exact = assets.find((asset) => asset.name.toLowerCase() === 'helix.apk');

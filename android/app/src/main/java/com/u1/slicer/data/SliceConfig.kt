@@ -81,7 +81,12 @@ data class SliceConfig(
     // skip ProfileEmbedder, so the previous filamentSettings-via-embed plumbing never
     // reached them. SliceConfig fields are the path that works for STL AND 3MF.
     @JvmField var filamentFlowRatios: FloatArray = floatArrayOf(),
-    @JvmField var filamentMaxVolumetricSpeeds: FloatArray = floatArrayOf(),
+    // Safe generic-filament fallback for all four U1 tools. The native core's
+    // embedded profile defaults to 21 mm3/s, which is too aggressive for
+    // ordinary PLA at 210 C and can make the toolhead skip before runout is
+    // detectable. Explicit filament-library values may still replace this.
+    @JvmField var filamentMaxVolumetricSpeeds: FloatArray =
+        floatArrayOf(12f, 12f, 12f, 12f),
     @JvmField var filamentFanMinSpeeds: IntArray = intArrayOf(),
     @JvmField var filamentFanMaxSpeeds: IntArray = intArrayOf(),
     @JvmField var filamentOverhangFanSpeeds: IntArray = intArrayOf(),

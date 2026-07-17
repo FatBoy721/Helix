@@ -16,6 +16,7 @@ import {
   normalizeBuildCommit,
   releaseCommit,
   releaseDownloadUrl,
+  releaseNotes,
 } from '../../services/updateCheck';
 
 type DialogIcon = React.ComponentProps<typeof MaterialCommunityIcons>['name'];
@@ -123,10 +124,12 @@ export default function AboutCard() {
       const buildLine = currentBuild && currentBuild !== 'dev'
         ? `${t('Installed build')}: ${currentBuild.slice(0, 7)}`
         : t('Open the latest APK download?');
+      const notes = releaseNotes(release.body);
+      const notesBlock = notes ? `\n\n${t("What's changed")}:\n${notes}` : '';
 
       setDialog({
         title,
-        message: `${buildLine}\n${t('Install over existing app to keep settings.')}`,
+        message: `${buildLine}\n${t('Install over existing app to keep settings.')}${notesBlock}`,
         icon: 'download-circle-outline',
         actions: [
           { text: t('Not now'), onPress: closeDialog },

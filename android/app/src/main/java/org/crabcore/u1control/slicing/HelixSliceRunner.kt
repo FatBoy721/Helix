@@ -103,6 +103,14 @@ object HelixSliceRunner {
           GcodeToolMapper.Result(false, 1 shl selectedTool)
         }
 
+        if (result != null && result.success && result.gcodePath.isNotBlank()) {
+          onProgress(99, "applying first-layer flow limit")
+          val guard = GcodeFirstLayerGuard.apply(result.gcodePath)
+          check(guard.success) {
+            "Could not apply the required first-layer flow limit"
+          }
+        }
+
         // Stamp the engine's REAL palette (what the prepare screen showed) into
         // the gcode config comments. The engine writes default white, and the
         // 3MF's project_settings often holds Bambu's stock palette (green/blue),
