@@ -72,6 +72,10 @@ jobs:
             echo 'RELEASE_NOTES<<NOTES_EOF'
             echo "## What's changed"
             echo "$NOTES"
+            echo ''
+            # Full 40-char SHA required: the app's update check parses it
+            # out of the release body (services/updateCheck.ts releaseCommit)
+            echo "Build: ${GITHUB_SHA}"
             echo 'NOTES_EOF'
           } >> "$GITHUB_ENV"
 
