@@ -33,7 +33,7 @@ export function isCurrentRelease(currentCommit: string, latestCommit: string): b
  * the trailing commit hashes, and the `Build: <sha>` footer (that line is
  * machine data for releaseCommit, not for display).
  */
-export function releaseNotes(body?: string, maxLines = 8): string {
+export function releaseNotes(body?: string, maxLines = Infinity): string {
   const bullets = (body ?? '')
     .split('\n')
     .map((line) => line.trim())

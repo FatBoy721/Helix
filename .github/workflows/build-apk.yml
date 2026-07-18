@@ -63,11 +63,14 @@ jobs:
           # The "latest" tag still points at the previous release's commit,
           # so latest..HEAD is exactly what changed since the last build.
           if git rev-parse -q --verify refs/tags/latest >/dev/null; then
-            NOTES="$(git log latest..HEAD --no-merges --pretty='- %s (%h)')"
+            RAW="$(git log latest..HEAD --no-merges --pretty='- %s (%h)')"
           else
-            NOTES="$(git log -10 --no-merges --pretty='- %s (%h)')"
+            RAW="$(git log -10 --no-merges --pretty='- %s (%h)')"
           fi
-          [ -z "$NOTES" ] && NOTES="- Rebuild of $(git rev-parse --short HEAD) (no new commits)"
+          # Hide internal commits (ci:, chore:, ...) from the public changelog;
+          # git history keeps them. Also read by the in-app update popup.
+          NOTES="$(printf '%s\n' "$RAW" | grep -Ev '^- (ci|chore|build|docs|test|refactor)(\([^)]*\))?:' || true)"
+          [ -z "$NOTES" ] && NOTES="- Maintenance update (no user-facing changes)"
           {
             echo 'RELEASE_NOTES<<NOTES_EOF'
             echo "## What's changed"

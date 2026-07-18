@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import Constants from 'expo-constants';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import ThemedDialog, { DialogAction } from '../ThemedDialog';
@@ -26,6 +26,8 @@ const SUPPORT_URL = 'https://ko-fi.com/crabcore';
 interface DialogState {
   title: string;
   message?: string;
+  /** Scrollable changelog block rendered between the message and the buttons. */
+  notes?: string;
   icon: DialogIcon;
   actions: DialogAction[];
 }
@@ -124,12 +126,10 @@ export default function AboutCard() {
       const buildLine = currentBuild && currentBuild !== 'dev'
         ? `${t('Installed build')}: ${currentBuild.slice(0, 7)}`
         : t('Open the latest APK download?');
-      const notes = releaseNotes(release.body);
-      const notesBlock = notes ? `\n\n${t("What's changed")}:\n${notes}` : '';
-
       setDialog({
         title,
-        message: `${buildLine}\n${t('Install over existing app to keep settings.')}${notesBlock}`,
+        message: `${buildLine}\n${t('Install over existing app to keep settings.')}`,
+        notes: releaseNotes(release.body) || undefined,
         icon: 'download-circle-outline',
         actions: [
           { text: t('Not now'), onPress: closeDialog },
@@ -215,7 +215,16 @@ export default function AboutCard() {
         icon={dialog?.icon}
         actions={dialog?.actions ?? []}
         onClose={closeDialog}
-      />
+      >
+        {dialog?.notes ? (
+          <>
+            <Text style={styles.notesTitle}>{t("What's changed")}</Text>
+            <ScrollView style={styles.notesScroll} nestedScrollEnabled>
+              <Text style={styles.notesText}>{dialog.notes}</Text>
+            </ScrollView>
+          </>
+        ) : null}
+      </ThemedDialog>
       <ThemedDialog
         visible={downloadingUpdate && progressVisible && !!downloadProgress}
         title={t('Downloading update')}
@@ -283,6 +292,27 @@ const styles = StyleSheet.create({
     fontSize: 11,
     lineHeight: 16,
     marginLeft: 20 + spacing.sm,
+  },
+  notesTitle: {
+    color: colors.text,
+    fontSize: 13,
+    fontWeight: '700',
+    marginBottom: spacing.sm,
+  },
+  notesScroll: {
+    maxHeight: 220,
+    marginBottom: spacing.lg,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.card,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+  },
+  notesText: {
+    color: colors.subtext,
+    fontSize: 13,
+    lineHeight: 19,
   },
   progressWrap: {
     gap: spacing.sm,
