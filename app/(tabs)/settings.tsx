@@ -28,7 +28,14 @@ import BackupCard from '../../components/settings/BackupCard';
 import MacroDisplayCard from '../../components/settings/MacroDisplayCard';
 import ThemedDialog from '../../components/ThemedDialog';
 import { buildSettingsSavePatch, hasDraftChanges } from '../../services/settingsDraft';
-import { generateNtfyTopic, notifyLocal, sendNtfy } from '../../services/notifications';
+import {
+  clearStoredFcmDeviceToken,
+  configureFcmForPrinter,
+  generateNtfyTopic,
+  notifyLocal,
+  registerFcmDeviceToken,
+  sendNtfy,
+} from '../../services/notifications';
 import { LANGUAGES, t } from '../../services/i18n';
 import { colors, spacing } from '../../constants/theme';
 import {
@@ -74,6 +81,7 @@ const NOTIFICATION_MODES: {
   { value: 'off', label: 'Off', icon: 'bell-off-outline' },
   { value: 'local', label: 'Local only', icon: 'cellphone' },
   { value: 'ntfy', label: 'ntfy', icon: 'broadcast' },
+  { value: 'fcm', label: 'Firebase push', icon: 'cloud-upload-outline' },
 ];
 
 const CONNECTION_MODES: {
@@ -237,6 +245,8 @@ export default function SettingsScreen() {
       patch.ntfyServer = draft.ntfyServer.trim() || 'https://ntfy.sh';
       if (!draft.ntfyTopic.trim()) patch.ntfyTopic = generateNtfyTopic();
     }
+    if (mode === 'off') clearStoredFcmDeviceToken().catch(() => {});
+    if (mode === 'fcm') registerFcmDeviceToken().catch(() => {});
     set(patch);
   };
 
@@ -254,7 +264,7 @@ export default function SettingsScreen() {
 
   const testNotifications = async () => {
     if (draft.notificationMode === 'off') {
-      Alert.alert('Notifications off', 'Choose Local only or ntfy first.');
+      Alert.alert('Notifications off', 'Choose Firebase push, Local only, or ntfy first.');
       return;
     }
 
@@ -275,6 +285,19 @@ export default function SettingsScreen() {
         'printer'
       );
       Alert.alert(ok ? 'Sent' : 'Failed', ok ? 'Check ntfy.' : 'Check server URL and topic.');
+      return;
+    }
+
+    if (draft.notificationMode === 'fcm') {
+      const configured = activeUrl && settings.activePrinterId
+        ? await configureFcmForPrinter(activeUrl, settings.activePrinterId)
+        : false;
+      Alert.alert(
+        configured ? 'Configured' : 'Unavailable',
+        configured
+          ? 'Firebase push is configured for this printer. Moonraker will send alerts even when Helix is closed.'
+          : 'Connect to the printer first, or check Firebase/notification permission.'
+      );
       return;
     }
 

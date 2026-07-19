@@ -23,11 +23,10 @@
     },
     "android": {
       "package": "org.crabcore.u1control",
-      "versionCode": 7,
+      "versionCode": 10,
       "softwareKeyboardLayoutMode": "resize",
       "permissions": [
-        "android.permission.POST_NOTIFICATIONS",
-        "android.permission.REQUEST_INSTALL_PACKAGES"
+        "android.permission.POST_NOTIFICATIONS"
       ],
       "usesCleartextTraffic": true,
       "adaptiveIcon": {

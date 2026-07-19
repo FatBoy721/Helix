@@ -29,7 +29,7 @@ export interface DashboardSections {
   macros: boolean;
 }
 
-export type NotificationMode = 'off' | 'local' | 'ntfy';
+export type NotificationMode = 'off' | 'local' | 'ntfy' | 'fcm';
 export type ConnectionMode = 'auto' | 'lan' | 'tailscale';
 
 export interface Settings {
@@ -91,7 +91,7 @@ export const DEFAULT_SETTINGS: Settings = {
   },
   estopConfirm: true,
   macroDisplayByPrinter: {},
-  notificationMode: 'local',
+  notificationMode: 'fcm',
   ntfyServer: 'https://ntfy.sh',
   ntfyTopic: '',
   notifyPrintComplete: true,
@@ -124,7 +124,7 @@ function numberValue(raw: unknown, fallback: number): number {
 }
 
 function notificationMode(raw: unknown, ntfyTopic?: unknown): NotificationMode {
-  if (raw === 'off' || raw === 'local' || raw === 'ntfy') return raw;
+  if (raw === 'off' || raw === 'local' || raw === 'ntfy' || raw === 'fcm') return raw;
   return stringValue(ntfyTopic)?.trim() ? 'ntfy' : DEFAULT_SETTINGS.notificationMode;
 }
 

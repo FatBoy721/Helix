@@ -14,8 +14,11 @@ android/.gradle/
 android/build/
 android/local.properties
 android/app/release.keystore
+android/keystore.properties
+android/app/google-services.json
 .omx/
 .firecrawl/
 *.apk
 tools/
 .omc/
+functions/lib/
