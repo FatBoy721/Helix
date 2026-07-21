@@ -42,6 +42,16 @@ jobs:
             echo "$RELEASE_KEYSTORE_B64" | base64 -d > android/app/release.keystore
           fi
 
+      - name: Decode Firebase Android config
+        env:
+          FIREBASE_CONFIG_B64: ${{ secrets.FIREBASE_CONFIG_B64 }}
+        run: |
+          if [ -z "$FIREBASE_CONFIG_B64" ]; then
+            echo "FIREBASE_CONFIG_B64 is not configured"
+            exit 1
+          fi
+          printf '%s' "$FIREBASE_CONFIG_B64" | base64 -d > android/app/google-services.json
+
       - name: Build release APK
         env:
           RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
