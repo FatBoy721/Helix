@@ -1,4 +1,5 @@
 import { DeviceEventEmitter, NativeModules, Platform } from 'react-native';
+import type { NativeMaterialProfile } from './filamentProfiles';
 
 export type NativeSlicerStatus = {
   platform: string;
@@ -118,7 +119,8 @@ type HelixSlicerModule = {
     moonrakerUrl: string | null,
     initialTool: number,
     loadedToolMask: number,
-    autoArrange: boolean
+    autoArrange: boolean,
+    materialProfilesJson: string | null,
   ) => Promise<boolean>;
   openGcodePreview: (
     path: string,
@@ -342,7 +344,8 @@ export async function openNativeModelPreview(
   moonrakerUrl?: string | null,
   initialTool = 0,
   loadedToolMask = -1,
-  autoArrange = false
+  autoArrange = false,
+  materialProfiles?: NativeMaterialProfile[],
 ): Promise<void> {
   if (Platform.OS !== 'android' || !nativeModule) {
     throw new Error('Native 3D preview is Android-only in this lab build.');
@@ -357,6 +360,7 @@ export async function openNativeModelPreview(
     initialTool,
     loadedToolMask,
     autoArrange,
+    materialProfiles ? JSON.stringify(materialProfiles) : null,
   );
 }
 

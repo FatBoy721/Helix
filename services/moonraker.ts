@@ -114,7 +114,7 @@ export function resolveSnapshotUrl(
   try {
     const url = new URL(stream);
     if (!url.pathname.includes('/webcam')) return '';
-    url.pathname = '/webcam/snapshot';
+    url.pathname = '/webcam/snapshot.jpg';
     url.search = '';
     return url.toString().replace(/\/+$/, '');
   } catch {
@@ -224,6 +224,26 @@ export async function restartMoonraker(base: string): Promise<void> {
 
 export const api = {
   serverInfo: (base: string) => request(base, '/server/info'),
+
+  setFilamentSlot: async (
+    base: string,
+    channel: number,
+    info: Record<string, unknown>,
+  ) => {
+    const result = await request<{ state?: string; message?: string }>(
+      base,
+      '/printer/filament_detect/set',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ channel, info }),
+      },
+    );
+    if (result?.state === 'error') {
+      throw new Error(result.message || 'PAXX rejected the filament update.');
+    }
+    return result;
+  },
 
   listFiles: (base: string) => request<FileEntry[]>(base, '/server/files/list?root=gcodes'),
 

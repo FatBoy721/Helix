@@ -1,8 +1,14 @@
 apply plugin: "com.android.application"
+apply plugin: "com.google.gms.google-services"
 apply plugin: "org.jetbrains.kotlin.android"
 apply plugin: "com.facebook.react"
 
 def projectRoot = rootDir.getAbsoluteFile().getParentFile().getAbsolutePath()
+def releaseKeystoreProperties = new Properties()
+def releaseKeystorePropertiesFile = rootProject.file('keystore.properties')
+if (releaseKeystorePropertiesFile.exists()) {
+    releaseKeystoreProperties.load(new FileInputStream(releaseKeystorePropertiesFile))
+}
 
 /**
  * This is the configuration block to customize your React Native Android app.
@@ -92,7 +98,7 @@ android {
         applicationId 'org.crabcore.u1control'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 7
+        versionCode 12
         versionName "1.2.2"
 
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
@@ -110,9 +116,9 @@ android {
             def releaseKeystore = file('release.keystore')
             if (releaseKeystore.exists()) {
                 storeFile releaseKeystore
-                storePassword System.getenv('RELEASE_KEYSTORE_PASSWORD')
-                keyAlias System.getenv('RELEASE_KEY_ALIAS')
-                keyPassword System.getenv('RELEASE_KEY_PASSWORD')
+                storePassword releaseKeystoreProperties['storePassword'] ?: System.getenv('RELEASE_KEYSTORE_PASSWORD')
+                keyAlias releaseKeystoreProperties['keyAlias'] ?: System.getenv('RELEASE_KEY_ALIAS')
+                keyPassword releaseKeystoreProperties['keyPassword'] ?: System.getenv('RELEASE_KEY_PASSWORD')
             }
         }
     }
@@ -167,6 +173,9 @@ dependencies {
     // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")
     testImplementation("junit:junit:4.13.2")
+
+    implementation platform('com.google.firebase:firebase-bom:34.16.0')
+    implementation 'com.google.firebase:firebase-messaging'
 
     // Encrypted MakerWorld session-cookie storage (Android Keystore-backed).
     implementation("androidx.security:security-crypto:1.1.0-alpha06")

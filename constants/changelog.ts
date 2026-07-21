@@ -22,8 +22,18 @@ export interface AppNotification {
 export const NOTIFICATIONS_URL =
   'https://raw.githubusercontent.com/FatBoy721/helix-notifications/refs/heads/main/notifications.json';
 
+/** Local cache for announcements received through Firebase Cloud Messaging. */
+export const FCM_ANNOUNCEMENTS_KEY = 'u1control.notifications.fcm.v1';
+
 /** Fallback feed baked into the app. Remote entries with the same id override these. */
 export const BAKED_NOTIFICATIONS: AppNotification[] = [
+  {
+    id: '2026-07-19-bell-tabs',
+    type: 'changelog',
+    title: 'Bell history is organized',
+    date: '2026-07-19',
+    body: 'The bell now has separate Alerts and Changelog tabs. Firebase announcements and printer alerts can be saved for later, while GitHub remains a fallback when an announcement was missed.',
+  },
   {
     id: '2026-07-10-signing-upgrade',
     type: 'alert',

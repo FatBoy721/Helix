@@ -4,6 +4,7 @@ import android.content.Context
 import com.u1.slicer.NativeLibrary
 import com.u1.slicer.data.SliceConfig
 import com.u1.slicer.data.SliceResult
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
@@ -30,6 +31,27 @@ object HelixSliceRunner {
     val usedToolMask: Int,
   )
 
+  data class MaterialProfile(
+    val material: String,
+    val brand: String,
+    val nozzleTemp: Int,
+  )
+
+  fun parseMaterialProfiles(json: String?): List<MaterialProfile> {
+    if (json.isNullOrBlank()) return emptyList()
+    return runCatching {
+      val array = JSONArray(json)
+      (0 until array.length()).mapNotNull { index ->
+        val item = array.optJSONObject(index) ?: return@mapNotNull null
+        MaterialProfile(
+          material = item.optString("material", "PLA"),
+          brand = item.optString("brand", "Generic"),
+          nozzleTemp = item.optInt("nozzleTemp", 220).coerceIn(160, 300),
+        )
+      }
+    }.getOrDefault(emptyList())
+  }
+
   /**
    * Runs a full slice synchronously on the calling thread (callers spawn their
    * own worker). Throws [BusyError] when a slice is already running anywhere in
@@ -45,6 +67,7 @@ object HelixSliceRunner {
     onProgress: (Int, String) -> Unit,
     initialTool: Int = 0,
     sliceSettings: HelixSliceSettings = HelixSliceSettings(),
+    materialProfiles: List<MaterialProfile> = emptyList(),
     configure: SliceConfig.() -> Unit = {},
   ): Outcome {
     if (!slicing.compareAndSet(false, true)) throw BusyError()
@@ -85,6 +108,7 @@ object HelixSliceRunner {
         ).apply {
           sliceSettings.applyTo(this)
           configure()
+          applyMaterialProfiles(materialProfiles, selectedTool)
           if (multicolor) configureMultiTool(filamentCount) else forceSingleTool(selectedTool)
           // Wipe tower position shown/dragged on the prepare screen.
           PrepareSession.towerPositionFor(path)?.let { (tx, ty) ->
@@ -161,14 +185,35 @@ object HelixSliceRunner {
   private fun readFilamentColours(lib: NativeLibrary): List<String> {
     val json = runCatching { lib.nativeGetProjectConfig() }.getOrNull() ?: return emptyList()
     return try {
-      val arr = JSONObject(json).optJSONArray("filamentColours") ?: return emptyList()
-      (0 until arr.length()).mapNotNull { i ->
+      val project = JSONObject(json)
+      val arr = project.optJSONArray("filamentColours") ?: return emptyList()
+      val colours = (0 until arr.length()).mapNotNull { i ->
         val hex = arr.optString(i).trim()
-        if (hex.isEmpty()) null else if (hex.startsWith("#")) hex else "#$hex"
+        if (hex.isEmpty()) null else canonicalColour(hex)
       }
+      // Geometry-only 3MF files can repeat the same colour once per object or
+      // colour group. They do not describe a multi-filament print. Bambu
+      // projects keep their real filament list and must not be collapsed here.
+      if (project.optBoolean("isBbl", false)) colours else colours.distinct()
     } catch (_: Throwable) {
       emptyList()
     }
+  }
+
+  private fun canonicalColour(raw: String): String {
+    val hex = raw.removePrefix("#").uppercase()
+    return if (hex.matches(Regex("[0-9A-F]{8}"))) "#${hex.take(6)}"
+    else if (hex.matches(Regex("[0-9A-F]{6}"))) "#$hex"
+    else "#$hex"
+  }
+
+  private fun SliceConfig.applyMaterialProfiles(profiles: List<MaterialProfile>, selectedTool: Int) {
+    if (profiles.isEmpty()) return
+    val normalized = Array(4) { index -> profiles.getOrNull(index) ?: profiles.first() }
+    filamentType = normalized[selectedTool].material
+    filamentTypes = Array(4) { index -> normalized[index].material }
+    extruderTemps = IntArray(4) { index -> normalized[index].nozzleTemp }
+    nozzleTemp = normalized[selectedTool].nozzleTemp
   }
 
   /** Size the config for [count] filaments (U1 has 4 ACE slots) so the engine keeps

@@ -30,6 +30,7 @@ import {
 } from '../../services/chamberTemperature';
 import { formatDuration } from '../../components/PrintProgress';
 import CameraFeed, { CameraStat } from '../../components/CameraFeed';
+import FilamentDashboardCard from '../../components/FilamentDashboardCard';
 import NotificationBell from '../../components/NotificationBell';
 import ThemedDialog from '../../components/ThemedDialog';
 import ControlsPanel from '../../components/ControlsPanel';
@@ -50,6 +51,8 @@ import { takePrintSentNotice, type PrintSentNotice } from '../../services/printS
 import { displayTemperature } from '../../services/temperature';
 import type { TemperatureUnit } from '../../services/temperature';
 import { colors, radius, shadow, spacing, withAlpha } from '../../constants/theme';
+import { normalizeFilamentSlotColors } from '../../constants/filamentColors';
+import { setFilamentSlotColors } from '../../services/nativeSlicer';
 
 type IconName = React.ComponentProps<typeof MaterialCommunityIcons>['name'];
 
@@ -151,6 +154,10 @@ function pickerStatusColor(status: PickerPrinterStatus): string {
   if (status.state === 'paused') return colors.warning;
   if (printerBusy(status.state)) return colors.primary;
   return colors.success;
+}
+
+function isGuiWebcam(webcam: { name: string; stream_url: string }): boolean {
+  return webcam.name.toLowerCase() === 'gui' || /\/screen(?:\/|$)/i.test(webcam.stream_url);
 }
 
 export default function Dashboard() {
@@ -415,6 +422,79 @@ export default function Dashboard() {
   const mainSnapshotUrl = resolveSnapshotUrl(mainWebcam?.snapshot_url, settings.cameraUrl, activeBaseUrl);
   const hasCamera = show.camera && !!mainCameraUrl;
 
+  const updateFilamentSlots = useCallback(async (next: string[]) => {
+    const normalized = normalizeFilamentSlotColors(next);
+    await update({ filamentSlotColors: normalized });
+    try {
+      await setFilamentSlotColors(normalized);
+    } catch {
+      // Native slicer settings are optional on platforms without the module.
+    }
+    if (activeBaseUrl) {
+      try {
+        await Promise.all(normalized.map((color, channel) => api.setFilamentSlot(
+          activeBaseUrl,
+          channel,
+          {
+            VENDOR: status.filament_detect?.info?.[channel]?.VENDOR && status.filament_detect.info[channel].VENDOR !== 'NONE'
+              ? status.filament_detect.info[channel].VENDOR
+              : status.print_task_config?.filament_vendor?.[channel] || 'Generic',
+            MAIN_TYPE: status.print_task_config?.filament_type?.[channel] || settings.filamentSlotMaterials[channel] || 'PLA',
+            SUB_TYPE: status.filament_detect?.info?.[channel]?.SUB_TYPE || 'Basic',
+            RGB_1: parseInt(color.replace('#', '').slice(0, 6), 16),
+            ALPHA: 255,
+          },
+        )));
+      } catch (error) {
+        Alert.alert('Printer update unavailable', error instanceof Error ? error.message : 'Helix saved the value locally.');
+      }
+    }
+  }, [activeBaseUrl, settings.filamentSlotMaterials, status, update]);
+
+  const updateFilamentMaterials = useCallback(async (next: string[]) => {
+    await update({ filamentSlotMaterials: next });
+    if (activeBaseUrl) {
+      try {
+        await Promise.all(next.map((material, channel) => api.setFilamentSlot(
+          activeBaseUrl,
+          channel,
+          {
+            VENDOR: status.filament_detect?.info?.[channel]?.VENDOR && status.filament_detect.info[channel].VENDOR !== 'NONE'
+              ? status.filament_detect.info[channel].VENDOR
+              : status.print_task_config?.filament_vendor?.[channel] || 'Generic',
+            MAIN_TYPE: material || 'PLA',
+            SUB_TYPE: status.filament_detect?.info?.[channel]?.SUB_TYPE || 'Basic',
+            RGB_1: parseInt(normalizeFilamentSlotColors(settings.filamentSlotColors)[channel].replace('#', '').slice(0, 6), 16),
+            ALPHA: 255,
+          },
+        )));
+      } catch (error) {
+        Alert.alert('Printer update unavailable', error instanceof Error ? error.message : 'Helix saved the value locally.');
+      }
+    }
+  }, [activeBaseUrl, settings.filamentSlotColors, status, update]);
+
+  const updateFilamentBrands = useCallback(async (next: string[]) => {
+    await update({ filamentSlotBrands: next });
+    if (activeBaseUrl) {
+      try {
+        await Promise.all(next.map((brand, channel) => api.setFilamentSlot(
+          activeBaseUrl,
+          channel,
+          {
+            VENDOR: brand || 'Generic',
+            MAIN_TYPE: status.print_task_config?.filament_type?.[channel] || settings.filamentSlotMaterials[channel] || 'PLA',
+            SUB_TYPE: status.filament_detect?.info?.[channel]?.SUB_TYPE || 'Basic',
+            RGB_1: parseInt(normalizeFilamentSlotColors(settings.filamentSlotColors)[channel].replace('#', '').slice(0, 6), 16),
+            ALPHA: 255,
+          },
+        )));
+      } catch (error) {
+        Alert.alert('Printer update unavailable', error instanceof Error ? error.message : 'Helix saved the value locally.');
+      }
+    }
+  }, [activeBaseUrl, settings.filamentSlotColors, settings.filamentSlotMaterials, status, update]);
+
   const printerName = activePrinter?.name?.trim() || t('Printer');
   const connectionHost = shortUrl(activeUrl || selectedPrinterUrl);
 
@@ -654,17 +734,33 @@ export default function Dashboard() {
         )}
 
         {/* extra cameras */}
-        {show.camera &&
-          webcams
+        {webcams
             .filter((w) => resolveCameraUrl(w.stream_url, activeBaseUrl) !== mainCameraUrl)
+            .filter((w) => (isGuiWebcam(w) ? show.gui || show.filaments : show.camera))
             .map((w) => (
               <View key={w.name} style={styles.extraCamera}>
-                <Text style={styles.cameraName}>{w.name}</Text>
-                <CameraFeed
-                  url={resolveCameraUrl(w.stream_url, activeBaseUrl)}
-                  snapshotUrl={resolveSnapshotUrl(w.snapshot_url, w.stream_url, activeBaseUrl)}
-                  height={220}
-                />
+                {show.gui || !isGuiWebcam(w) ? (
+                  <>
+                    <Text style={styles.cameraName}>{w.name}</Text>
+                    <CameraFeed
+                      url={resolveCameraUrl(w.stream_url, activeBaseUrl)}
+                      snapshotUrl={resolveSnapshotUrl(w.snapshot_url, w.stream_url, activeBaseUrl)}
+                      height={220}
+                      showControls={false}
+                    />
+                  </>
+                ) : null}
+                {isGuiWebcam(w) && show.filaments && (
+                  <FilamentDashboardCard
+                    status={status}
+                    slotColors={settings.filamentSlotColors}
+                    slotBrands={settings.filamentSlotBrands}
+                    slotMaterials={settings.filamentSlotMaterials}
+                    onChange={updateFilamentSlots}
+                    onBrandsChange={updateFilamentBrands}
+                    onMaterialsChange={updateFilamentMaterials}
+                  />
+                )}
               </View>
             ))}
       </ScrollView>

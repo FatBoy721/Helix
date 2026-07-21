@@ -528,6 +528,9 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
     const sub = AppState.addEventListener('change', (state) => {
       if (state === 'active' && (!wsRef.current || wsRef.current.readyState !== WS_OPEN)) {
         failCountRef.current = 0;
+        if (settingsRef.current.connectionMode === 'auto') {
+          urlIndexRef.current = 0;
+        }
         connect();
       }
     });

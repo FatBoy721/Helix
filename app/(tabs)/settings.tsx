@@ -9,6 +9,7 @@ import {
   Switch,
   Text,
   TextInput,
+  ToastAndroid,
   TouchableOpacity,
   View,
 } from 'react-native';
@@ -28,7 +29,15 @@ import BackupCard from '../../components/settings/BackupCard';
 import MacroDisplayCard from '../../components/settings/MacroDisplayCard';
 import ThemedDialog from '../../components/ThemedDialog';
 import { buildSettingsSavePatch, hasDraftChanges } from '../../services/settingsDraft';
-import { generateNtfyTopic, notifyLocal, sendNtfy } from '../../services/notifications';
+import {
+  clearStoredFcmDeviceToken,
+  configureFcmForPrinter,
+  generateNtfyTopic,
+  notifyLocal,
+  registerFcmDeviceToken,
+  sendFcmTestNotification,
+  sendNtfy,
+} from '../../services/notifications';
 import { LANGUAGES, t } from '../../services/i18n';
 import { colors, spacing } from '../../constants/theme';
 import {
@@ -63,6 +72,8 @@ const SECTION_LABELS: { key: keyof DashboardSections; label: string }[] = [
   { key: 'pandaBreath', label: 'Panda Breath controls' },
   { key: 'temps', label: 'Temperatures' },
   { key: 'camera', label: 'Camera' },
+  { key: 'gui', label: 'GUI screen' },
+  { key: 'filaments', label: 'Filaments' },
   { key: 'macros', label: 'Macros' },
 ];
 
@@ -74,6 +85,7 @@ const NOTIFICATION_MODES: {
   { value: 'off', label: 'Off', icon: 'bell-off-outline' },
   { value: 'local', label: 'Local only', icon: 'cellphone' },
   { value: 'ntfy', label: 'ntfy', icon: 'broadcast' },
+  { value: 'fcm', label: 'Firebase push', icon: 'cloud-upload-outline' },
 ];
 
 const CONNECTION_MODES: {
@@ -237,6 +249,8 @@ export default function SettingsScreen() {
       patch.ntfyServer = draft.ntfyServer.trim() || 'https://ntfy.sh';
       if (!draft.ntfyTopic.trim()) patch.ntfyTopic = generateNtfyTopic();
     }
+    if (mode === 'off') clearStoredFcmDeviceToken().catch(() => {});
+    if (mode === 'fcm') registerFcmDeviceToken().catch(() => {});
     set(patch);
   };
 
@@ -253,8 +267,16 @@ export default function SettingsScreen() {
   };
 
   const testNotifications = async () => {
+    const report = (message: string) => {
+      if (Platform.OS === 'android') {
+        ToastAndroid.show(message, ToastAndroid.LONG);
+      } else {
+        Alert.alert('Notifications', message);
+      }
+    };
+
     if (draft.notificationMode === 'off') {
-      Alert.alert('Notifications off', 'Choose Local only or ntfy first.');
+      report('Choose a notification mode first.');
       return;
     }
 
@@ -266,20 +288,21 @@ export default function SettingsScreen() {
       if (server !== draft.ntfyServer.trim()) patch.ntfyServer = server;
       if (Object.keys(patch).length) set(patch);
 
-      const ok = await sendNtfy(
-        server,
-        topic,
-        'Helix test',
-        'Printer alerts are working.',
-        3,
-        'printer'
-      );
-      Alert.alert(ok ? 'Sent' : 'Failed', ok ? 'Check ntfy.' : 'Check server URL and topic.');
+      const ok = await sendNtfy(server, topic, 'Helix test', 'Printer alerts are working.', 3, 'printer');
+      report(ok ? 'Test sent. Check your notification tray.' : 'Test failed. Check the ntfy settings.');
+      return;
+    }
+
+    if (draft.notificationMode === 'fcm') {
+      const configured = activeUrl && settings.activePrinterId
+        ? await configureFcmForPrinter(activeUrl, settings.activePrinterId)
+        : await sendFcmTestNotification();
+      report(configured ? 'Test sent. Check your notification tray.' : 'Test failed. Check Firebase setup.');
       return;
     }
 
     const ok = await notifyLocal('Helix test', 'Local printer alerts are working.');
-    Alert.alert(ok ? 'Sent' : 'Failed', ok ? 'Local notification works.' : 'Check notification permission.');
+    report(ok ? 'Test sent. Check your notification tray.' : 'Test failed. Check notification permission.');
   };
 
   return (

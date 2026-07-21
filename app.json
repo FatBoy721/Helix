@@ -19,15 +19,15 @@
       "backgroundColor": "#05070d"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "org.crabcore.u1control"
     },
     "android": {
       "package": "org.crabcore.u1control",
-      "versionCode": 7,
+      "versionCode": 12,
       "softwareKeyboardLayoutMode": "resize",
       "permissions": [
-        "android.permission.POST_NOTIFICATIONS",
-        "android.permission.REQUEST_INSTALL_PACKAGES"
+        "android.permission.POST_NOTIFICATIONS"
       ],
       "usesCleartextTraffic": true,
       "adaptiveIcon": {
@@ -59,7 +59,8 @@
           "cameraPermission": "Helix uses the camera to scan Spoolman QR labels on your filament spools."
         }
       ],
-      "./plugins/with-cleartext-traffic"
+      "./plugins/with-cleartext-traffic",
+      "./plugins/with-fmt-xcode26-fix"
     ]
   }
 }

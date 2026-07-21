@@ -6,6 +6,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.provider.OpenableColumns
+import android.util.Log
 import android.webkit.CookieManager
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
@@ -18,6 +19,7 @@ import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.bridge.ReadableArray
 import com.facebook.react.bridge.ReadableMap
 import com.facebook.react.modules.core.DeviceEventManagerModule
+import com.google.firebase.messaging.FirebaseMessaging
 import com.u1.slicer.NativeLibrary
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
@@ -65,6 +67,29 @@ class HelixSlicerModule(
     }
 
     promise.resolve(status)
+  }
+
+  @ReactMethod
+  fun subscribeToFcmAnnouncements(promise: Promise) {
+    FirebaseMessaging.getInstance().subscribeToTopic("helix-announcements")
+      .addOnSuccessListener { promise.resolve(true) }
+      .addOnFailureListener { error ->
+        promise.reject("FCM_TOPIC_SUBSCRIBE_FAILED", error.message, error)
+      }
+  }
+
+  @ReactMethod
+  fun getFcmToken(promise: Promise) {
+    Log.i("HelixFCM", "Requesting FCM token")
+    FirebaseMessaging.getInstance().token
+      .addOnSuccessListener { token ->
+        Log.i("HelixFCM", "FCM token received")
+        promise.resolve(token)
+      }
+      .addOnFailureListener { error ->
+        Log.e("HelixFCM", "FCM token failed: ${error.message}", error)
+        promise.reject("FCM_TOKEN_FAILED", error.message, error)
+      }
   }
 
   @ReactMethod
@@ -373,6 +398,7 @@ class HelixSlicerModule(
     initialTool: Int,
     loadedToolMask: Int,
     autoArrange: Boolean,
+    materialProfilesJson: String?,
     promise: Promise,
   ) {
     val activity = getCurrentActivity()
@@ -400,6 +426,9 @@ class HelixSlicerModule(
         putExtra(HelixModelPreviewActivity.EXTRA_LOADED_TOOL_MASK, loadedToolMask)
         putExtra(HelixModelPreviewActivity.EXTRA_AUTO_ARRANGE, autoArrange)
         putExtra(HelixModelPreviewActivity.EXTRA_TITLE, title ?: file.name)
+        if (!materialProfilesJson.isNullOrBlank()) {
+          putExtra(HelixModelPreviewActivity.EXTRA_MATERIAL_PROFILES, materialProfilesJson)
+        }
         // User-declared filament colours (Slice Lab "Your filaments" row).
         if (slotColors != null && slotColors.size() > 0) {
           val list = ArrayList<String>(slotColors.size())

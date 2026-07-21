@@ -6,7 +6,11 @@ import { DarkTheme, ThemeProvider } from '@react-navigation/native';
 import { SettingsProvider, useSettings } from '../hooks/useSettings';
 import { MoonrakerProvider } from '../hooks/useMoonraker';
 import FirstRunSetup from '../components/FirstRunSetup';
-import { initNotifications } from '../services/notifications';
+import {
+  initNotifications,
+  registerFcmDeviceToken,
+  subscribeToFcmAnnouncements,
+} from '../services/notifications';
 import { getSharedMakerWorldLink, getSharedModelFile } from '../services/nativeSlicer';
 import { setPendingModel } from '../services/pendingModel';
 import { colors } from '../constants/theme';
@@ -40,6 +44,13 @@ export default function RootLayout() {
 function AppShell() {
   const { settings, loaded } = useSettings();
   const router = useRouter();
+
+  useEffect(() => {
+    if (!loaded || settings.notificationMode !== 'fcm') return;
+    registerFcmDeviceToken()
+      .then((token) => (token ? subscribeToFcmAnnouncements() : false))
+      .catch(() => {});
+  }, [loaded, settings.notificationMode]);
 
   useEffect(() => {
     getSharedMakerWorldLink().then((shared) => {

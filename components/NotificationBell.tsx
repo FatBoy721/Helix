@@ -13,6 +13,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSettings } from '../hooks/useSettings';
 import {
   BAKED_NOTIFICATIONS,
+  FCM_ANNOUNCEMENTS_KEY,
   NOTIFICATIONS_URL,
   idsOf,
   mergeNotifications,
@@ -62,6 +63,7 @@ export default function NotificationBell() {
   const { settings, update } = useSettings();
   const window = useWindowDimensions();
   const [open, setOpen] = useState(false);
+  const [tab, setTab] = useState<'alerts' | 'changelog'>('alerts');
   const [list, setList] = useState<AppNotification[]>(INITIAL_LIST);
 
   // On mount: show cached feed instantly, then refresh from the remote JSON.
@@ -71,15 +73,21 @@ export default function NotificationBell() {
       try {
         const raw = await AsyncStorage.getItem(CACHE_KEY);
         const cached = raw ? parseNotifications(JSON.parse(raw)) : [];
+        const fcmRaw = await AsyncStorage.getItem(FCM_ANNOUNCEMENTS_KEY);
+        const fcm = fcmRaw ? parseNotifications(JSON.parse(fcmRaw)) : [];
         if (live && cached.length) {
-          setList(mergeNotifications(BAKED_NOTIFICATIONS, cached));
+          setList(mergeNotifications(BAKED_NOTIFICATIONS, cached, fcm));
+        } else if (live && fcm.length) {
+          setList(mergeNotifications(BAKED_NOTIFICATIONS, fcm));
         }
       } catch {
         // ignore corrupt cache
       }
       const remote = await fetchRemoteNotifications();
       if (remote && live) {
-        setList(mergeNotifications(BAKED_NOTIFICATIONS, remote));
+        const fcmRaw = await AsyncStorage.getItem(FCM_ANNOUNCEMENTS_KEY);
+        const fcm = fcmRaw ? parseNotifications(JSON.parse(fcmRaw)) : [];
+        setList(mergeNotifications(BAKED_NOTIFICATIONS, remote, fcm));
         AsyncStorage.setItem(CACHE_KEY, JSON.stringify(remote)).catch(() => {});
       }
     })();
@@ -91,6 +99,10 @@ export default function NotificationBell() {
   const seen = settings.seenNotificationIds;
   const unread = useMemo(() => unreadCount(list, seen), [list, seen]);
   const seenSet = useMemo(() => new Set(seen), [seen]);
+  const visibleList = useMemo(
+    () => list.filter((item) => (tab === 'changelog' ? item.type !== 'alert' : item.type === 'alert')),
+    [list, tab]
+  );
 
   const openCenter = () => {
     setOpen(true);
@@ -119,13 +131,24 @@ export default function NotificationBell() {
         <View style={styles.modalLayer}>
           <Pressable style={[StyleSheet.absoluteFill, styles.scrim]} onPress={() => setOpen(false)} />
           <PopIn style={[styles.sheet, { width: sheetWidth, maxHeight: sheetMaxHeight }]}>
-            <View style={styles.sheetHead}>
-              <Text style={styles.sheetTitle}>{t('Notifications')}</Text>
-              <PressableScale style={styles.closeBtn} onPress={() => setOpen(false)}>
-                <MaterialCommunityIcons name="close" size={18} color={colors.subtext} />
+            <PressableScale style={styles.closeBtn} onPress={() => setOpen(false)}>
+              <MaterialCommunityIcons name="close" size={18} color={colors.subtext} />
+            </PressableScale>
+            <View style={styles.tabs}>
+              <PressableScale
+                style={[styles.tab, tab === 'alerts' && styles.activeTab]}
+                onPress={() => setTab('alerts')}
+              >
+                <Text style={[styles.tabText, tab === 'alerts' && styles.activeTabText]}>Alerts</Text>
+              </PressableScale>
+              <PressableScale
+                style={[styles.tab, tab === 'changelog' && styles.activeTab]}
+                onPress={() => setTab('changelog')}
+              >
+                <Text style={[styles.tabText, tab === 'changelog' && styles.activeTabText]}>Changelog</Text>
               </PressableScale>
             </View>
-            {list.length === 0 ? (
+            {visibleList.length === 0 ? (
               <View style={styles.empty}>
                 <MaterialCommunityIcons name="bell-sleep-outline" size={34} color={colors.subtext} />
                 <Text style={styles.emptyText}>{t('Nothing new yet')}</Text>
@@ -135,7 +158,7 @@ export default function NotificationBell() {
                 showsVerticalScrollIndicator={false}
                 contentContainerStyle={styles.list}
               >
-                {list.map((n) => (
+                {visibleList.map((n) => (
                   <NotificationRow key={n.id} item={n} fresh={!seenSet.has(n.id)} />
                 ))}
               </ScrollView>
@@ -210,15 +233,6 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     ...shadow.hero,
   },
-  sheetHead: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.lg,
-    paddingBottom: spacing.md,
-  },
-  sheetTitle: { color: colors.text, fontSize: 18, fontWeight: '900' },
   closeBtn: {
     width: 30,
     height: 30,
@@ -226,8 +240,24 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: colors.cardAlt,
+    position: 'absolute',
+    right: spacing.lg,
+    top: spacing.md,
+    zIndex: 1,
   },
   list: { paddingBottom: spacing.sm },
+  tabs: {
+    flexDirection: 'row',
+    marginHorizontal: spacing.lg,
+    paddingTop: spacing.lg,
+    marginBottom: spacing.xs,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  tab: { flex: 1, alignItems: 'center', paddingVertical: spacing.sm },
+  activeTab: { borderBottomWidth: 2, borderBottomColor: colors.primary },
+  tabText: { color: colors.subtext, fontSize: 13, fontWeight: '800' },
+  activeTabText: { color: colors.primary },
   row: {
     flexDirection: 'row',
     gap: spacing.md,

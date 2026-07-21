@@ -103,11 +103,15 @@ export default function MeshScreen() {
   const runCalibration = () => {
     showAlert({
       title: t('Run bed mesh?'),
-      message: t('This starts BED_MESH_CALIBRATE on the active printer.'),
+      message: t('The printer will clean the nozzle, heat the bed to 55°C, and run bed mesh calibration.'),
       icon: 'grid',
       actions: [
         { text: t('Cancel') },
-        { text: t('Run'), variant: 'primary', onPress: () => sendGcode('BED_MESH_CALIBRATE') },
+        {
+          text: t('Run'),
+          variant: 'primary',
+          onPress: () => sendGcode('ROUGHLY_CLEAN_NOZZLE\nAUTO_BED_MESH_CALIBRATE TEMP=55'),
+        },
       ],
     });
   };
@@ -200,7 +204,7 @@ export default function MeshScreen() {
           <MeshAction
             icon="radar"
             label={t('Calibrate')}
-            helper="BED_MESH_CALIBRATE"
+            helper="AUTO_BED_MESH_CALIBRATE"
             onPress={runCalibration}
             disabled={disabled}
             primary

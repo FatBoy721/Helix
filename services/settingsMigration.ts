@@ -26,10 +26,12 @@ export interface DashboardSections {
   pandaBreath: boolean;
   temps: boolean;
   camera: boolean;
+  gui: boolean;
+  filaments: boolean;
   macros: boolean;
 }
 
-export type NotificationMode = 'off' | 'local' | 'ntfy';
+export type NotificationMode = 'off' | 'local' | 'ntfy' | 'fcm';
 export type ConnectionMode = 'auto' | 'lan' | 'tailscale';
 
 export interface Settings {
@@ -63,6 +65,8 @@ export interface Settings {
   filamentSlotColors: string[];
   /** Manual fallback material labels for the four physical filament slots. */
   filamentSlotMaterials: string[];
+  /** Manual fallback brand labels for the four physical filament slots. */
+  filamentSlotBrands: string[];
   /** Ids of in-app notifications the user has already opened. */
   seenNotificationIds: string[];
 }
@@ -87,11 +91,13 @@ export const DEFAULT_SETTINGS: Settings = {
     pandaBreath: false,
     temps: true,
     camera: true,
+    gui: true,
+    filaments: true,
     macros: false,
   },
   estopConfirm: true,
   macroDisplayByPrinter: {},
-  notificationMode: 'local',
+  notificationMode: 'fcm',
   ntfyServer: 'https://ntfy.sh',
   ntfyTopic: '',
   notifyPrintComplete: true,
@@ -108,6 +114,7 @@ export const DEFAULT_SETTINGS: Settings = {
   temperatureUnit: 'c',
   filamentSlotColors: [...DEFAULT_FILAMENT_SLOT_COLORS],
   filamentSlotMaterials: ['PLA', 'PLA', 'PLA', 'PLA'],
+  filamentSlotBrands: ['Generic', 'Generic', 'Generic', 'Generic'],
   seenNotificationIds: [],
 };
 
@@ -124,7 +131,7 @@ function numberValue(raw: unknown, fallback: number): number {
 }
 
 function notificationMode(raw: unknown, ntfyTopic?: unknown): NotificationMode {
-  if (raw === 'off' || raw === 'local' || raw === 'ntfy') return raw;
+  if (raw === 'off' || raw === 'local' || raw === 'ntfy' || raw === 'fcm') return raw;
   return stringValue(ntfyTopic)?.trim() ? 'ntfy' : DEFAULT_SETTINGS.notificationMode;
 }
 
@@ -148,6 +155,8 @@ function normalizeDashboard(raw: unknown): DashboardSections {
     pandaBreath: booleanValue(dashboard.pandaBreath, DEFAULT_SETTINGS.dashboard.pandaBreath),
     temps: booleanValue(dashboard.temps, DEFAULT_SETTINGS.dashboard.temps),
     camera: booleanValue(dashboard.camera, DEFAULT_SETTINGS.dashboard.camera),
+    gui: booleanValue(dashboard.gui, DEFAULT_SETTINGS.dashboard.gui),
+    filaments: booleanValue(dashboard.filaments, DEFAULT_SETTINGS.dashboard.filaments),
     macros: booleanValue(dashboard.macros, DEFAULT_SETTINGS.dashboard.macros),
   };
 }
@@ -157,6 +166,14 @@ function normalizeFilamentSlotMaterials(raw: unknown): string[] {
   return Array.from({ length: 4 }, (_, i) => {
     const value = stringValue(src[i])?.trim().toUpperCase();
     return value || DEFAULT_SETTINGS.filamentSlotMaterials[i];
+  });
+}
+
+function normalizeFilamentSlotBrands(raw: unknown): string[] {
+  const src = Array.isArray(raw) ? raw : [];
+  return Array.from({ length: 4 }, (_, i) => {
+    const value = stringValue(src[i])?.trim();
+    return value || DEFAULT_SETTINGS.filamentSlotBrands[i];
   });
 }
 
@@ -230,6 +247,7 @@ export function migrateSettings(raw: Partial<Settings>): Settings {
     temperatureUnit: normalizeTemperatureUnit(parsed.temperatureUnit),
     filamentSlotColors: normalizeFilamentSlotColors(parsed.filamentSlotColors),
     filamentSlotMaterials: normalizeFilamentSlotMaterials(parsed.filamentSlotMaterials),
+    filamentSlotBrands: normalizeFilamentSlotBrands(parsed.filamentSlotBrands),
     seenNotificationIds: Array.isArray(parsed.seenNotificationIds)
       ? parsed.seenNotificationIds.filter((id): id is string => typeof id === 'string')
       : [],

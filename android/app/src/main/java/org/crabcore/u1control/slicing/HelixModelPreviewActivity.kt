@@ -62,6 +62,7 @@ class HelixModelPreviewActivity : Activity() {
   private var initialTool: Int = 0
   private var loadedToolMask: Int = -1
   private var autoArrangeOnLoad: Boolean = false
+  private var materialProfilesJson: String? = null
   private var sliceSettings = HelixSliceSettings()
   private var brimTileBg: GradientDrawable? = null
   private var brimTileIcon: ImageView? = null
@@ -125,6 +126,7 @@ class HelixModelPreviewActivity : Activity() {
     initialTool = intent.getIntExtra(EXTRA_INITIAL_TOOL, 0).coerceIn(0, 3)
     loadedToolMask = intent.getIntExtra(EXTRA_LOADED_TOOL_MASK, -1)
     autoArrangeOnLoad = intent.getBooleanExtra(EXTRA_AUTO_ARRANGE, false)
+    materialProfilesJson = intent.getStringExtra(EXTRA_MATERIAL_PROFILES)
     val title = intent.getStringExtra(EXTRA_TITLE)
       ?.takeIf { it.isNotBlank() }
       ?: File(modelPath).name.ifBlank { "3D Preview" }
@@ -1339,6 +1341,7 @@ class HelixModelPreviewActivity : Activity() {
           },
           initialTool = initialTool,
           sliceSettings = sliceSettings,
+          materialProfiles = HelixSliceRunner.parseMaterialProfiles(materialProfilesJson),
         )
         val result = outcome.result
         runOnUiThread {
@@ -1568,6 +1571,7 @@ class HelixModelPreviewActivity : Activity() {
     const val EXTRA_INITIAL_TOOL = "initialTool"
     const val EXTRA_LOADED_TOOL_MASK = "loadedToolMask"
     const val EXTRA_AUTO_ARRANGE = "autoArrange"
+    const val EXTRA_MATERIAL_PROFILES = "materialProfiles"
     private const val BED_SIZE = 270f
 
     // Orca default prime_tower_width (the lab SliceConfig's 60mm default is the

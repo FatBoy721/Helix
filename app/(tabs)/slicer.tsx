@@ -49,6 +49,7 @@ import { subscribePendingModel, takePendingModel } from '../../services/pendingM
 import { setPrintSentNotice } from '../../services/printSentBus';
 import PrintPreprocessDialog, { type PrintPref } from '../../components/PrintPreprocessDialog';
 import { api, printerConnectionUrl, thumbnailUrl } from '../../services/moonraker';
+import { resolveNativeMaterialProfiles } from '../../services/filamentProfiles';
 
 const MW_DESIGN_RE = /(?:https?:\/\/)?(?:www\.)?makerworld\.com\/(?:\w+\/)?models\/(\d+)/i;
 // The specific print profile/instance the user is viewing, e.g.
@@ -148,10 +149,11 @@ export default function SliceLabScreen() {
     () => resolveFilamentSlots(
       status,
       settings.filamentSlotColors,
+      settings.filamentSlotBrands,
       settings.filamentSlotMaterials,
       toolLoad,
     ),
-    [status, settings.filamentSlotColors, settings.filamentSlotMaterials, toolLoad],
+    [status, settings.filamentSlotColors, settings.filamentSlotBrands, settings.filamentSlotMaterials, toolLoad],
   );
   const effectiveFilamentSlotColors = useMemo(
     () => filamentSlots.map((slot) => slot.color),
@@ -514,6 +516,10 @@ export default function SliceLabScreen() {
       ? `${download.result.fileName} — ${selectedPlate.name}`
       : download.result.fileName;
     try {
+      const materialProfiles = await resolveNativeMaterialProfiles(
+        connection === 'connected' ? activeUrl : null,
+        filamentSlots,
+      );
       await openNativeModelPreview(
         path,
         title,
@@ -523,11 +529,12 @@ export default function SliceLabScreen() {
         toolLoad.selectedTool,
         toolLoad.nativeLoadedToolMask,
         Boolean(selectedPlate),
+        materialProfiles,
       );
     } catch (error) {
       Alert.alert('Prepare & Slice', error instanceof Error ? error.message : String(error));
     }
-  }, [activeUrl, connection, download, effectiveFilamentSlotColors, toolLoad, plates, selectedPlate]);
+  }, [activeUrl, connection, download, effectiveFilamentSlotColors, filamentSlots, toolLoad, plates, selectedPlate]);
 
   const updateFilamentSlots = useCallback(
     async (next: string[]) => {
@@ -538,8 +545,27 @@ export default function SliceLabScreen() {
       } catch {
         // Native module unavailable on non-Android — settings still saved.
       }
+      if (activeUrl) {
+        try {
+          await Promise.all(normalized.map((color, channel) => api.setFilamentSlot(
+            activeUrl,
+            channel,
+            {
+              VENDOR: status.filament_detect?.info?.[channel]?.VENDOR && status.filament_detect.info[channel].VENDOR !== 'NONE'
+                ? status.filament_detect.info[channel].VENDOR
+                : status.print_task_config?.filament_vendor?.[channel] || 'Generic',
+              MAIN_TYPE: status.print_task_config?.filament_type?.[channel] || settings.filamentSlotMaterials[channel] || 'PLA',
+              SUB_TYPE: status.filament_detect?.info?.[channel]?.SUB_TYPE || 'Basic',
+              RGB_1: parseInt(color.replace('#', '').slice(0, 6), 16),
+              ALPHA: 255,
+            },
+          )));
+        } catch (error) {
+          Alert.alert('Printer update unavailable', error instanceof Error ? error.message : 'Helix saved the value locally.');
+        }
+      }
     },
-    [updateSettings],
+    [activeUrl, settings.filamentSlotMaterials, status, updateSettings],
   );
 
   const updateFilamentMaterials = useCallback(
@@ -549,8 +575,51 @@ export default function SliceLabScreen() {
         return value || settings.filamentSlotMaterials[i] || 'PLA';
       });
       await updateSettings({ filamentSlotMaterials: normalized });
+      if (activeUrl) {
+        try {
+          await Promise.all(normalized.map((material, channel) => api.setFilamentSlot(
+            activeUrl,
+            channel,
+            {
+              VENDOR: status.filament_detect?.info?.[channel]?.VENDOR && status.filament_detect.info[channel].VENDOR !== 'NONE'
+                ? status.filament_detect.info[channel].VENDOR
+                : status.print_task_config?.filament_vendor?.[channel] || 'Generic',
+              MAIN_TYPE: material,
+              SUB_TYPE: status.filament_detect?.info?.[channel]?.SUB_TYPE || 'Basic',
+              RGB_1: parseInt(normalizeFilamentSlotColors(settings.filamentSlotColors)[channel].replace('#', '').slice(0, 6), 16),
+              ALPHA: 255,
+            },
+          )));
+        } catch (error) {
+          Alert.alert('Printer update unavailable', error instanceof Error ? error.message : 'Helix saved the value locally.');
+        }
+      }
     },
-    [settings.filamentSlotMaterials, updateSettings],
+    [activeUrl, settings.filamentSlotColors, settings.filamentSlotMaterials, status, updateSettings],
+  );
+
+  const updateFilamentBrands = useCallback(
+    async (next: string[]) => {
+      await updateSettings({ filamentSlotBrands: next });
+      if (activeUrl) {
+        try {
+          await Promise.all(next.map((brand, channel) => api.setFilamentSlot(
+            activeUrl,
+            channel,
+            {
+              VENDOR: brand || 'Generic',
+              MAIN_TYPE: status.print_task_config?.filament_type?.[channel] || settings.filamentSlotMaterials[channel] || 'PLA',
+              SUB_TYPE: status.filament_detect?.info?.[channel]?.SUB_TYPE || 'Basic',
+              RGB_1: parseInt(normalizeFilamentSlotColors(settings.filamentSlotColors)[channel].replace('#', '').slice(0, 6), 16),
+              ALPHA: 255,
+            },
+          )));
+        } catch (error) {
+          Alert.alert('Printer update unavailable', error instanceof Error ? error.message : 'Helix saved the value locally.');
+        }
+      }
+    },
+    [activeUrl, settings.filamentSlotColors, settings.filamentSlotMaterials, status, updateSettings],
   );
 
   const openToolpathPreview = useCallback(async () => {
@@ -714,6 +783,10 @@ export default function SliceLabScreen() {
     ? slice.result.usedToolMask ?? (1 << slicedInitialTool)
     : 1 << slicedInitialTool;
   const missingPrintTools = sliced ? missingLoadedTools(toolLoad, slicedRequiredToolMask) : null;
+  const printDialogSlots = useMemo(
+    () => filamentSlots.filter((slot) => (slicedRequiredToolMask & (1 << slot.index)) !== 0),
+    [filamentSlots, slicedRequiredToolMask],
+  );
 
   // Pull the render thumbnail baked into the sliced gcode (shows in the card
   // immediately, before any upload — same preview the home card uses).
@@ -748,9 +821,11 @@ export default function SliceLabScreen() {
         <Text style={styles.mutedText}>T0-T3 filament colors and materials.</Text>
         <FilamentSlotsEditor
           slotColors={settings.filamentSlotColors}
+          slotBrands={settings.filamentSlotBrands}
           slotMaterials={settings.filamentSlotMaterials}
           slots={filamentSlots}
           onChange={updateFilamentSlots}
+          onBrandsChange={updateFilamentBrands}
           onMaterialsChange={updateFilamentMaterials}
         />
         <Text style={styles.mutedText}>
@@ -940,7 +1015,7 @@ export default function SliceLabScreen() {
       printers={settings.printers.map((p) => ({ id: p.id, name: p.name }))}
       activePrinterId={settings.activePrinterId}
       onSelectPrinter={selectPrinter}
-      slots={filamentSlots}
+      slots={printDialogSlots}
       perToolGrams={perToolGrams}
       prefs={printPrefs}
       onTogglePref={(pref) => setPrintPrefs((prev) => ({ ...prev, [pref]: !prev[pref] }))}
@@ -1122,6 +1197,7 @@ function resolveToolLoad(
 function resolveFilamentSlots(
   status: Record<string, any>,
   manualColors: string[],
+  manualBrands: string[],
   manualMaterials: string[],
   toolLoad: ToolLoadInfo,
 ): FilamentSlotDisplay[] {
@@ -1133,7 +1209,9 @@ function resolveFilamentSlots(
       ? rgbaStringToHex(Array.isArray(ptc.filament_color_rgba) ? ptc.filament_color_rgba[index] : null)
       : null;
     const printerMaterial = loadStatus !== 'empty' ? materialLabelFromPrintTask(ptc, index) : '';
+    const printerBrand = loadStatus !== 'empty' ? arrayString(ptc.filament_vendor, index) : '';
     const fallbackColor = normalizeFilamentSlotColors(manualColors)[index];
+    const fallbackBrand = manualBrands[index] || 'Generic';
     const fallbackMaterial = manualMaterials[index] || 'PLA';
     const genericBlack = printerColor === '#000000' && !printerMaterial;
     const hasPrinterMetadata = !genericBlack && Boolean(printerColor || printerMaterial);
@@ -1142,6 +1220,7 @@ function resolveFilamentSlots(
       index,
       status: loadStatus,
       color: loadStatus === 'empty' ? '#30343A' : (hasPrinterMetadata ? printerColor : null) ?? fallbackColor,
+      brand: printerBrand && printerBrand !== 'NONE' ? printerBrand : fallbackBrand,
       material: loadStatus === 'empty' ? 'Empty' : printerMaterial || fallbackMaterial,
       source: hasPrinterMetadata ? 'printer' : 'manual',
     };
@@ -1156,11 +1235,10 @@ function rgbaStringToHex(raw: unknown): string | null {
 }
 
 function materialLabelFromPrintTask(ptc: Record<string, any>, index: number): string {
-  const vendor = arrayString(ptc.filament_vendor, index);
   const type = arrayString(ptc.filament_type, index);
   const subType = arrayString(ptc.filament_sub_type, index);
   if (!type || type === 'NONE') return '';
-  return [vendor && vendor !== 'NONE' ? vendor : '', type, subType && subType !== 'NONE' ? subType : '']
+  return [type, subType && subType !== 'NONE' ? subType : '']
     .filter(Boolean)
     .join(' ');
 }

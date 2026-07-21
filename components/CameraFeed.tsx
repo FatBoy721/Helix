@@ -21,6 +21,7 @@ interface Props {
   lightOn?: boolean;
   onToggleLight?: () => void;
   stats?: CameraStat[]; // print timing overlay, toggled via the chart button
+  showControls?: boolean;
   // hero framing: let the parent own the border/rounding (e.g. full-bleed)
   chromeless?: boolean;
   radius?: number;
@@ -155,6 +156,7 @@ export default function CameraFeed({
   lightOn,
   onToggleLight,
   stats,
+  showControls = true,
   chromeless,
   radius,
 }: Props) {
@@ -351,7 +353,7 @@ export default function CameraFeed({
       <View style={[styles.card, { height }, ...frame]}>
         {!fullscreen && feed}
         {!fullscreen && statsPanel}
-        {!fullscreen && controls}
+        {!fullscreen && showControls && controls}
       </View>
 
       <Modal

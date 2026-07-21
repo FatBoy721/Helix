@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   ActivityIndicator,
   Image,
@@ -16,7 +16,7 @@ import { colors, radius, spacing, withAlpha } from '../constants/theme';
 
 export type PrintPref = 'flowCal' | 'timelapse' | 'autoLevel';
 
-type PrinterOption = { id: string; name: string };
+type PrinterOption = { id: string; name: string; status?: string; busy?: boolean; selectable?: boolean };
 
 type Props = {
   visible: boolean;
@@ -29,6 +29,10 @@ type Props = {
   activePrinterId: string;
   onSelectPrinter: (id: string) => void;
   slots: FilamentSlotDisplay[];
+  availableSlots?: FilamentSlotDisplay[];
+  assignments?: Record<number, number>;
+  onAssignSlot?: (fileTool: number, loadedSlot: number) => void;
+  requiredColors?: Record<number, string>;
   perToolGrams: number[];
   prefs: Record<PrintPref, boolean>;
   onTogglePref: (pref: PrintPref) => void;
@@ -36,6 +40,7 @@ type Props = {
   progress: number;
   errorMessage?: string | null;
   onSend: (prefs: Readonly<Record<PrintPref, boolean>>) => void;
+  sendLabel?: string;
 };
 
 const PREF_LABELS: { key: PrintPref; label: string }[] = [
@@ -55,6 +60,10 @@ export default function PrintPreprocessDialog({
   activePrinterId,
   onSelectPrinter,
   slots,
+  availableSlots = [],
+  assignments = {},
+  onAssignSlot,
+  requiredColors,
   perToolGrams,
   prefs,
   onTogglePref,
@@ -62,7 +71,11 @@ export default function PrintPreprocessDialog({
   progress,
   errorMessage,
   onSend,
+  sendLabel = 'Print',
 }: Props) {
+  const [pickerTool, setPickerTool] = useState<number | null>(null);
+  const [printerPickerOpen, setPrinterPickerOpen] = useState(false);
+  const selectedPrinter = printers.find((printer) => printer.id === activePrinterId) ?? printers[0];
   const pct = Math.round(Math.max(0, Math.min(1, progress)) * 100);
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
@@ -97,22 +110,20 @@ export default function PrintPreprocessDialog({
 
             {/* Select Printer */}
             <Section title="Select Printer">
-              {printers.map((p) => {
-                const active = p.id === activePrinterId;
-                return (
-                  <Pressable
-                    key={p.id}
-                    style={[styles.printerRow, active && styles.printerRowActive]}
-                    onPress={() => onSelectPrinter(p.id)}
-                  >
-                    <MaterialCommunityIcons name="printer-3d" size={20} color={active ? colors.primary : colors.subtext} />
-                    <Text style={[styles.printerName, active && { color: colors.primary }]} numberOfLines={1}>
-                      {p.name}
+              {selectedPrinter ? (
+                <Pressable style={styles.printerRow} onPress={() => setPrinterPickerOpen(true)}>
+                  <MaterialCommunityIcons name="printer-3d" size={20} color={colors.primary} />
+                  <View style={styles.printerBody}>
+                    <Text style={[styles.printerName, { color: colors.primary }]} numberOfLines={1}>{selectedPrinter.name}</Text>
+                    <Text style={[styles.printerStatus, selectedPrinter.busy && styles.printerBusy]}>
+                      {selectedPrinter.status ?? 'Checking…'}
                     </Text>
-                    {active ? <MaterialCommunityIcons name="check" size={18} color={colors.primary} /> : null}
-                  </Pressable>
-                );
-              })}
+                  </View>
+                  <MaterialCommunityIcons name="chevron-down" size={20} color={colors.subtext} />
+                </Pressable>
+              ) : (
+                <Text style={styles.printerStatus}>No saved printers</Text>
+              )}
             </Section>
 
             {/* Edit Filament — from the live loaded-filament wiring + per-tool grams */}
@@ -121,22 +132,35 @@ export default function PrintPreprocessDialog({
                 {slots.map((slot) => {
                   const grams = perToolGrams[slot.index];
                   const empty = slot.status === 'empty';
+                  const displayColor = requiredColors?.[slot.index] ?? slot.color;
+                  const assignedIndex = assignments[slot.index] ?? slot.index;
+                  const assignedSlot = availableSlots.find((candidate) => candidate.index === assignedIndex);
                   return (
-                    <View key={slot.index} style={[styles.filCard, empty && styles.filCardEmpty]}>
-                      <View style={[styles.filTop, { backgroundColor: slot.color }]}>
-                        <Text style={[styles.filMat, { color: readableOn(slot.color) }]} numberOfLines={1}>
+                    <Pressable
+                      key={slot.index}
+                      style={[styles.filCard, empty && styles.filCardEmpty]}
+                      onPress={() => onAssignSlot && availableSlots.length > 0 && setPickerTool(slot.index)}
+                      disabled={!onAssignSlot || availableSlots.length === 0}
+                    >
+                      <View style={[styles.filTop, { backgroundColor: displayColor }]}>
+                        <Text style={[styles.filMat, { color: readableOn(displayColor) }]} numberOfLines={1}>
                           {slot.material || 'PLA'}
                         </Text>
-                        <Text style={[styles.filGrams, { color: readableOn(slot.color) }]}>
+                        <Text style={[styles.filGrams, { color: readableOn(displayColor) }]}>
                           {typeof grams === 'number' && grams > 0 ? `${grams.toFixed(2)}g` : '—'}
                         </Text>
                       </View>
                       <View style={styles.filBadgeWrap}>
-                        <View style={[styles.filBadge, { borderColor: slot.color }]}>
-                          <Text style={styles.filBadgeText}>{slot.index + 1}</Text>
+                        <View style={[styles.filBadge, { borderColor: assignedSlot?.color ?? slot.color }]}>
+                          <Text style={styles.filBadgeText}>T{assignedIndex}</Text>
                         </View>
+                        {assignedSlot ? (
+                          <Text style={styles.filStatus} numberOfLines={1}>
+                            {assignedSlot.status === 'loaded' ? 'Loaded' : assignedSlot.status === 'empty' ? 'Empty' : 'Unknown'}
+                          </Text>
+                        ) : null}
                       </View>
-                    </View>
+                    </Pressable>
                   );
                 })}
               </ScrollView>
@@ -176,10 +200,83 @@ export default function PrintPreprocessDialog({
               ) : (
                 <MaterialCommunityIcons name="printer-3d" size={18} color="#fff" />
               )}
-              <Text style={styles.sendText}>{sending ? 'Sending…' : 'Print'}</Text>
+              <Text style={styles.sendText}>{sending ? 'Sending…' : sendLabel}</Text>
             </Pressable>
           </View>
         </View>
+        <Modal visible={pickerTool != null} transparent animationType="fade" onRequestClose={() => setPickerTool(null)}>
+          <View style={styles.pickerLayer}>
+            <Pressable style={StyleSheet.absoluteFill} onPress={() => setPickerTool(null)} />
+            <View style={styles.pickerSheet}>
+              <View style={styles.pickerHeader}>
+                <Text style={styles.pickerTitle}>Select Tool Head</Text>
+                <Pressable onPress={() => setPickerTool(null)} hitSlop={8}>
+                  <MaterialCommunityIcons name="close" size={20} color={colors.subtext} />
+                </Pressable>
+              </View>
+              {availableSlots.map((candidate) => {
+                const active = pickerTool != null && assignments[pickerTool] === candidate.index;
+                const status = candidate.status === 'loaded' ? 'Loaded' : candidate.status === 'empty' ? 'Empty' : 'Unknown';
+                return (
+                  <Pressable
+                    key={candidate.index}
+                    style={[styles.pickerRow, active && styles.pickerRowActive]}
+                    onPress={() => {
+                      if (pickerTool != null) onAssignSlot?.(pickerTool, candidate.index);
+                      setPickerTool(null);
+                    }}
+                  >
+                    <View style={[styles.pickerDot, { backgroundColor: candidate.color }]} />
+                    <View style={styles.pickerBody}>
+                      <Text style={styles.pickerTool}>T{candidate.index}</Text>
+                      <Text style={styles.pickerFilament} numberOfLines={1}>
+                        {[candidate.brand || 'Generic', candidate.material || 'PLA'].filter(Boolean).join(' ')}
+                      </Text>
+                      <Text style={styles.pickerStatus}>{status}</Text>
+                    </View>
+                    {active ? <MaterialCommunityIcons name="check" size={18} color={colors.primary} /> : null}
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
+        </Modal>
+        <Modal visible={printerPickerOpen} transparent animationType="fade" onRequestClose={() => setPrinterPickerOpen(false)}>
+          <View style={styles.pickerLayer}>
+            <Pressable style={StyleSheet.absoluteFill} onPress={() => setPrinterPickerOpen(false)} />
+            <View style={styles.pickerSheet}>
+              <View style={styles.pickerHeader}>
+                <Text style={styles.pickerTitle}>Select Printer</Text>
+                <Pressable onPress={() => setPrinterPickerOpen(false)} hitSlop={8}>
+                  <MaterialCommunityIcons name="close" size={20} color={colors.subtext} />
+                </Pressable>
+              </View>
+              {printers.map((printer) => {
+                const active = printer.id === activePrinterId;
+                return (
+                  <Pressable
+                    key={printer.id}
+                    style={[styles.pickerRow, active && styles.pickerRowActive]}
+                    disabled={printer.busy || printer.selectable === false}
+                    onPress={() => {
+                      onSelectPrinter(printer.id);
+                      setPrinterPickerOpen(false);
+                    }}
+                  >
+                    <MaterialCommunityIcons name="printer-3d" size={20} color={active ? colors.primary : colors.subtext} />
+                    <View style={styles.pickerBody}>
+                      <Text style={styles.pickerTool}>{printer.name}</Text>
+                      <Text style={[styles.pickerStatus, printer.busy && styles.printerBusy]}>
+                        {printer.status ?? 'Checking…'}
+                      </Text>
+                    </View>
+                    {active ? <MaterialCommunityIcons name="check" size={18} color={colors.primary} /> : null}
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
+        </Modal>
       </View>
     </Modal>
   );
@@ -276,6 +373,9 @@ const styles = StyleSheet.create({
     borderColor: withAlpha(colors.primary, 0.4),
   },
   printerName: { flex: 1, minWidth: 0, color: colors.text, fontSize: 14, fontWeight: '700' },
+  printerBody: { flex: 1, minWidth: 0 },
+  printerStatus: { color: colors.subtext, fontSize: 11, marginTop: 2 },
+  printerBusy: { color: '#F5B45A' },
   filRow: { gap: spacing.sm, paddingVertical: 2 },
   filCard: {
     width: 92,
@@ -299,6 +399,51 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   filBadgeText: { color: colors.text, fontSize: 13, fontWeight: '900' },
+  filStatus: { color: colors.subtext, fontSize: 10, marginTop: 2 },
+  pickerLayer: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    paddingHorizontal: spacing.lg,
+  },
+  pickerSheet: {
+    alignSelf: 'center',
+    width: '100%',
+    maxWidth: 280,
+    backgroundColor: colors.card,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.sm,
+  },
+  pickerHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+    marginBottom: spacing.xs,
+  },
+  pickerTitle: { color: colors.text, fontSize: 15, fontWeight: '700' },
+  pickerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: radius.sm,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.sm,
+  },
+  pickerRowActive: { backgroundColor: withAlpha(colors.primary, 0.14) },
+  pickerDot: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
+  },
+  pickerBody: { flex: 1, marginLeft: spacing.sm },
+  pickerTool: { color: colors.text, fontSize: 13, fontWeight: '700' },
+  pickerFilament: { color: colors.text, fontSize: 12, marginTop: 1 },
+  pickerStatus: { color: colors.subtext, fontSize: 11, marginTop: 2 },
   prefRow: {
     flexDirection: 'row',
     alignItems: 'center',

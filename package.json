@@ -28,6 +28,7 @@
     "expo-notifications": "~0.32.17",
     "expo-router": "~6.0.24",
     "expo-screen-orientation": "~9.0.9",
+    "expo-secure-store": "~14.2.4",
     "expo-sharing": "~14.0.8",
     "expo-status-bar": "~3.0.9",
     "react": "19.1.0",
