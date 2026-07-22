@@ -432,14 +432,12 @@ export default function Dashboard() {
     }
     if (activeBaseUrl) {
       try {
-        await Promise.all(normalized.map((color, channel) => api.setFilamentSlot(
+        await Promise.all(normalized.map((color, channel) => api.setMultiAceSlotOverride(
           activeBaseUrl,
           channel,
           {
-            VENDOR: status.filament_detect?.info?.[channel]?.VENDOR && status.filament_detect.info[channel].VENDOR !== 'NONE'
-              ? status.filament_detect.info[channel].VENDOR
-              : status.print_task_config?.filament_vendor?.[channel] || 'Generic',
-            MAIN_TYPE: status.print_task_config?.filament_type?.[channel] || settings.filamentSlotMaterials[channel] || 'PLA',
+            VENDOR: settings.filamentSlotBrands[channel] || 'Generic',
+            MAIN_TYPE: settings.filamentSlotMaterials[channel] || 'PLA',
             SUB_TYPE: status.filament_detect?.info?.[channel]?.SUB_TYPE || 'Basic',
             RGB_1: parseInt(color.replace('#', '').slice(0, 6), 16),
             ALPHA: 255,
@@ -449,19 +447,17 @@ export default function Dashboard() {
         Alert.alert('Printer update unavailable', error instanceof Error ? error.message : 'Helix saved the value locally.');
       }
     }
-  }, [activeBaseUrl, settings.filamentSlotMaterials, status, update]);
+  }, [activeBaseUrl, settings.filamentSlotBrands, settings.filamentSlotMaterials, status, update]);
 
   const updateFilamentMaterials = useCallback(async (next: string[]) => {
     await update({ filamentSlotMaterials: next });
     if (activeBaseUrl) {
       try {
-        await Promise.all(next.map((material, channel) => api.setFilamentSlot(
+        await Promise.all(next.map((material, channel) => api.setMultiAceSlotOverride(
           activeBaseUrl,
           channel,
           {
-            VENDOR: status.filament_detect?.info?.[channel]?.VENDOR && status.filament_detect.info[channel].VENDOR !== 'NONE'
-              ? status.filament_detect.info[channel].VENDOR
-              : status.print_task_config?.filament_vendor?.[channel] || 'Generic',
+            VENDOR: settings.filamentSlotBrands[channel] || 'Generic',
             MAIN_TYPE: material || 'PLA',
             SUB_TYPE: status.filament_detect?.info?.[channel]?.SUB_TYPE || 'Basic',
             RGB_1: parseInt(normalizeFilamentSlotColors(settings.filamentSlotColors)[channel].replace('#', '').slice(0, 6), 16),
@@ -472,18 +468,19 @@ export default function Dashboard() {
         Alert.alert('Printer update unavailable', error instanceof Error ? error.message : 'Helix saved the value locally.');
       }
     }
-  }, [activeBaseUrl, settings.filamentSlotColors, status, update]);
+  }, [activeBaseUrl, settings.filamentSlotBrands, settings.filamentSlotColors, status, update]);
 
-  const updateFilamentBrands = useCallback(async (next: string[]) => {
+  const updateFilamentBrands = useCallback(async (next: string[], changedIndex?: number) => {
     await update({ filamentSlotBrands: next });
     if (activeBaseUrl) {
       try {
-        await Promise.all(next.map((brand, channel) => api.setFilamentSlot(
+        const channels = changedIndex == null ? next.map((_, index) => index) : [changedIndex];
+        await Promise.all(channels.map((channel) => api.setMultiAceSlotOverride(
           activeBaseUrl,
           channel,
           {
-            VENDOR: brand || 'Generic',
-            MAIN_TYPE: status.print_task_config?.filament_type?.[channel] || settings.filamentSlotMaterials[channel] || 'PLA',
+            VENDOR: next[channel] || 'Generic',
+            MAIN_TYPE: settings.filamentSlotMaterials[channel] || 'PLA',
             SUB_TYPE: status.filament_detect?.info?.[channel]?.SUB_TYPE || 'Basic',
             RGB_1: parseInt(normalizeFilamentSlotColors(settings.filamentSlotColors)[channel].replace('#', '').slice(0, 6), 16),
             ALPHA: 255,
@@ -493,7 +490,7 @@ export default function Dashboard() {
         Alert.alert('Printer update unavailable', error instanceof Error ? error.message : 'Helix saved the value locally.');
       }
     }
-  }, [activeBaseUrl, settings.filamentSlotColors, settings.filamentSlotMaterials, status, update]);
+  }, [activeBaseUrl, settings.filamentSlotBrands, settings.filamentSlotColors, settings.filamentSlotMaterials, status, update]);
 
   const printerName = activePrinter?.name?.trim() || t('Printer');
   const connectionHost = shortUrl(activeUrl || selectedPrinterUrl);

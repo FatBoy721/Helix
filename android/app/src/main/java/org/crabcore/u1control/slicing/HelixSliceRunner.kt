@@ -35,6 +35,8 @@ object HelixSliceRunner {
     val material: String,
     val brand: String,
     val nozzleTemp: Int,
+    val maxVolumetricSpeed: Float,
+    val pressureAdvance: Float,
   )
 
   fun parseMaterialProfiles(json: String?): List<MaterialProfile> {
@@ -47,6 +49,8 @@ object HelixSliceRunner {
           material = item.optString("material", "PLA"),
           brand = item.optString("brand", "Generic"),
           nozzleTemp = item.optInt("nozzleTemp", 220).coerceIn(160, 300),
+          maxVolumetricSpeed = item.optDouble("maxVolumetricSpeed", 12.0).toFloat().coerceIn(1f, 30f),
+          pressureAdvance = item.optDouble("pressureAdvance", 0.0).toFloat().coerceIn(0f, 1f),
         )
       }
     }.getOrDefault(emptyList())
@@ -214,6 +218,8 @@ object HelixSliceRunner {
     filamentTypes = Array(4) { index -> normalized[index].material }
     extruderTemps = IntArray(4) { index -> normalized[index].nozzleTemp }
     nozzleTemp = normalized[selectedTool].nozzleTemp
+    filamentMaxVolumetricSpeeds = FloatArray(4) { index -> normalized[index].maxVolumetricSpeed }
+    filamentPressureAdvances = FloatArray(4) { index -> normalized[index].pressureAdvance }
   }
 
   /** Size the config for [count] filaments (U1 has 4 ACE slots) so the engine keeps

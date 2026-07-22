@@ -11,6 +11,7 @@ import { restartMoonraker, uploadConfigFile } from './moonraker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const FCM_TOKEN_KEY = 'helix.fcm.device-token.v1';
+const FCM_CONFIGURED_TOKEN_KEY = 'helix.fcm.configured-registration.v3';
 const HELIX_RELAY_URL = 'https://us-east1-helix-edba4.cloudfunctions.net/relay';
 
 type HelixSlicerNotificationsModule = {
@@ -176,6 +177,7 @@ export async function sendFcmTestNotification(): Promise<boolean> {
 export async function clearStoredFcmDeviceToken(): Promise<void> {
   try {
     await SecureStore.deleteItemAsync(FCM_TOKEN_KEY);
+    await SecureStore.deleteItemAsync(FCM_CONFIGURED_TOKEN_KEY);
   } catch {
     // Secure storage may be unavailable on web or an unconfigured native build.
   }
@@ -184,7 +186,8 @@ export async function clearStoredFcmDeviceToken(): Promise<void> {
 /** Registers this phone and installs Helix's notifier into PAXX's include directory. */
 export async function configureFcmForPrinter(
   printerBaseUrl: string,
-  printerId: string
+  printerId: string,
+  options?: { sendTest?: boolean }
 ): Promise<boolean> {
   const token = await registerFcmDeviceToken();
   if (!token || !printerBaseUrl || !printerId) return false;
@@ -202,10 +205,10 @@ export async function configureFcmForPrinter(
   }
 
   const notifier = [
-    ['complete', 'Print complete', '{event_args[1].filename} finished'],
-    ['error', 'Print failed', '{event_args[1].message}'],
-    ['cancelled', 'Print cancelled', '{event_args[1].filename}'],
-    ['paused', 'Print paused', '{event_args[1].filename}'],
+    ['complete', 'Print complete', 'Print complete'],
+    ['error', 'Print failed', 'Print failed'],
+    ['cancelled', 'Print cancelled', 'Print cancelled'],
+    ['paused', 'Print paused', 'Print paused'],
   ].map(([event, title, body]) => [
     `[notifier helix_${event}]`,
     `url: ${payload.webhookUrl}?event=${event}`,
@@ -223,6 +226,12 @@ export async function configureFcmForPrinter(
       `# Managed by Helix. Do not edit manually.\n${notifier}`
     );
     await restartMoonraker(printerBaseUrl);
+    const registrationMarker = `${printerId}:${token}`;
+    if (options?.sendTest === false) {
+      await SecureStore.setItemAsync(FCM_CONFIGURED_TOKEN_KEY, registrationMarker);
+      return true;
+    }
+
     const test = await fetch(`${payload.webhookUrl}?event=complete`, {
       method: 'POST',
       headers: {
@@ -230,9 +239,20 @@ export async function configureFcmForPrinter(
         'X-Message': 'Firebase push notifications are working.',
       },
     });
+    if (test.ok) {
+      await SecureStore.setItemAsync(FCM_CONFIGURED_TOKEN_KEY, registrationMarker);
+    }
     return test.ok;
   } catch {
     return false;
+  }
+}
+
+export async function getConfiguredFcmDeviceToken(): Promise<string | null> {
+  try {
+    return await SecureStore.getItemAsync(FCM_CONFIGURED_TOKEN_KEY);
+  } catch {
+    return null;
   }
 }
 

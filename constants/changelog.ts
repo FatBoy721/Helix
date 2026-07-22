@@ -28,6 +28,13 @@ export const FCM_ANNOUNCEMENTS_KEY = 'u1control.notifications.fcm.v1';
 /** Fallback feed baked into the app. Remote entries with the same id override these. */
 export const BAKED_NOTIFICATIONS: AppNotification[] = [
   {
+    id: '2026-07-21-release-1-2-3',
+    type: 'changelog',
+    title: 'Helix 1.2.3 is available',
+    date: '2026-07-21',
+    body: 'Firebase push notifications now refresh the active printer registration when the phone token changes. Printer completion webhooks now use firmware-safe message templates so PAXX can send alerts reliably. The notification bell keeps alerts and changelog items in separate tabs, with GitHub as a fallback. Filament selection now follows the loaded PAXX toolheads and applies matching material profiles when available, with a generic profile fallback. This release also includes printer dashboard, print setup, calibration, and layout improvements.',
+  },
+  {
     id: '2026-07-19-bell-tabs',
     type: 'changelog',
     title: 'Bell history is organized',

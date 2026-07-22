@@ -7,6 +7,7 @@ export const LANGUAGES = [
   { code: 'de', label: 'Deutsch' },
   { code: 'fr', label: 'Français' },
   { code: 'zh', label: '中文' },
+  { code: 'pl', label: 'Polski' },
 ] as const;
 
 export type LanguageCode = (typeof LANGUAGES)[number]['code'];
@@ -23,6 +24,45 @@ export function t(key: string): string {
 }
 
 const DICT: Record<string, Record<string, string>> = {
+  pl: {
+    Home: 'Strona główna', Mesh: 'Siatka', Macros: 'Makra', Console: 'Konsola', Files: 'Pliki',
+    Settings: 'Ustawienia', 'Bed Mesh': 'Siatka stołu', History: 'Historia',
+    Temperatures: 'Temperatury', Camera: 'Kamera', 'EMERGENCY STOP': 'AWARYJNE ZATRZYMANIE',
+    Pause: 'Pauza', Resume: 'Wznów', Cancel: 'Anuluj', 'Home All': 'Bazuj wszystko',
+    'Dock Toolhead': 'Odłóż głowicę', Retry: 'Spróbuj ponownie', 'Printer offline': 'Drukarka offline',
+    'Cancel print?': 'Anulować drukowanie?', 'This stops the current print.': 'To zatrzyma bieżące drukowanie.',
+    'Emergency stop?': 'Awaryjne zatrzymanie?',
+    'Halts the printer immediately. Requires a firmware restart before printing again.': 'Natychmiast zatrzymuje drukarkę. Przed ponownym drukowaniem wymagany jest restart firmware.',
+    "Don't ask again": 'Nie pytaj ponownie', 'Stop now': 'Zatrzymaj teraz',
+    'Confirm emergency stop': 'Potwierdź awaryjne zatrzymanie', No: 'Nie', Yes: 'Tak',
+    'Yes, cancel': 'Tak, anuluj', Error: 'Błąd',
+    'Print Control': 'Sterowanie drukiem', 'Tool Change': 'Zmiana narzędzia',
+    'ACE & Filament': 'ACE i filament', Calibration: 'Kalibracja', Cleaning: 'Czyszczenie',
+    'Homing & Motion': 'Bazowanie i ruch', Other: 'Inne',
+    'Send G-code…': 'Wyślij G-code…', 'Printer command…': 'Polecenie drukarki…', Send: 'Wyślij', Enter: 'Wprowadź', Clear: 'Wyczyść',
+    'Printer commands': 'Polecenia drukarki', 'Search commands…': 'Szukaj poleceń…',
+    'No matching commands': 'Brak pasujących poleceń', 'Start print?': 'Rozpocząć drukowanie?', Print: 'Drukuj',
+    'Printer busy': 'Drukarka zajęta', 'A print is already in progress.': 'Drukowanie już trwa.', 'Print started': 'Drukowanie rozpoczęte',
+    'No G-code files on printer': 'Brak plików G-code na drukarce', 'Load more': 'Załaduj więcej',
+    'Printer Stats': 'Statystyki drukarki', 'Total print jobs': 'Łączna liczba wydruków',
+    'Total time': 'Łączny czas', 'Total print time': 'Łączny czas drukowania', 'Filament used': 'Zużyty filament',
+    'No print history': 'Brak historii drukowania', Lane: 'Kanał', Unload: 'Wyładuj', Dryer: 'Suszarka', Start: 'Start', Stop: 'Stop',
+    Connection: 'Połączenie', 'Reconnect now': 'Połącz ponownie', 'ACE units': 'Jednostki ACE',
+    'Notify on': 'Powiadamiaj o', 'Print complete': 'Drukowanie zakończone', 'Print failed': 'Drukowanie nieudane',
+    'Filament runout': 'Koniec filamentu', 'Filament swap complete': 'Zmiana filamentu zakończona',
+    'Send test notification': 'Wyślij powiadomienie testowe', 'Save & Apply': 'Zapisz i zastosuj',
+    'Check for updates': 'Sprawdź aktualizacje', 'Checking for updates...': 'Sprawdzanie aktualizacji...',
+    'Up to date': 'Aktualna wersja', "What's changed": 'Co się zmieniło', 'Update available': 'Dostępna aktualizacja',
+    'Latest APK available': 'Dostępny najnowszy APK', 'Not now': 'Nie teraz', 'Download APK': 'Pobierz APK',
+    'Downloading update...': 'Pobieranie aktualizacji...', 'Update download failed': 'Pobieranie aktualizacji nie powiodło się',
+    'Open in browser': 'Otwórz w przeglądarce', OK: 'OK', 'Installed build': 'Zainstalowana wersja',
+    Saved: 'Zapisano', Theme: 'Motyw', 'Accent color': 'Kolor akcentu', Language: 'Język', About: 'Informacje',
+    'Report a bug': 'Zgłoś błąd', Controls: 'Sterowanie', Bed: 'Stół', 'Part fan': 'Wentylator części',
+    'Cavity fan': 'Wentylator komory', Purifier: 'Oczyszczacz', Set: 'Ustaw', Off: 'Wyłącz', On: 'Włącz',
+    Printers: 'Drukarki', 'Add printer': 'Dodaj drukarkę', Remove: 'Usuń', Name: 'Nazwa',
+    Progress: 'Postęp', 'Quick actions': 'Szybkie akcje', 'Emergency stop': 'Awaryjne zatrzymanie',
+    'Home & Dock': 'Bazowanie i odkładanie', 'Last print': 'Ostatni wydruk', Download: 'Pobierz',
+  },
   es: {
     'Pick from catalog': 'Elegir del catálogo', 'Search 7000+ commercial filaments…': 'Busca entre más de 7000 filamentos…',
     'Weigh the spool': 'Pesar la bobina', 'Gross weight (g)': 'Peso bruto (g)', Measure: 'Medir', Remaining: 'Restante',

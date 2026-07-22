@@ -34,7 +34,7 @@ type Props = {
   slotMaterials: string[];
   slots?: FilamentSlotDisplay[];
   onChange: (colors: string[]) => void;
-  onBrandsChange: (brands: string[]) => void;
+  onBrandsChange: (brands: string[], changedIndex?: number) => void;
   onMaterialsChange: (materials: string[]) => void;
 };
 
@@ -85,7 +85,7 @@ export default function FilamentSlotsEditor({
     if (!clean) return;
     const next = [...slotBrands];
     next[editingSlot] = clean;
-    onBrandsChange(next);
+    onBrandsChange(next, editingSlot);
     setCustomBrandDraft(clean);
   };
 

@@ -225,26 +225,6 @@ export async function restartMoonraker(base: string): Promise<void> {
 export const api = {
   serverInfo: (base: string) => request(base, '/server/info'),
 
-  setFilamentSlot: async (
-    base: string,
-    channel: number,
-    info: Record<string, unknown>,
-  ) => {
-    const result = await request<{ state?: string; message?: string }>(
-      base,
-      '/printer/filament_detect/set',
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ channel, info }),
-      },
-    );
-    if (result?.state === 'error') {
-      throw new Error(result.message || 'PAXX rejected the filament update.');
-    }
-    return result;
-  },
-
   listFiles: (base: string) => request<FileEntry[]>(base, '/server/files/list?root=gcodes'),
 
   listFilesRoot: (base: string, root: string) =>
@@ -264,6 +244,29 @@ export const api = {
 
   runGcode: (base: string, script: string) =>
     request(base, `/printer/gcode/script?script=${encodeURIComponent(script)}`, { method: 'POST' }, 60000),
+
+  setMultiAceSlotOverride: async (base: string, channel: number, info: Record<string, unknown>) => {
+    const url = new URL(base);
+    url.port = '';
+    url.pathname = '/multiace/api/slot-override';
+    url.search = '';
+    url.hash = '';
+    const payload = {
+      ace: 0,
+      slot: channel,
+      color: `#${Math.max(0, Math.min(0xffffff, Math.trunc(Number(info.RGB_1) || 0))).toString(16).padStart(6, '0').toUpperCase()}`,
+      material: info.MAIN_TYPE || 'PLA',
+      brand: info.VENDOR || 'Generic',
+      subtype: info.SUB_TYPE || 'Basic',
+    };
+    const response = await fetch(url.toString(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) throw new Error(`MultiACE returned ${response.status}`);
+    return api.runGcode(base, 'MULTIACE_REFRESH_OVERRIDES');
+  },
 
   historyList: (base: string, limit: number, start: number) =>
     request<{ count: number; jobs: HistoryJob[] }>(
