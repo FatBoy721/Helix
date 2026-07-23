@@ -132,6 +132,10 @@ object HelixSliceRunner {
         }
 
         if (result != null && result.success && result.gcodePath.isNotBlank()) {
+          val bedMesh = GcodeToolMapper.clampU1BedMeshBounds(result.gcodePath)
+          check(bedMesh.success) {
+            "Could not safely constrain the adaptive bed-mesh bounds"
+          }
           onProgress(99, "applying first-layer flow limit")
           val guard = GcodeFirstLayerGuard.apply(result.gcodePath)
           check(guard.success) {

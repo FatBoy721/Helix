@@ -52,6 +52,8 @@ export interface Settings {
   notifyPrintComplete: boolean;
   notifyPrintFailed: boolean;
   notifyPrintPaused: boolean;
+  notifyPrintCancelled: boolean;
+  notifyPrintProgress: boolean;
   notifyFilamentRunout: boolean;
   notifySwapComplete: boolean;
   notifyPrinterError: boolean;
@@ -71,7 +73,7 @@ export interface Settings {
   seenNotificationIds: string[];
 }
 
-export const STORAGE_VERSION = 9;
+export const STORAGE_VERSION = 10;
 export const LEGACY_DEFAULT_PRIMARY_URL = 'http://192.168.1.17:7125';
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -103,6 +105,8 @@ export const DEFAULT_SETTINGS: Settings = {
   notifyPrintComplete: true,
   notifyPrintFailed: true,
   notifyPrintPaused: true,
+  notifyPrintCancelled: true,
+  notifyPrintProgress: false,
   notifyFilamentRunout: true,
   notifySwapComplete: true,
   notifyPrinterError: true,
@@ -224,6 +228,14 @@ export function migrateSettings(raw: Partial<Settings>): Settings {
     ),
     notifyPrintFailed: booleanValue(parsed.notifyPrintFailed, DEFAULT_SETTINGS.notifyPrintFailed),
     notifyPrintPaused: booleanValue(parsed.notifyPrintPaused, DEFAULT_SETTINGS.notifyPrintPaused),
+    notifyPrintCancelled: booleanValue(
+      parsed.notifyPrintCancelled,
+      DEFAULT_SETTINGS.notifyPrintCancelled
+    ),
+    notifyPrintProgress: booleanValue(
+      parsed.notifyPrintProgress,
+      DEFAULT_SETTINGS.notifyPrintProgress
+    ),
     notifyFilamentRunout: booleanValue(
       parsed.notifyFilamentRunout,
       DEFAULT_SETTINGS.notifyFilamentRunout

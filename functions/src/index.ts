@@ -116,7 +116,7 @@ export const relay = onRequest(async (req, res) => {
     `Helix printer ${event}`
   );
   const message = cleanText(
-    req.headers['x-message'] || body.body || req.query?.body || req.body,
+    req.headers['x-message'] || body.message || body.body || req.query?.body || req.body,
     'Printer event received.'
   );
   console.info('Helix printer event received', { event, printerId: device.printerId });

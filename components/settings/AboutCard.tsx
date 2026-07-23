@@ -1,5 +1,6 @@
 import React, { useRef, useState } from 'react';
 import { Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import * as Application from 'expo-application';
 import Constants from 'expo-constants';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import ThemedDialog, { DialogAction } from '../ThemedDialog';
@@ -9,10 +10,13 @@ import { DownloadProgress, downloadAndOpenApk, openUrl } from '../../services/ap
 import { t } from '../../services/i18n';
 import {
   GitHubRelease,
+  LATEST_RELEASE_URL,
+  PLAY_STORE_APP_URL,
+  PLAY_STORE_WEB_URL,
   RELEASE_API_URL,
   REPO_URL,
   buildBugReportUrl,
-  isCurrentRelease,
+  isReleaseUpdateAvailable,
   normalizeBuildCommit,
   releaseCommit,
   releaseDownloadUrl,
@@ -37,6 +41,11 @@ function buildCommit(): string {
   return normalizeBuildCommit(extra?.buildCommit);
 }
 
+function githubUpdatesEnabled(): boolean {
+  const extra = Constants.expoConfig?.extra as { distribution?: string } | undefined;
+  return extra?.distribution === 'github';
+}
+
 export default function AboutCard() {
   const [checkingUpdates, setCheckingUpdates] = useState(false);
   const [downloadingUpdate, setDownloadingUpdate] = useState(false);
@@ -45,6 +54,9 @@ export default function AboutCard() {
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const lastPctRef = useRef(-1);
   const currentBuild = buildCommit();
+  const canInstallGitHubApk = githubUpdatesEnabled();
+  const installedVersion =
+    Application.nativeApplicationVersion ?? Constants.expoConfig?.version ?? '';
 
   const closeDialog = () => setDialog(null);
 
@@ -59,6 +71,10 @@ export default function AboutCard() {
 
   const installUpdate = async (downloadUrl: string, latest: string) => {
     if (downloadingUpdate) return;
+    if (!canInstallGitHubApk) {
+      await openPlayStore();
+      return;
+    }
     setDownloadingUpdate(true);
     setDownloadProgress({ written: 0, total: 0 });
     setProgressVisible(true);
@@ -98,8 +114,24 @@ export default function AboutCard() {
     }
   };
 
-  const checkForUpdates = async () => {
+  const openPlayStore = async () => {
+    closeDialog();
+    try {
+      await openUrl(PLAY_STORE_APP_URL);
+    } catch {
+      await openUrl(PLAY_STORE_WEB_URL).catch(() => {
+        messageDialog(
+          t('Update check failed'),
+          'Could not open the Play Store. Your Google account may not be enrolled in the Helix testing track.',
+          'alert-circle-outline'
+        );
+      });
+    }
+  };
+
+  const checkGitHubForUpdates = async () => {
     if (checkingUpdates || downloadingUpdate) return;
+    closeDialog();
     setCheckingUpdates(true);
     try {
       const res = await fetch(RELEASE_API_URL, {
@@ -109,39 +141,89 @@ export default function AboutCard() {
 
       const release = (await res.json()) as GitHubRelease;
       const latest = releaseCommit(release.body);
+      const latestVersion = release.tag_name?.trim() ?? '';
       const downloadUrl = releaseDownloadUrl(release);
+      const releasePageUrl = release.html_url ?? LATEST_RELEASE_URL;
+      const availability = isReleaseUpdateAvailable({
+        installedVersion,
+        releaseTag: latestVersion,
+        currentCommit: currentBuild,
+        latestCommit: latest,
+      });
 
-      if (isCurrentRelease(currentBuild, latest)) {
+      if (availability === false) {
         messageDialog(
           t('Up to date'),
-          `Helix is already on build ${latest.slice(0, 7)}.`,
+          `Helix ${installedVersion || 'installed'} is already up to date.`,
           'check-circle-outline'
         );
         return;
       }
 
-      const title = latest
-        ? `${t('Update available')}: ${latest.slice(0, 7)}`
+      if (availability === null) {
+        setDialog({
+          title: t('Could not compare versions'),
+          message:
+            `Installed: ${installedVersion || 'unknown'}\n` +
+            `Latest release: ${latestVersion || 'unknown'}\n\n` +
+            'Helix will not claim an update is newer unless it can compare both versions.',
+          notes: releaseNotes(release.body) || undefined,
+          icon: 'help-circle-outline',
+          actions: [
+            { text: t('Not now'), onPress: closeDialog },
+            {
+              text: t('Open release'),
+              icon: 'open-in-new',
+              variant: 'primary',
+              onPress: () => {
+                closeDialog();
+                openUrl(releasePageUrl).catch(() => {});
+              },
+            },
+          ],
+        });
+        return;
+      }
+
+      const title = latestVersion
+        ? `${t('Update available')}: ${latestVersion}`
+        : latest
+          ? `${t('Update available')}: ${latest.slice(0, 7)}`
         : t('Latest APK available');
-      const buildLine = currentBuild && currentBuild !== 'dev'
-        ? `${t('Installed build')}: ${currentBuild.slice(0, 7)}`
-        : t('Open the latest APK download?');
-      setDialog({
-        title,
-        message: `${buildLine}\n${t('Install over existing app to keep settings.')}`,
-        notes: releaseNotes(release.body) || undefined,
-        icon: 'download-circle-outline',
-        actions: [
-          { text: t('Not now'), onPress: closeDialog },
-          {
+      const buildLine = installedVersion
+        ? `Installed version: ${installedVersion}`
+        : currentBuild && currentBuild !== 'dev'
+          ? `${t('Installed build')}: ${currentBuild.slice(0, 7)}`
+          : t('Open the latest APK download?');
+      const updateAction: DialogAction = downloadUrl
+        ? {
             text: t('Download APK'),
             icon: 'download',
             variant: 'primary',
             onPress: () => {
               closeDialog();
-              installUpdate(downloadUrl, latest);
+              installUpdate(downloadUrl, latestVersion || latest);
             },
-          },
+          }
+        : {
+            text: t('Open release'),
+            icon: 'open-in-new',
+            variant: 'primary',
+            onPress: () => {
+              closeDialog();
+              openUrl(releasePageUrl).catch(() => {});
+            },
+          };
+      setDialog({
+        title,
+        message: downloadUrl
+          ? `${buildLine}\n${t('Install over existing app to keep settings.')}`
+          : `${buildLine}\nNo installable APK is attached to this release.`,
+        notes: releaseNotes(release.body) || undefined,
+        icon: 'download-circle-outline',
+        actions: [
+          { text: t('Not now'), onPress: closeDialog },
+          updateAction,
         ],
       });
     } catch (e: any) {
@@ -155,13 +237,41 @@ export default function AboutCard() {
     }
   };
 
+  const chooseUpdateSource = () => {
+    if (checkingUpdates || downloadingUpdate) return;
+    if (!canInstallGitHubApk) {
+      openPlayStore().catch(() => {});
+      return;
+    }
+    setDialog({
+      title: t('Check for updates'),
+      message:
+        'Choose GitHub for the direct APK, or Play Store for your enrolled testing track.',
+      icon: 'update',
+      actions: [
+        { text: t('Not now'), onPress: closeDialog },
+        {
+          text: 'GitHub APK',
+          icon: 'github',
+          onPress: checkGitHubForUpdates,
+        },
+        {
+          text: 'Play Store',
+          icon: 'google-play',
+          variant: 'primary',
+          onPress: openPlayStore,
+        },
+      ],
+    });
+  };
+
   return (
     <>
       <View style={styles.card}>
         <Text style={styles.cardTitle}>{t('About')}</Text>
         <TouchableOpacity
           style={styles.linkRow}
-          onPress={checkForUpdates}
+          onPress={chooseUpdateSource}
           disabled={checkingUpdates || downloadingUpdate}
         >
           <MaterialCommunityIcons name="update" size={20} color={colors.text} />
@@ -204,7 +314,7 @@ export default function AboutCard() {
           <MaterialCommunityIcons name="open-in-new" size={16} color={colors.subtext} />
         </TouchableOpacity>
         <Text style={styles.version}>
-          Helix v{Constants.expoConfig?.version ?? '1.0.0'}
+          Helix v{installedVersion || '1.0.0'}
           {currentBuild && currentBuild !== 'dev' ? ` (${currentBuild.slice(0, 7)})` : ''}
         </Text>
       </View>

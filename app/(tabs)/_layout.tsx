@@ -13,9 +13,11 @@ import { colors } from '../../constants/theme';
 type IconName = React.ComponentProps<typeof MaterialCommunityIcons>['name'];
 
 function tabIcon(name: IconName) {
-  return ({ color, size }: { color: string; size: number }) => (
-    <MaterialCommunityIcons name={name} color={color} size={size - 2} />
-  );
+  function TabBarIcon({ color, size }: { color: string; size: number }) {
+    return <MaterialCommunityIcons name={name} color={color} size={size - 2} />;
+  }
+
+  return TabBarIcon;
 }
 
 export default function TabLayout() {

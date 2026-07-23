@@ -549,7 +549,7 @@ export default function SliceLabScreen() {
       }
       if (activeUrl) {
         try {
-          await Promise.all(normalized.map((color, channel) => api.setMultiAceSlotOverride(
+          await Promise.all(normalized.map((color, channel) => api.setFilamentSlot(
             activeUrl,
             channel,
             {
@@ -577,7 +577,7 @@ export default function SliceLabScreen() {
       await updateSettings({ filamentSlotMaterials: normalized });
       if (activeUrl) {
         try {
-          await Promise.all(normalized.map((material, channel) => api.setMultiAceSlotOverride(
+          await Promise.all(normalized.map((material, channel) => api.setFilamentSlot(
             activeUrl,
             channel,
             {
@@ -603,7 +603,7 @@ export default function SliceLabScreen() {
       if (printerUrl) {
         try {
           const channels = changedIndex == null ? next.map((_, index) => index) : [changedIndex];
-          await Promise.all(channels.map((channel) => api.setMultiAceSlotOverride(
+          await Promise.all(channels.map((channel) => api.setFilamentSlot(
             printerUrl,
             channel,
             {

@@ -622,6 +622,16 @@ export default function SettingsScreen() {
             onChange={(v) => set({ notifyPrintPaused: v })}
           />
           <Toggle
+            label={t('Print cancelled')}
+            value={draft.notifyPrintCancelled}
+            onChange={(v) => set({ notifyPrintCancelled: v })}
+          />
+          <Toggle
+            label={t('Print progress (every 10%)')}
+            value={draft.notifyPrintProgress}
+            onChange={(v) => set({ notifyPrintProgress: v })}
+          />
+          <Toggle
             label={t('Filament runout')}
             value={draft.notifyFilamentRunout}
             onChange={(v) => set({ notifyFilamentRunout: v })}

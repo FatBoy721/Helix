@@ -10,6 +10,8 @@ export const DRAFT_SETTING_KEYS = [
   'notifyPrintComplete',
   'notifyPrintFailed',
   'notifyPrintPaused',
+  'notifyPrintCancelled',
+  'notifyPrintProgress',
   'notifyFilamentRunout',
   'notifySwapComplete',
   'notifyPrinterError',
@@ -39,6 +41,8 @@ export interface DraftManagedSettings {
   notifyPrintComplete: boolean;
   notifyPrintFailed: boolean;
   notifyPrintPaused: boolean;
+  notifyPrintCancelled: boolean;
+  notifyPrintProgress: boolean;
   notifyFilamentRunout: boolean;
   notifySwapComplete: boolean;
   notifyPrinterError: boolean;
