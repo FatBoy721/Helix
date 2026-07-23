@@ -141,6 +141,8 @@ export default function SliceLabScreen() {
   const { activeUrl, connection, status, objectList } = useMoonraker();
   const ace = useACE();
   const { settings, update: updateSettings, loaded: settingsLoaded } = useSettings();
+  const selectedPrinter = settings.printers.find((printer) => printer.id === settings.activePrinterId);
+  const selectedPrinterUrl = selectedPrinter ? printerConnectionUrl(selectedPrinter) : '';
   const toolLoad = useMemo(
     () => resolveToolLoad(status, objectList, ace.units, ace.hardwareDetected, connection),
     [status, objectList, ace.units, ace.hardwareDetected, connection],
@@ -537,7 +539,7 @@ export default function SliceLabScreen() {
   }, [activeUrl, connection, download, effectiveFilamentSlotColors, filamentSlots, toolLoad, plates, selectedPlate]);
 
   const updateFilamentSlots = useCallback(
-    async (next: string[]) => {
+    async (next: string[], changedIndex?: number) => {
       const normalized = normalizeFilamentSlotColors(next);
       await updateSettings({ filamentSlotColors: normalized });
       try {
@@ -551,10 +553,8 @@ export default function SliceLabScreen() {
             activeUrl,
             channel,
             {
-              VENDOR: status.filament_detect?.info?.[channel]?.VENDOR && status.filament_detect.info[channel].VENDOR !== 'NONE'
-                ? status.filament_detect.info[channel].VENDOR
-                : status.print_task_config?.filament_vendor?.[channel] || 'Generic',
-              MAIN_TYPE: status.print_task_config?.filament_type?.[channel] || settings.filamentSlotMaterials[channel] || 'PLA',
+              VENDOR: settings.filamentSlotBrands[channel] || 'Generic',
+              MAIN_TYPE: settings.filamentSlotMaterials[channel] || 'PLA',
               SUB_TYPE: status.filament_detect?.info?.[channel]?.SUB_TYPE || 'Basic',
               RGB_1: parseInt(color.replace('#', '').slice(0, 6), 16),
               ALPHA: 255,
@@ -565,11 +565,11 @@ export default function SliceLabScreen() {
         }
       }
     },
-    [activeUrl, settings.filamentSlotMaterials, status, updateSettings],
+    [activeUrl, settings.filamentSlotBrands, settings.filamentSlotMaterials, status, updateSettings],
   );
 
   const updateFilamentMaterials = useCallback(
-    async (next: string[]) => {
+    async (next: string[], changedIndex?: number) => {
       const normalized = Array.from({ length: 4 }, (_, i) => {
         const value = next[i]?.trim().toUpperCase();
         return value || settings.filamentSlotMaterials[i] || 'PLA';
@@ -581,9 +581,7 @@ export default function SliceLabScreen() {
             activeUrl,
             channel,
             {
-              VENDOR: status.filament_detect?.info?.[channel]?.VENDOR && status.filament_detect.info[channel].VENDOR !== 'NONE'
-                ? status.filament_detect.info[channel].VENDOR
-                : status.print_task_config?.filament_vendor?.[channel] || 'Generic',
+              VENDOR: settings.filamentSlotBrands[channel] || 'Generic',
               MAIN_TYPE: material,
               SUB_TYPE: status.filament_detect?.info?.[channel]?.SUB_TYPE || 'Basic',
               RGB_1: parseInt(normalizeFilamentSlotColors(settings.filamentSlotColors)[channel].replace('#', '').slice(0, 6), 16),
@@ -595,20 +593,22 @@ export default function SliceLabScreen() {
         }
       }
     },
-    [activeUrl, settings.filamentSlotColors, settings.filamentSlotMaterials, status, updateSettings],
+    [activeUrl, settings.filamentSlotBrands, settings.filamentSlotColors, settings.filamentSlotMaterials, status, updateSettings],
   );
 
   const updateFilamentBrands = useCallback(
-    async (next: string[]) => {
+    async (next: string[], changedIndex?: number) => {
       await updateSettings({ filamentSlotBrands: next });
-      if (activeUrl) {
+      const printerUrl = activeUrl || selectedPrinterUrl;
+      if (printerUrl) {
         try {
-          await Promise.all(next.map((brand, channel) => api.setFilamentSlot(
-            activeUrl,
+          const channels = changedIndex == null ? next.map((_, index) => index) : [changedIndex];
+          await Promise.all(channels.map((channel) => api.setFilamentSlot(
+            printerUrl,
             channel,
             {
-              VENDOR: brand || 'Generic',
-              MAIN_TYPE: status.print_task_config?.filament_type?.[channel] || settings.filamentSlotMaterials[channel] || 'PLA',
+              VENDOR: next[channel] || 'Generic',
+              MAIN_TYPE: settings.filamentSlotMaterials[channel] || 'PLA',
               SUB_TYPE: status.filament_detect?.info?.[channel]?.SUB_TYPE || 'Basic',
               RGB_1: parseInt(normalizeFilamentSlotColors(settings.filamentSlotColors)[channel].replace('#', '').slice(0, 6), 16),
               ALPHA: 255,
@@ -619,7 +619,7 @@ export default function SliceLabScreen() {
         }
       }
     },
-    [activeUrl, settings.filamentSlotColors, settings.filamentSlotMaterials, status, updateSettings],
+    [activeUrl, selectedPrinterUrl, settings.filamentSlotBrands, settings.filamentSlotColors, settings.filamentSlotMaterials, status, updateSettings],
   );
 
   const openToolpathPreview = useCallback(async () => {
@@ -1220,7 +1220,9 @@ function resolveFilamentSlots(
       index,
       status: loadStatus,
       color: loadStatus === 'empty' ? '#30343A' : (hasPrinterMetadata ? printerColor : null) ?? fallbackColor,
-      brand: printerBrand && printerBrand !== 'NONE' ? printerBrand : fallbackBrand,
+      brand: printerBrand && printerBrand !== 'NONE' && printerBrand !== 'GENERIC'
+        ? printerBrand
+        : fallbackBrand,
       material: loadStatus === 'empty' ? 'Empty' : printerMaterial || fallbackMaterial,
       source: hasPrinterMetadata ? 'printer' : 'manual',
     };

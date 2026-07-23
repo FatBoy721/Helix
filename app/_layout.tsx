@@ -7,10 +7,13 @@ import { SettingsProvider, useSettings } from '../hooks/useSettings';
 import { MoonrakerProvider } from '../hooks/useMoonraker';
 import FirstRunSetup from '../components/FirstRunSetup';
 import {
+  configureFcmForPrinter,
+  getConfiguredFcmDeviceToken,
   initNotifications,
   registerFcmDeviceToken,
   subscribeToFcmAnnouncements,
 } from '../services/notifications';
+import { printerConnectionUrl } from '../services/moonraker';
 import { getSharedMakerWorldLink, getSharedModelFile } from '../services/nativeSlicer';
 import { setPendingModel } from '../services/pendingModel';
 import { colors } from '../constants/theme';
@@ -44,13 +47,36 @@ export default function RootLayout() {
 function AppShell() {
   const { settings, loaded } = useSettings();
   const router = useRouter();
+  const activePrinter = settings.printers.find((printer) => printer.id === settings.activePrinterId);
+  const activePrinterId = activePrinter?.id ?? '';
+  const activePrinterUrl = activePrinter ? printerConnectionUrl(activePrinter) : '';
 
   useEffect(() => {
     if (!loaded || settings.notificationMode !== 'fcm') return;
-    registerFcmDeviceToken()
-      .then((token) => (token ? subscribeToFcmAnnouncements() : false))
-      .catch(() => {});
-  }, [loaded, settings.notificationMode]);
+    let cancelled = false;
+
+    (async () => {
+      const token = await registerFcmDeviceToken();
+      if (!token || cancelled) return;
+
+      await subscribeToFcmAnnouncements();
+      if (!activePrinterUrl || !activePrinterId || cancelled) return;
+
+      const configuredRegistration = await getConfiguredFcmDeviceToken();
+      if (configuredRegistration === `${activePrinterId}:${token}` || cancelled) return;
+
+      await configureFcmForPrinter(activePrinterUrl, activePrinterId, { sendTest: false });
+    })().catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activePrinterId,
+    activePrinterUrl,
+    loaded,
+    settings.notificationMode,
+  ]);
 
   useEffect(() => {
     getSharedMakerWorldLink().then((shared) => {

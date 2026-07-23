@@ -265,6 +265,29 @@ export const api = {
   runGcode: (base: string, script: string) =>
     request(base, `/printer/gcode/script?script=${encodeURIComponent(script)}`, { method: 'POST' }, 60000),
 
+  setMultiAceSlotOverride: async (base: string, channel: number, info: Record<string, unknown>) => {
+    const url = new URL(base);
+    url.port = '';
+    url.pathname = '/multiace/api/slot-override';
+    url.search = '';
+    url.hash = '';
+    const payload = {
+      ace: 0,
+      slot: channel,
+      color: `#${Math.max(0, Math.min(0xffffff, Math.trunc(Number(info.RGB_1) || 0))).toString(16).padStart(6, '0').toUpperCase()}`,
+      material: info.MAIN_TYPE || 'PLA',
+      brand: info.VENDOR || 'Generic',
+      subtype: info.SUB_TYPE || 'Basic',
+    };
+    const response = await fetch(url.toString(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) throw new Error(`MultiACE returned ${response.status}`);
+    return api.runGcode(base, 'MULTIACE_REFRESH_OVERRIDES');
+  },
+
   historyList: (base: string, limit: number, start: number) =>
     request<{ count: number; jobs: HistoryJob[] }>(
       base,

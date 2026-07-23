@@ -1,6 +1,7 @@
 package org.crabcore.u1control.slicing
 
 import java.io.File
+import java.util.Locale
 
 /**
  * The bundled slicer core is prebuilt, so Helix cannot add new native config
@@ -9,6 +10,9 @@ import java.io.File
  */
 object GcodeToolMapper {
   data class Result(val rewritten: Boolean, val usedToolMask: Int)
+  data class BedMeshResult(val success: Boolean, val rewritten: Boolean)
+
+  private data class BedMeshLineResult(val line: String, val valid: Boolean)
 
   private val toolZeroToken = Regex("""(?<![A-Za-z0-9_])T0(?![A-Za-z0-9_])""")
   private val toolAnyToken = Regex("""(?<![A-Za-z0-9_])T([0-3])(?![A-Za-z0-9_])""")
@@ -17,6 +21,16 @@ object GcodeToolMapper {
   private val toolParamZero = Regex("""\bTOOL=0\b""", RegexOption.IGNORE_CASE)
   private val extruderAny = Regex("""\bEXTRUDER=([0-3])\b""", RegexOption.IGNORE_CASE)
   private val indexAny = Regex("""\bINDEX=([0-3])\b""", RegexOption.IGNORE_CASE)
+  private val bedMeshBounds = Regex(
+    """(\bmesh_min=)(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)(\s+mesh_max=)(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)""",
+    RegexOption.IGNORE_CASE,
+  )
+
+  // Keep adaptive probing inside the U1's safe bed-mesh area. Model bounds
+  // can extend past X=0 even though the printer's motion range starts there.
+  private const val U1_BED_MESH_MIN = 3.0
+  private const val U1_BED_MESH_MAX = 267.0
+  private const val U1_BED_MESH_MIN_SPAN = 1.0
 
   fun applyInitialTool(path: String, initialTool: Int): Result {
     val file = File(path)
@@ -88,6 +102,91 @@ object GcodeToolMapper {
     }
     return Result(changed, if (mask == 0) 1 shl tool else mask)
   }
+
+  fun clampU1BedMeshBounds(path: String): BedMeshResult {
+    val file = File(path)
+    if (!file.exists() || !file.isFile) return BedMeshResult(false, false)
+
+    var needsRewrite = false
+    val safeToRewrite = runCatching {
+      file.bufferedReader().useLines { lines ->
+        lines.forEach { line ->
+          val result = rewriteBedMeshLine(line)
+          if (!result.valid) return@runCatching false
+          if (result.line != line) needsRewrite = true
+        }
+      }
+      true
+    }.getOrDefault(false)
+
+    if (!safeToRewrite) return BedMeshResult(false, false)
+    if (!needsRewrite) return BedMeshResult(true, false)
+
+    val tmp = File(file.parentFile, file.name + ".bedmesh.tmp")
+    val rewritten = runCatching {
+      tmp.bufferedWriter().use { out ->
+        file.bufferedReader().useLines { lines ->
+          lines.forEach { line ->
+            val result = rewriteBedMeshLine(line)
+            check(result.valid)
+            out.write(result.line)
+            out.newLine()
+          }
+        }
+      }
+      true
+    }.getOrDefault(false)
+
+    if (!rewritten) {
+      tmp.delete()
+      return BedMeshResult(false, false)
+    }
+    if (!tmp.renameTo(file)) {
+      tmp.delete()
+      return BedMeshResult(false, false)
+    }
+    return BedMeshResult(true, true)
+  }
+
+  private fun rewriteBedMeshLine(line: String): BedMeshLineResult {
+    val trimmed = line.trimStart()
+    if (!trimmed.startsWith("BED_MESH_CALIBRATE", ignoreCase = true)) {
+      return BedMeshLineResult(line, true)
+    }
+
+    val match = bedMeshBounds.find(line) ?: return BedMeshLineResult(line, true)
+    val minX = match.groupValues[2].toDoubleOrNull()
+    val minY = match.groupValues[3].toDoubleOrNull()
+    val maxX = match.groupValues[5].toDoubleOrNull()
+    val maxY = match.groupValues[6].toDoubleOrNull()
+    if (minX == null || minY == null || maxX == null || maxY == null) {
+      return BedMeshLineResult(line, false)
+    }
+
+    val safeX = safeAxisBounds(minX, maxX) ?: return BedMeshLineResult(line, false)
+    val safeY = safeAxisBounds(minY, maxY) ?: return BedMeshLineResult(line, false)
+    if (safeX.first == minX && safeX.second == maxX &&
+      safeY.first == minY && safeY.second == maxY
+    ) {
+      return BedMeshLineResult(line, true)
+    }
+
+    val replacement = "${match.groupValues[1]}${formatCoordinate(safeX.first)},${formatCoordinate(safeY.first)}" +
+      "${match.groupValues[4]}${formatCoordinate(safeX.second)},${formatCoordinate(safeY.second)}"
+    return BedMeshLineResult(line.replaceRange(match.range, replacement), true)
+  }
+
+  private fun safeAxisBounds(rawMin: Double, rawMax: Double): Pair<Double, Double>? {
+    if (!rawMin.isFinite() || !rawMax.isFinite() || rawMax <= rawMin) return null
+
+    val safeRange = U1_BED_MESH_MAX - U1_BED_MESH_MIN
+    val span = (rawMax - rawMin).coerceIn(U1_BED_MESH_MIN_SPAN, safeRange)
+    val min = rawMin.coerceIn(U1_BED_MESH_MIN, U1_BED_MESH_MAX - span)
+    return min to (min + span)
+  }
+
+  private fun formatCoordinate(value: Double): String =
+    String.format(Locale.US, "%.5f", value)
 
   /** Tool bits used by [line]; 0 when inside a thumbnail block or a comment. */
   private fun scanToolMaskLine(line: String, inThumbnail: Boolean): Int {

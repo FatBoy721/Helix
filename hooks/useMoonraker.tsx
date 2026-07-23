@@ -10,6 +10,10 @@ import React, {
 import { AppState } from 'react-native';
 import { isTailscaleUrl, normalizeMoonrakerUrl, WebcamInfo, wsUrl } from '../services/moonraker';
 import { notifyEvent } from '../services/notifications';
+import {
+  historyFailureMessage,
+  terminalPrintStateForHistory,
+} from '../services/notificationEvents';
 import { Settings, useSettings } from './useSettings';
 import { formatTemperature } from '../services/temperature';
 
@@ -105,6 +109,9 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
   const generationRef = useRef(0);
   const settingsRef = useRef<Settings>(settings);
   const prevPrintStateRef = useRef('');
+  const lastTerminalNotificationRef = useRef('');
+  const lastGcodeErrorRef = useRef('');
+  const progressBucketRef = useRef<{ filename: string; bucket: number } | null>(null);
   const prevKlippyRef = useRef('unknown');
   const sensorStateRef = useRef<Record<string, boolean>>({});
   const tempWarningRef = useRef<Record<string, boolean>>({});
@@ -112,6 +119,7 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
   const extruderTargetDropRef = useRef<Record<string, number>>({});
   const connectedRef = useRef(false);
   const disconnectNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const appStateRef = useRef(AppState.currentState);
 
   settingsRef.current = settings;
 
@@ -151,28 +159,74 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
+  const emitTerminalNotification = useCallback((state: string, filename: string, message?: string) => {
+    const key = `${settingsRef.current.activePrinterId}:${filename}:${state}`;
+    if (lastTerminalNotificationRef.current === key) return;
+    lastTerminalNotificationRef.current = key;
+    if (state === 'complete') {
+      notifyEvent(settingsRef.current, 'complete', 'Print complete', `${filename} finished`);
+    } else if (state === 'error') {
+      notifyEvent(settingsRef.current, 'failed', 'Print failed', `${filename}: ${message || 'unknown error'}`);
+    } else if (state === 'cancelled') {
+      notifyEvent(settingsRef.current, 'cancelled', 'Print cancelled', `${filename} was cancelled`);
+    }
+  }, []);
+
   const checkTransitions = useCallback(() => {
     const s = statusRef.current;
     const ps = s.print_stats ?? {};
     const state: string = ps.state ?? '';
     const prev = prevPrintStateRef.current;
+    const fname = ps.filename || 'print';
 
     if (prev && state !== prev) {
-      const fname = ps.filename || 'print';
+      if (state === 'printing') {
+        lastTerminalNotificationRef.current = '';
+        lastGcodeErrorRef.current = '';
+      }
       if (state === 'complete') {
-        notifyEvent(settingsRef.current, 'complete', 'Print complete', `${fname} finished`);
+        emitTerminalNotification('complete', fname);
       } else if (state === 'error') {
-        notifyEvent(
-          settingsRef.current,
-          'failed',
-          'Print failed',
-          `${fname}: ${ps.message || 'unknown error'}`
-        );
+        emitTerminalNotification('error', fname, ps.message || lastGcodeErrorRef.current);
       } else if (state === 'paused') {
         notifyEvent(settingsRef.current, 'paused', 'Print paused', `${fname} is paused`);
+      } else if (state === 'cancelled') {
+        emitTerminalNotification('cancelled', fname);
       }
     }
     prevPrintStateRef.current = state;
+
+    if (state !== 'printing') {
+      progressBucketRef.current = null;
+    } else {
+      const fileProgress = Number(s.virtual_sdcard?.progress);
+      const displayProgress = Number(s.display_status?.progress);
+      const currentLayer = Number(ps.info?.current_layer);
+      const totalLayer = Number(ps.info?.total_layer);
+      const ratio = Number.isFinite(fileProgress)
+        ? fileProgress
+        : Number.isFinite(displayProgress)
+          ? displayProgress
+          : totalLayer > 0
+            ? currentLayer / totalLayer
+            : NaN;
+      if (Number.isFinite(ratio)) {
+        const percent = Math.max(0, Math.min(99, Math.round(ratio * 100)));
+        const bucket = Math.min(90, Math.floor(percent / 10) * 10);
+        const previous = progressBucketRef.current;
+        if (!previous || previous.filename !== fname) {
+          progressBucketRef.current = { filename: fname, bucket };
+        } else if (bucket > previous.bucket && bucket >= 10) {
+          progressBucketRef.current = { filename: fname, bucket };
+          notifyEvent(
+            settingsRef.current,
+            'progress',
+            'Print progress',
+            `${fname}: ${bucket}% complete`
+          );
+        }
+      }
+    }
 
     for (const key of Object.keys(s)) {
       if (/^filament_(switch|motion)_sensor /.test(key)) {
@@ -232,11 +286,12 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
         tempWarningRef.current[key] = warning || (wasWarning && !reset);
       }
     }
-  }, []);
+  }, [emitTerminalNotification]);
 
   const handleGcodeResponse = useCallback(
     (msg: string) => {
       addLine(msg.startsWith('!!') ? 'error' : 'response', msg);
+      if (msg.startsWith('!!')) lastGcodeErrorRef.current = msg.replace(/^!!\s*/, '').trim();
       // multiACE does not emit a dedicated swap-complete event, so this uses
       // broad console response matching.
       if (
@@ -305,7 +360,13 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
         const res = await rpc('printer.objects.subscribe', { objects: subs });
         if (gen !== generationRef.current) return;
         statusRef.current = res?.status ?? {};
-        prevPrintStateRef.current = statusRef.current.print_stats?.state ?? '';
+        const initialPrintState = statusRef.current.print_stats?.state ?? '';
+        prevPrintStateRef.current = initialPrintState;
+        progressBucketRef.current = null;
+        if (initialPrintState === 'printing') {
+          lastTerminalNotificationRef.current = '';
+          lastGcodeErrorRef.current = '';
+        }
         sensorStateRef.current = {};
         tempWarningRef.current = {};
         heaterTargetRef.current = {};
@@ -457,6 +518,17 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
           flushStatus();
           break;
         }
+        case 'notify_history_changed': {
+          const event = msg.params?.[0] ?? {};
+          if (event.action !== 'finished') break;
+          const job = event.job ?? {};
+          const state = terminalPrintStateForHistory(job.status);
+          if (state) {
+            const filename = job.filename || statusRef.current.print_stats?.filename || 'print';
+            emitTerminalNotification(state, filename, historyFailureMessage(job));
+          }
+          break;
+        }
         case 'notify_gcode_response':
           handleGcodeResponse(String(msg.params?.[0] ?? ''));
           break;
@@ -500,22 +572,24 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
         p.reject(new Error('Connection closed'));
       }
       pendingRef.current.clear();
-      if (wasConnected && !disconnectNoticeTimerRef.current) {
+      if (wasConnected && appStateRef.current === 'active' && !disconnectNoticeTimerRef.current) {
         disconnectNoticeTimerRef.current = setTimeout(() => {
           disconnectNoticeTimerRef.current = null;
-          if (!wsRef.current || wsRef.current.readyState !== WS_OPEN) {
+          const printState = statusRef.current.print_stats?.state;
+          const activePrint = printState === 'printing' || printState === 'paused';
+          if (activePrint && (!wsRef.current || wsRef.current.readyState !== WS_OPEN)) {
             notifyEvent(
               settingsRef.current,
               'disconnected',
               'Printer disconnected',
-              `${url} stopped responding`
+              'The printer connection was lost during an active print'
             );
           }
         }, 12000);
       }
       scheduleReconnect();
     };
-  }, [getUrls, scheduleReconnect, addLine, initPrinter, checkTransitions, flushStatus, handleGcodeResponse]);
+  }, [getUrls, scheduleReconnect, addLine, initPrinter, checkTransitions, emitTerminalNotification, flushStatus, handleGcodeResponse]);
 
   connectRef.current = connect;
 
@@ -526,6 +600,11 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
     connect();
 
     const sub = AppState.addEventListener('change', (state) => {
+      appStateRef.current = state;
+      if (state !== 'active' && disconnectNoticeTimerRef.current) {
+        clearTimeout(disconnectNoticeTimerRef.current);
+        disconnectNoticeTimerRef.current = null;
+      }
       if (state === 'active' && (!wsRef.current || wsRef.current.readyState !== WS_OPEN)) {
         failCountRef.current = 0;
         if (settingsRef.current.connectionMode === 'auto') {

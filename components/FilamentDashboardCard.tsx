@@ -12,7 +12,7 @@ type Props = {
   slotBrands: string[];
   slotMaterials: string[];
   onChange: (colors: string[]) => void;
-  onBrandsChange: (brands: string[]) => void;
+  onBrandsChange: (brands: string[], changedIndex?: number) => void;
   onMaterialsChange: (materials: string[]) => void;
 };
 
@@ -55,7 +55,7 @@ function resolveSlots(
     return {
       index,
       color: color ?? fallbackColors[index],
-      brand: vendor ?? slotBrands[index] ?? 'Generic',
+      brand: vendor && vendor !== 'GENERIC' ? vendor : slotBrands[index] ?? 'Generic',
       material: material ?? slotMaterials[index] ?? 'PLA',
       status: loaded === true ? 'loaded' : loaded === false ? 'empty' : 'unknown',
       source: color || material ? 'printer' : 'manual',

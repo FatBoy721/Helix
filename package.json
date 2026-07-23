@@ -1,6 +1,6 @@
 {
   "name": "u1-control",
-  "version": "1.2.2",
+  "version": "1.2.5",
   "license": "AGPL-3.0-or-later",
   "main": "expo-router/entry",
   "private": true,
@@ -17,6 +17,7 @@
     "@expo/vector-icons": "^15.0.3",
     "@react-native-async-storage/async-storage": "2.2.0",
     "expo": "^54.0.35",
+    "expo-application": "~7.0.8",
     "expo-asset": "~12.0.13",
     "expo-camera": "~17.0.10",
     "expo-constants": "~18.0.13",
@@ -45,6 +46,8 @@
   "devDependencies": {
     "@babel/core": "^7.25.0",
     "@types/react": "~19.1.10",
+    "eslint": "^9.39.5",
+    "eslint-config-expo": "~10.0.0",
     "typescript": "~5.9.2"
   }
 }

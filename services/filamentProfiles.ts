@@ -4,10 +4,14 @@ export type NativeMaterialProfile = {
   material: string;
   brand: string;
   nozzleTemp: number;
+  maxVolumetricSpeed: number;
+  pressureAdvance: number;
 };
 
 type PaxxProfile = {
   flow_temp?: number;
+  flow_k?: Record<string, number>;
+  flow_fast_v?: Record<string, number>;
 };
 
 type PaxxCatalog = Record<string, Record<string, Record<string, PaxxProfile>>>;
@@ -49,13 +53,31 @@ function vendorKey(brand: string): string {
   return `vendor_${brand.replace(/[^a-z0-9]/gi, '') || 'generic'}`;
 }
 
-function resolveProfile(catalog: PaxxCatalog | null, brand: string, material: string): number {
+function resolveProfile(catalog: PaxxCatalog | null, brand: string, material: string): PaxxProfile {
   const materialProfiles = catalog?.[material];
   const vendor = materialProfiles?.[vendorKey(brand)] ?? materialProfiles?.vendor_generic;
   const subtype = vendor?.sub_generic ?? Object.values(vendor ?? {})[0];
-  return typeof subtype?.flow_temp === 'number'
-    ? subtype.flow_temp
-    : FALLBACK_TEMPS[material] ?? FALLBACK_TEMPS.PLA;
+  return subtype ?? { flow_temp: FALLBACK_TEMPS[material] ?? FALLBACK_TEMPS.PLA };
+}
+
+function nozzleKey(nozzleDiameter: number): string {
+  return String(Math.round(nozzleDiameter * 10)).padStart(2, '0');
+}
+
+function resolveProfileValues(profile: PaxxProfile): Pick<NativeMaterialProfile, 'nozzleTemp' | 'maxVolumetricSpeed' | 'pressureAdvance'> {
+  const key = nozzleKey(0.4);
+  const nozzleTemp = typeof profile.flow_temp === 'number' ? profile.flow_temp : FALLBACK_TEMPS.PLA;
+  const pressureAdvance = profile.flow_k?.[key];
+  const filamentArea = Math.PI * (1.75 / 2) ** 2;
+  const fastExtrusionSpeed = profile.flow_fast_v?.[key];
+  const maxVolumetricSpeed = typeof fastExtrusionSpeed === 'number'
+    ? fastExtrusionSpeed * filamentArea
+    : 12;
+  return {
+    nozzleTemp,
+    maxVolumetricSpeed: Math.max(1, Math.min(30, maxVolumetricSpeed)),
+    pressureAdvance: typeof pressureAdvance === 'number' ? Math.max(0, Math.min(1, pressureAdvance)) : 0,
+  };
 }
 
 export async function resolveNativeMaterialProfiles(
@@ -76,6 +98,6 @@ export async function resolveNativeMaterialProfiles(
     const slot = slots[index];
     const brand = normalizeBrand(slot?.brand ?? 'Generic');
     const material = normalizeMaterial(slot?.material ?? 'PLA');
-    return { brand, material, nozzleTemp: resolveProfile(catalog, brand, material) };
+    return { brand, material, ...resolveProfileValues(resolveProfile(catalog, brand, material)) };
   });
 }

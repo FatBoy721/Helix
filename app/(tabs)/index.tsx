@@ -53,6 +53,12 @@ import type { TemperatureUnit } from '../../services/temperature';
 import { colors, radius, shadow, spacing, withAlpha } from '../../constants/theme';
 import { normalizeFilamentSlotColors } from '../../constants/filamentColors';
 import { setFilamentSlotColors } from '../../services/nativeSlicer';
+import {
+  calculatePrintEtas,
+  fetchLatestM73,
+  smoothRemainingEstimate,
+  type CapturedM73Estimate,
+} from '../../services/printEta';
 
 type IconName = React.ComponentProps<typeof MaterialCommunityIcons>['name'];
 
@@ -78,6 +84,8 @@ interface MetadataThumbnail {
   width?: number;
   relative_path?: string;
 }
+
+const M73_REFRESH_MS = 45_000;
 
 function stateColor(state: string): string {
   switch (state) {
@@ -273,7 +281,17 @@ export default function Dashboard() {
   );
 
   const filename: string = ps.filename ?? '';
+  const durationValue = Number(ps.print_duration);
+  const duration = Number.isFinite(durationValue) && durationValue >= 0 ? durationValue : 0;
+  const filePositionValue = Number(vsd.file_position);
+  const filePositionRef = useRef(0);
+  const printDurationRef = useRef(0);
+  filePositionRef.current =
+    Number.isFinite(filePositionValue) && filePositionValue > 0 ? filePositionValue : 0;
+  printDurationRef.current = duration;
+
   const [slicerEstimate, setSlicerEstimate] = useState<number | null>(null);
+  const [m73Estimate, setM73Estimate] = useState<CapturedM73Estimate | null>(null);
   useEffect(() => {
     let live = true;
     setSlicerEstimate(null);
@@ -300,10 +318,83 @@ export default function Dashboard() {
     };
   }, [filename, activeUrl]);
 
+  useEffect(() => {
+    setM73Estimate(null);
+    if (!activeJob || !filename || !activeUrl) return;
+
+    let live = true;
+    let controller: AbortController | null = null;
+    const refresh = async () => {
+      const filePosition = filePositionRef.current;
+      if (filePosition <= 0) return;
+      controller?.abort();
+      controller = new AbortController();
+      try {
+        const estimate = await fetchLatestM73(
+          activeUrl,
+          filename,
+          filePosition,
+          controller.signal
+        );
+        if (live) {
+          setM73Estimate(
+            estimate
+              ? {
+                  ...estimate,
+                  printDurationAtCapture: printDurationRef.current,
+                }
+              : null
+          );
+        }
+      } catch {
+        // M73 is optional. Metadata and byte progress remain available as fallbacks.
+      }
+    };
+
+    refresh();
+    const timer = setInterval(refresh, M73_REFRESH_MS);
+    return () => {
+      live = false;
+      clearInterval(timer);
+      controller?.abort();
+    };
+  }, [activeJob, activeUrl, filename]);
+
   const progress = clampProgress(vsd.progress ?? status.display_status?.progress ?? 0);
-  const duration = ps.print_duration ?? 0;
-  const progressEta = progress > 0.001 && duration > 0 ? duration / progress - duration : NaN;
-  const remaining = Number.isFinite(progressEta) ? formatDuration(progressEta) : '--';
+  const printEtas = useMemo(
+    () =>
+      calculatePrintEtas({
+        printDuration: duration,
+        slicerTotalSeconds: slicerEstimate,
+        m73: m73Estimate,
+        fallbackProgress: progress,
+      }),
+    [duration, m73Estimate, progress, slicerEstimate]
+  );
+  const [liveRemainingEstimate, setLiveRemainingEstimate] = useState<number | null>(null);
+  const smoothedDurationRef = useRef(duration);
+  const smoothedJobRef = useRef(filename);
+  useEffect(() => {
+    const jobChanged = smoothedJobRef.current !== filename;
+    const elapsedPrintSeconds = Math.max(0, duration - smoothedDurationRef.current);
+    smoothedDurationRef.current = duration;
+    smoothedJobRef.current = filename;
+    if (!activeJob) {
+      setLiveRemainingEstimate(null);
+      return;
+    }
+    setLiveRemainingEstimate((previous) =>
+      jobChanged
+        ? printEtas.liveRemainingSeconds
+        : smoothRemainingEstimate(
+            previous,
+            printEtas.liveRemainingSeconds,
+            elapsedPrintSeconds
+          )
+    );
+  }, [activeJob, duration, filename, printEtas.liveRemainingSeconds]);
+  const remaining =
+    liveRemainingEstimate == null ? '--' : formatDuration(liveRemainingEstimate);
   const layer =
     ps.info?.current_layer != null && ps.info?.total_layer != null && ps.info.total_layer > 0
       ? `${ps.info.current_layer} / ${ps.info.total_layer}`
@@ -312,18 +403,29 @@ export default function Dashboard() {
   const cameraStats = useMemo<CameraStat[]>(() => {
     if (!activeJob) return [];
     const out: CameraStat[] = [];
-    if (slicerEstimate != null) {
-      out.push({ label: t('Slicer remaining'), value: formatDuration(Math.max(0, slicerEstimate - duration)) });
+    if (printEtas.slicerRemainingSeconds != null) {
+      out.push({
+        label: t('Slicer remaining'),
+        value: formatDuration(printEtas.slicerRemainingSeconds),
+      });
     }
-    if (progress > 0.001 && duration > 0) {
-      const eta = duration / progress - duration;
-      out.push({ label: t('Est. remaining'), value: formatDuration(eta) });
+    if (liveRemainingEstimate != null) {
+      out.push({
+        label: t('Est. remaining'),
+        value: formatDuration(liveRemainingEstimate),
+      });
     }
     if (typeof ps.info?.current_layer === 'number' && ps.info.current_layer > 0 && duration > 0) {
       out.push({ label: t('Per layer'), value: formatDuration(duration / ps.info.current_layer) });
     }
     return out;
-  }, [activeJob, duration, ps.info?.current_layer, progress, slicerEstimate]);
+  }, [
+    activeJob,
+    duration,
+    liveRemainingEstimate,
+    printEtas.slicerRemainingSeconds,
+    ps.info?.current_layer,
+  ]);
 
   const homedAxes: string = status.toolhead?.homed_axes ?? '';
   const homed = homedAxes.includes('x') && homedAxes.includes('y') && homedAxes.includes('z');
@@ -436,10 +538,8 @@ export default function Dashboard() {
           activeBaseUrl,
           channel,
           {
-            VENDOR: status.filament_detect?.info?.[channel]?.VENDOR && status.filament_detect.info[channel].VENDOR !== 'NONE'
-              ? status.filament_detect.info[channel].VENDOR
-              : status.print_task_config?.filament_vendor?.[channel] || 'Generic',
-            MAIN_TYPE: status.print_task_config?.filament_type?.[channel] || settings.filamentSlotMaterials[channel] || 'PLA',
+            VENDOR: settings.filamentSlotBrands[channel] || 'Generic',
+            MAIN_TYPE: settings.filamentSlotMaterials[channel] || 'PLA',
             SUB_TYPE: status.filament_detect?.info?.[channel]?.SUB_TYPE || 'Basic',
             RGB_1: parseInt(color.replace('#', '').slice(0, 6), 16),
             ALPHA: 255,
@@ -449,7 +549,7 @@ export default function Dashboard() {
         Alert.alert('Printer update unavailable', error instanceof Error ? error.message : 'Helix saved the value locally.');
       }
     }
-  }, [activeBaseUrl, settings.filamentSlotMaterials, status, update]);
+  }, [activeBaseUrl, settings.filamentSlotBrands, settings.filamentSlotMaterials, status, update]);
 
   const updateFilamentMaterials = useCallback(async (next: string[]) => {
     await update({ filamentSlotMaterials: next });
@@ -459,9 +559,7 @@ export default function Dashboard() {
           activeBaseUrl,
           channel,
           {
-            VENDOR: status.filament_detect?.info?.[channel]?.VENDOR && status.filament_detect.info[channel].VENDOR !== 'NONE'
-              ? status.filament_detect.info[channel].VENDOR
-              : status.print_task_config?.filament_vendor?.[channel] || 'Generic',
+            VENDOR: settings.filamentSlotBrands[channel] || 'Generic',
             MAIN_TYPE: material || 'PLA',
             SUB_TYPE: status.filament_detect?.info?.[channel]?.SUB_TYPE || 'Basic',
             RGB_1: parseInt(normalizeFilamentSlotColors(settings.filamentSlotColors)[channel].replace('#', '').slice(0, 6), 16),
@@ -472,18 +570,19 @@ export default function Dashboard() {
         Alert.alert('Printer update unavailable', error instanceof Error ? error.message : 'Helix saved the value locally.');
       }
     }
-  }, [activeBaseUrl, settings.filamentSlotColors, status, update]);
+  }, [activeBaseUrl, settings.filamentSlotBrands, settings.filamentSlotColors, status, update]);
 
-  const updateFilamentBrands = useCallback(async (next: string[]) => {
+  const updateFilamentBrands = useCallback(async (next: string[], changedIndex?: number) => {
     await update({ filamentSlotBrands: next });
     if (activeBaseUrl) {
       try {
-        await Promise.all(next.map((brand, channel) => api.setFilamentSlot(
+        const channels = changedIndex == null ? next.map((_, index) => index) : [changedIndex];
+        await Promise.all(channels.map((channel) => api.setFilamentSlot(
           activeBaseUrl,
           channel,
           {
-            VENDOR: brand || 'Generic',
-            MAIN_TYPE: status.print_task_config?.filament_type?.[channel] || settings.filamentSlotMaterials[channel] || 'PLA',
+            VENDOR: next[channel] || 'Generic',
+            MAIN_TYPE: settings.filamentSlotMaterials[channel] || 'PLA',
             SUB_TYPE: status.filament_detect?.info?.[channel]?.SUB_TYPE || 'Basic',
             RGB_1: parseInt(normalizeFilamentSlotColors(settings.filamentSlotColors)[channel].replace('#', '').slice(0, 6), 16),
             ALPHA: 255,
@@ -493,7 +592,7 @@ export default function Dashboard() {
         Alert.alert('Printer update unavailable', error instanceof Error ? error.message : 'Helix saved the value locally.');
       }
     }
-  }, [activeBaseUrl, settings.filamentSlotColors, settings.filamentSlotMaterials, status, update]);
+  }, [activeBaseUrl, settings.filamentSlotBrands, settings.filamentSlotColors, settings.filamentSlotMaterials, status, update]);
 
   const printerName = activePrinter?.name?.trim() || t('Printer');
   const connectionHost = shortUrl(activeUrl || selectedPrinterUrl);
@@ -739,7 +838,23 @@ export default function Dashboard() {
             .filter((w) => (isGuiWebcam(w) ? show.gui || show.filaments : show.camera))
             .map((w) => (
               <View key={w.name} style={styles.extraCamera}>
-                {show.gui || !isGuiWebcam(w) ? (
+                {isGuiWebcam(w) ? (
+                  // Keep the printer GUI WebView mounted while its section is hidden.
+                  // Pause its polling instead; remounting /screen/ can trigger "No Signal".
+                  <View
+                    pointerEvents={show.gui ? 'auto' : 'none'}
+                    style={!show.gui && { height: 0, opacity: 0, overflow: 'hidden' }}
+                  >
+                    <Text style={styles.cameraName}>{w.name}</Text>
+                    <CameraFeed
+                      url={resolveCameraUrl(w.stream_url, activeBaseUrl)}
+                      snapshotUrl={resolveSnapshotUrl(w.snapshot_url, w.stream_url, activeBaseUrl)}
+                      height={220}
+                      showControls={false}
+                      paused={!show.gui}
+                    />
+                  </View>
+                ) : show.camera ? (
                   <>
                     <Text style={styles.cameraName}>{w.name}</Text>
                     <CameraFeed

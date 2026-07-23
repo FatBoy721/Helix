@@ -36,10 +36,22 @@ const {
 } = require(path.join('..', 'services', 'settingsMigration.ts'));
 const {
   buildBugReportUrl,
+  compareReleaseVersions,
   isCurrentRelease,
+  isReleaseUpdateAvailable,
   releaseCommit,
   releaseDownloadUrl,
 } = require(path.join('..', 'services', 'updateCheck.ts'));
+const {
+  calculatePrintEtas,
+  parseLatestM73,
+  smoothRemainingEstimate,
+} = require(path.join('..', 'services', 'printEta.ts'));
+const {
+  historyFailureMessage,
+  terminalPrintStateForHistory,
+  withQueryParameter,
+} = require(path.join('..', 'services', 'notificationEvents.ts'));
 const {
   displayTemperature,
   formatTemperature,
@@ -174,6 +186,8 @@ function settings(overrides = {}) {
     notifyPrintComplete: true,
     notifyPrintFailed: true,
     notifyPrintPaused: true,
+    notifyPrintCancelled: true,
+    notifyPrintProgress: false,
     notifyFilamentRunout: true,
     notifySwapComplete: true,
     notifyPrinterError: true,
@@ -453,6 +467,8 @@ test('settings migration recovers from corrupt saved value types', () => {
   assert.deepEqual(migrated.printers, []);
   assert.equal(migrated.notifyPrintComplete, true);
   assert.equal(migrated.notifyPrintPaused, false);
+  assert.equal(migrated.notifyPrintCancelled, true);
+  assert.equal(migrated.notifyPrintProgress, false);
   assert.equal(migrated.aceUnits, DEFAULT_SETTINGS.aceUnits);
   assert.equal(migrated.ntfyServer, DEFAULT_SETTINGS.ntfyServer);
   assert.equal(migrated.ntfyTopic, DEFAULT_SETTINGS.ntfyTopic);
@@ -570,7 +586,7 @@ test('resolves snapshot URL from explicit value or webcam stream', () => {
   );
   assert.equal(
     resolveSnapshotUrl(undefined, '/webcam/webrtc', 'http://192.168.1.17:7125'),
-    'http://192.168.1.17/webcam/snapshot'
+    'http://192.168.1.17/webcam/snapshot.jpg'
   );
   assert.equal(resolveSnapshotUrl(undefined, '/screen/', 'http://192.168.1.17:7125'), '');
 });
@@ -586,6 +602,117 @@ test('builds encoded file and thumbnail URLs', () => {
   );
 });
 
+test('parses the latest Orca M73 progress and remaining time', () => {
+  assert.deepEqual(
+    parseLatestM73([
+      '; M73 P99 R1 is only a comment',
+      'M73 P10 R90',
+      'G1 X10 Y10',
+      'M73 P12 R88.5',
+      'M73 P13',
+    ].join('\n')),
+    { progress: 0.13, remainingSeconds: 5310 }
+  );
+  assert.equal(parseLatestM73('G1 X0 Y0\n; M73 P50 R10'), null);
+});
+
+test('uses M73 remaining time and adjusts it for observed printer pace', () => {
+  assert.deepEqual(
+    calculatePrintEtas({
+      printDuration: 660,
+      slicerTotalSeconds: 3600,
+      m73: {
+        progress: 0.2,
+        remainingSeconds: 3000,
+        printDurationAtCapture: 600,
+      },
+      fallbackProgress: 0.5,
+    }),
+    {
+      slicerRemainingSeconds: 2940,
+      liveRemainingSeconds: 2940,
+      source: 'm73',
+    }
+  );
+
+  assert.deepEqual(
+    calculatePrintEtas({
+      printDuration: 900,
+      slicerTotalSeconds: 3600,
+      m73: {
+        progress: 0.17,
+        remainingSeconds: 3000,
+        printDurationAtCapture: 900,
+      },
+      fallbackProgress: 0.5,
+    }),
+    {
+      slicerRemainingSeconds: 3000,
+      liveRemainingSeconds: 4500,
+      source: 'm73',
+    }
+  );
+});
+
+test('holds unstable live ETA early and retains byte-progress fallback', () => {
+  assert.deepEqual(
+    calculatePrintEtas({
+      printDuration: 60,
+      slicerTotalSeconds: 3600,
+      m73: {
+        progress: 0.02,
+        remainingSeconds: 3540,
+        printDurationAtCapture: 60,
+      },
+      fallbackProgress: 0.02,
+    }),
+    {
+      slicerRemainingSeconds: 3540,
+      liveRemainingSeconds: null,
+      source: 'm73',
+    }
+  );
+  assert.deepEqual(
+    calculatePrintEtas({
+      printDuration: 600,
+      slicerTotalSeconds: 3600,
+      m73: null,
+      fallbackProgress: 0.25,
+    }),
+    {
+      slicerRemainingSeconds: 3000,
+      liveRemainingSeconds: 1800,
+      source: 'fallback',
+    }
+  );
+});
+
+test('smooths large ETA corrections while preserving normal countdown', () => {
+  assert.equal(smoothRemainingEstimate(1200, 1800, 10), 1225.7);
+  assert.equal(smoothRemainingEstimate(1200, 1190, 10), 1190);
+  assert.equal(smoothRemainingEstimate(null, 900, 0), 900);
+});
+
+test('normalizes Moonraker history terminal states and failure messages', () => {
+  assert.equal(terminalPrintStateForHistory('completed'), 'complete');
+  assert.equal(terminalPrintStateForHistory('cancelled'), 'cancelled');
+  assert.equal(terminalPrintStateForHistory('interrupted'), 'error');
+  assert.equal(terminalPrintStateForHistory('klippy_shutdown'), 'error');
+  assert.equal(terminalPrintStateForHistory('in_progress'), '');
+  assert.equal(historyFailureMessage({ error_message: ' Heater failed ' }), 'Heater failed');
+});
+
+test('appends webhook query parameters without breaking existing queries', () => {
+  assert.equal(
+    withQueryParameter('https://example.com/hook', 'event', 'complete'),
+    'https://example.com/hook?event=complete'
+  );
+  assert.equal(
+    withQueryParameter('https://example.com/hook?token=abc', '-event', 'print failed'),
+    'https://example.com/hook?token=abc&-event=print%20failed'
+  );
+});
+
 test('extracts release commits and compares installed build', () => {
   const commit = '0123456789abcdef0123456789abcdef01234567';
   assert.equal(releaseCommit(`Build ${commit}`), commit);
@@ -593,7 +720,42 @@ test('extracts release commits and compares installed build', () => {
   assert.equal(isCurrentRelease('dev', commit), false);
 });
 
-test('chooses APK release asset before falling back to release page', () => {
+test('compares installed native version with GitHub release tags', () => {
+  assert.equal(compareReleaseVersions('1.2.4', 'v1.2.4'), 0);
+  assert.equal(compareReleaseVersions('1.2.3', 'v1.2.4'), -1);
+  assert.equal(compareReleaseVersions('1.3.0', 'v1.2.4'), 1);
+  assert.equal(compareReleaseVersions('1.2', 'v1.2.0'), 0);
+  assert.equal(compareReleaseVersions('dev', 'v1.2.4'), null);
+});
+
+test('uses semantic version before commit fallback for update availability', () => {
+  const oldCommit = '0123456789abcdef0123456789abcdef01234567';
+  const newCommit = 'abcdef0123456789abcdef0123456789abcdef01';
+  assert.equal(isReleaseUpdateAvailable({
+    installedVersion: '1.2.4',
+    releaseTag: 'v1.2.4',
+    currentCommit: oldCommit,
+    latestCommit: newCommit,
+  }), false);
+  assert.equal(isReleaseUpdateAvailable({
+    installedVersion: '1.2.3',
+    releaseTag: 'v1.2.4',
+  }), true);
+  assert.equal(isReleaseUpdateAvailable({
+    installedVersion: '',
+    releaseTag: '',
+    currentCommit: oldCommit,
+    latestCommit: newCommit,
+  }), null);
+  assert.equal(isReleaseUpdateAvailable({
+    installedVersion: '',
+    releaseTag: '',
+    currentCommit: oldCommit,
+    latestCommit: oldCommit,
+  }), false);
+});
+
+test('only returns a direct APK release asset', () => {
   assert.equal(
     releaseDownloadUrl({
       html_url: 'https://github.com/FatBoy721/Helix/releases/tag/v1',
@@ -609,7 +771,7 @@ test('chooses APK release asset before falling back to release page', () => {
       html_url: 'https://github.com/FatBoy721/Helix/releases/tag/v1',
       assets: [{ name: 'notes.txt', browser_download_url: 'https://example.com/notes.txt' }],
     }),
-    'https://github.com/FatBoy721/Helix/releases/tag/v1'
+    ''
   );
 });
 
