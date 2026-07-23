@@ -30,6 +30,9 @@ jobs:
       - name: Install app dependencies
         run: npm ci
 
+      - name: Install Functions dependencies
+        run: npm ci --prefix functions
+
       - name: Type-check
         run: npx tsc --noEmit
 
@@ -38,9 +41,6 @@ jobs:
 
       - name: Run regression checks
         run: npm run test:regressions
-
-      - name: Install Functions dependencies
-        run: npm ci --prefix functions
 
       - name: Build Functions
         run: npm run build --prefix functions
