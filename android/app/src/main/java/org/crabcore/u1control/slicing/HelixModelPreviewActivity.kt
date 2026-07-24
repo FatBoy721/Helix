@@ -415,8 +415,7 @@ class HelixModelPreviewActivity : Activity() {
   private fun loadNativeScene(file: File) {
     synchronized(NativeEngineGuard.LOCK) {
       val lib = native ?: NativeLibrary().also { native = it }
-      val loaded = lib.loadModel(file.absolutePath)
-      if (!loaded) {
+      if (!lib.loadModel(file.absolutePath)) {
         throw IllegalStateException("Native engine could not load this model.")
       }
       filamentPalette = readFilamentPalette(lib)

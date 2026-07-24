@@ -333,13 +333,11 @@ class HelixSlicerModule(
         return
       }
       val safeName = plate.name
-        .replace(Regex("""[/\\:*?"<>|\s]"""), "_")
+        .replace(Regex("""[/\\:*?"<>|]"""), "_")
         .trim()
         .ifBlank { "plate_$plateId" }
       val outFile = File(reactApplicationContext.filesDir, "plate_${plateId}_$safeName.3mf")
-      PlateExtractor.extractPlate(file, plate, outFile) { percent, phase ->
-        emitExtractProgress(percent, phase)
-      }
+      PlateExtractor.extractPlate(file, plate, outFile)
       if (!outFile.exists() || outFile.length() == 0L) {
         promise.reject("E_EXTRACT", "Failed to extract plate $plateId.")
         return
@@ -352,16 +350,6 @@ class HelixSlicerModule(
     } catch (error: Throwable) {
       promise.reject("E_EXTRACT", error.message, error)
     }
-  }
-
-  private fun emitExtractProgress(percent: Int, phase: String) {
-    val params = Arguments.createMap().apply {
-      putInt("percent", percent)
-      putString("phase", phase)
-    }
-    reactApplicationContext
-      .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
-      .emit("extractProgress", params)
   }
 
   @ReactMethod
