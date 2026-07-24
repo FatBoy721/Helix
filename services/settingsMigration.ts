@@ -7,6 +7,7 @@ import {
   DEFAULT_FILAMENT_SLOT_COLORS,
   normalizeFilamentSlotColors,
 } from '../constants/filamentColors';
+import { DEFAULT_FILAMENT_SUBTYPE } from './filamentMaterials';
 
 export interface PrinterEntry {
   id: string;
@@ -67,13 +68,15 @@ export interface Settings {
   filamentSlotColors: string[];
   /** Manual fallback material labels for the four physical filament slots. */
   filamentSlotMaterials: string[];
+  /** Manual fallback subtype labels (CF, Silk, Matte, ...) for the four physical filament slots. */
+  filamentSlotSubtypes: string[];
   /** Manual fallback brand labels for the four physical filament slots. */
   filamentSlotBrands: string[];
   /** Ids of in-app notifications the user has already opened. */
   seenNotificationIds: string[];
 }
 
-export const STORAGE_VERSION = 10;
+export const STORAGE_VERSION = 11;
 export const LEGACY_DEFAULT_PRIMARY_URL = 'http://192.168.1.17:7125';
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -118,6 +121,7 @@ export const DEFAULT_SETTINGS: Settings = {
   temperatureUnit: 'c',
   filamentSlotColors: [...DEFAULT_FILAMENT_SLOT_COLORS],
   filamentSlotMaterials: ['PLA', 'PLA', 'PLA', 'PLA'],
+  filamentSlotSubtypes: [DEFAULT_FILAMENT_SUBTYPE, DEFAULT_FILAMENT_SUBTYPE, DEFAULT_FILAMENT_SUBTYPE, DEFAULT_FILAMENT_SUBTYPE],
   filamentSlotBrands: ['Generic', 'Generic', 'Generic', 'Generic'],
   seenNotificationIds: [],
 };
@@ -170,6 +174,14 @@ function normalizeFilamentSlotMaterials(raw: unknown): string[] {
   return Array.from({ length: 4 }, (_, i) => {
     const value = stringValue(src[i])?.trim().toUpperCase();
     return value || DEFAULT_SETTINGS.filamentSlotMaterials[i];
+  });
+}
+
+function normalizeFilamentSlotSubtypes(raw: unknown): string[] {
+  const src = Array.isArray(raw) ? raw : [];
+  return Array.from({ length: 4 }, (_, i) => {
+    const value = stringValue(src[i])?.trim();
+    return value || DEFAULT_SETTINGS.filamentSlotSubtypes[i];
   });
 }
 
@@ -259,6 +271,7 @@ export function migrateSettings(raw: Partial<Settings>): Settings {
     temperatureUnit: normalizeTemperatureUnit(parsed.temperatureUnit),
     filamentSlotColors: normalizeFilamentSlotColors(parsed.filamentSlotColors),
     filamentSlotMaterials: normalizeFilamentSlotMaterials(parsed.filamentSlotMaterials),
+    filamentSlotSubtypes: normalizeFilamentSlotSubtypes(parsed.filamentSlotSubtypes),
     filamentSlotBrands: normalizeFilamentSlotBrands(parsed.filamentSlotBrands),
     seenNotificationIds: Array.isArray(parsed.seenNotificationIds)
       ? parsed.seenNotificationIds.filter((id): id is string => typeof id === 'string')

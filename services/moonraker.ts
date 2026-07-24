@@ -222,6 +222,54 @@ export async function restartMoonraker(base: string): Promise<void> {
   await fetch(`${base}/server/restart`, { method: 'POST' }).catch(() => {});
 }
 
+function filamentText(value: unknown, fallback: string, field: string): string {
+  const text = String(value ?? '').trim() || fallback;
+  if (/["\\\r\n]/.test(text)) {
+    throw new Error(`${field} contains unsupported characters.`);
+  }
+  return text;
+}
+
+export function buildManualFilamentSlotCommand(
+  channel: number,
+  info: Record<string, unknown>,
+): string {
+  if (!Number.isInteger(channel) || channel < 0 || channel > 3) {
+    throw new Error('Filament channel must be between 0 and 3.');
+  }
+
+  const vendor = filamentText(info.VENDOR, 'Generic', 'Filament vendor');
+  const material = filamentText(info.MAIN_TYPE, 'PLA', 'Filament material');
+  const subtype = filamentText(info.SUB_TYPE, 'Basic', 'Filament subtype');
+  if (!/^[A-Za-z0-9._+-]+$/.test(material)) {
+    throw new Error('Filament material contains unsupported characters.');
+  }
+
+  const rawColor = Number(info.RGB_1);
+  const color = Math.max(
+    0,
+    Math.min(0xffffff, Number.isFinite(rawColor) ? Math.trunc(rawColor) : 0xffffff),
+  ).toString(16).padStart(6, '0').toUpperCase();
+  const rawAlpha = Number(info.ALPHA);
+  const alpha = Math.max(
+    0,
+    Math.min(255, Number.isFinite(rawAlpha) ? Math.trunc(rawAlpha) : 255),
+  );
+
+  return [
+    'SET_PRINT_FILAMENT_CONFIG',
+    `CONFIG_EXTRUDER=${channel}`,
+    `VENDOR="${vendor}"`,
+    `FILAMENT_TYPE=${material}`,
+    `FILAMENT_SUBTYPE="${subtype}"`,
+    'COLOR_NUMS=1',
+    `COLORS=${color}`,
+    'MULTI_MODE=0',
+    `ALPHA=${alpha}`,
+    'FORCE=1',
+  ].join(' ');
+}
+
 export const api = {
   serverInfo: (base: string) => request(base, '/server/info'),
 
@@ -230,19 +278,25 @@ export const api = {
     channel: number,
     info: Record<string, unknown>,
   ) => {
-    const result = await request<{ state?: string; message?: string }>(
+    const clearResult = await request<{ state?: string; message?: string }>(
       base,
       '/printer/filament_detect/set',
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ channel, info }),
+        body: JSON.stringify({ channel, info: {} }),
       },
     );
-    if (result?.state === 'error') {
-      throw new Error(result.message || 'PAXX rejected the filament update.');
+    if (clearResult?.state === 'error') {
+      throw new Error(clearResult.message || 'PAXX rejected the RFID cache clear.');
     }
-    return result;
+
+    return request(
+      base,
+      `/printer/gcode/script?script=${encodeURIComponent(buildManualFilamentSlotCommand(channel, info))}`,
+      { method: 'POST' },
+      60000,
+    );
   },
 
   listFiles: (base: string) => request<FileEntry[]>(base, '/server/files/list?root=gcodes'),

@@ -1,4 +1,9 @@
 import type { FilamentSlotDisplay } from '../components/FilamentSlotsEditor';
+import {
+  FILAMENT_MAIN_TYPES,
+  isKnownFilamentMainType,
+} from './filamentMaterials';
+import { filamentTempTarget } from './filamentCatalog';
 
 export type NativeMaterialProfile = {
   material: string;
@@ -21,24 +26,19 @@ const MATERIALS = [
   'PC-ABS', 'PLA', 'PETG', 'TPU', 'ABS', 'ASA', 'PA', 'PC', 'PVA',
 ];
 
-const FALLBACK_TEMPS: Record<string, number> = {
-  PLA: 220,
-  'PLA-CF': 220,
-  PETG: 255,
-  'PETG-CF': 255,
-  'PETG-HF': 220,
-  TPU: 240,
-  ABS: 270,
-  ASA: 260,
-  PA: 260,
-  'PA-CF': 290,
-  'PA6-CF': 290,
-  'PA-GF': 290,
-  'PA6-GF': 290,
-  PC: 280,
-  'PC-ABS': 270,
-  PVA: 220,
-};
+// Derive the base MAIN_TYPE (e.g. "PLA", "PEEK", "PEI-1010") from a display
+// string like "PLA CF", "PA-CF", or "PEEK". The firmware's id_material.json
+// keys chemistry by base polymer, so the catalog floor is MAIN_TYPE-keyed.
+export function deriveMainType(display: string): string {
+  const upper = (display || '').trim().toUpperCase();
+  if (!upper || upper === 'EMPTY') return 'PLA';
+  if (isKnownFilamentMainType(upper)) return upper;
+  return (
+    FILAMENT_MAIN_TYPES.find(
+      (mt) => upper === mt || upper.startsWith(mt + ' ') || upper.startsWith(mt + '-')
+    ) ?? upper.split(/[\s-]/)[0] ?? 'PLA'
+  );
+}
 
 function normalizeMaterial(raw: string): string {
   const upper = raw.trim().toUpperCase().replace(/\s+/g, '-');
@@ -57,16 +57,24 @@ function resolveProfile(catalog: PaxxCatalog | null, brand: string, material: st
   const materialProfiles = catalog?.[material];
   const vendor = materialProfiles?.[vendorKey(brand)] ?? materialProfiles?.vendor_generic;
   const subtype = vendor?.sub_generic ?? Object.values(vendor ?? {})[0];
-  return subtype ?? { flow_temp: FALLBACK_TEMPS[material] ?? FALLBACK_TEMPS.PLA };
+  // No firmware profile for this material: return an empty profile and let the
+  // caller fall back to the bundled catalog temp floor (e.g. PEEK -> ~400C,
+  // not the old hard 220C PLA fallback).
+  return subtype ?? {};
 }
 
 function nozzleKey(nozzleDiameter: number): string {
   return String(Math.round(nozzleDiameter * 10)).padStart(2, '0');
 }
 
-function resolveProfileValues(profile: PaxxProfile): Pick<NativeMaterialProfile, 'nozzleTemp' | 'maxVolumetricSpeed' | 'pressureAdvance'> {
+export function resolveProfileValues(
+  profile: PaxxProfile,
+  mainType: string
+): Pick<NativeMaterialProfile, 'nozzleTemp' | 'maxVolumetricSpeed' | 'pressureAdvance'> {
   const key = nozzleKey(0.4);
-  const nozzleTemp = typeof profile.flow_temp === 'number' ? profile.flow_temp : FALLBACK_TEMPS.PLA;
+  const nozzleTemp = typeof profile.flow_temp === 'number'
+    ? profile.flow_temp
+    : filamentTempTarget(mainType);
   const pressureAdvance = profile.flow_k?.[key];
   const filamentArea = Math.PI * (1.75 / 2) ** 2;
   const fastExtrusionSpeed = profile.flow_fast_v?.[key];
@@ -98,6 +106,7 @@ export async function resolveNativeMaterialProfiles(
     const slot = slots[index];
     const brand = normalizeBrand(slot?.brand ?? 'Generic');
     const material = normalizeMaterial(slot?.material ?? 'PLA');
-    return { brand, material, ...resolveProfileValues(resolveProfile(catalog, brand, material)) };
+    const mainType = deriveMainType(slot?.material ?? 'PLA');
+    return { brand, material, ...resolveProfileValues(resolveProfile(catalog, brand, material), mainType) };
   });
 }

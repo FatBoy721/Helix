@@ -67,6 +67,7 @@ const {
   findPandaBreathTemperatureSource,
 } = require(path.join('..', 'services', 'chamberTemperature.ts'));
 const {
+  buildManualFilamentSlotCommand,
   fileUrl,
   isTailscaleUrl,
   normalizeBaseUrl,
@@ -78,6 +79,21 @@ const {
   validatePrinterConnectionTarget,
   wsUrl,
 } = require(path.join('..', 'services', 'moonraker.ts'));
+const {
+  FILAMENT_MAIN_TYPES,
+  FILAMENT_SUB_TYPES,
+  MAIN_TYPE_PATTERN,
+  subtypesForMainType,
+} = require(path.join('..', 'services', 'filamentMaterials.ts'));
+const {
+  FILAMENT_TEMP_CATALOG,
+  filamentTempRange,
+  filamentTempTarget,
+} = require(path.join('..', 'services', 'filamentCatalog.ts'));
+const {
+  deriveMainType,
+  resolveProfileValues,
+} = require(path.join('..', 'services', 'filamentProfiles.ts'));
 
 function test(name, fn) {
   try {
@@ -476,6 +492,14 @@ test('settings migration recovers from corrupt saved value types', () => {
   assert.equal(migrated.language, DEFAULT_SETTINGS.language);
 });
 
+test('settings migration defaults filamentSlotSubtypes and preserves valid saved values', () => {
+  assert.deepEqual(migrateSettings({}).filamentSlotSubtypes, ['Basic', 'Basic', 'Basic', 'Basic']);
+  assert.deepEqual(
+    migrateSettings({ filamentSlotSubtypes: ['CF', '  Silk  ', '', undefined] }).filamentSlotSubtypes,
+    ['CF', 'Silk', 'Basic', 'Basic']
+  );
+});
+
 test('normalizes base URLs without forcing Moonraker port', () => {
   assert.equal(normalizeBaseUrl('192.168.1.17'), 'http://192.168.1.17');
   assert.equal(normalizeBaseUrl(' https://printer.local/ '), 'https://printer.local');
@@ -600,6 +624,205 @@ test('builds encoded file and thumbnail URLs', () => {
     thumbnailUrl('http://printer:7125', 'folder/test file.gcode', '.thumbs/preview 300.png'),
     'http://printer:7125/server/files/gcodes/folder/.thumbs/preview%20300.png'
   );
+});
+
+test('buildManualFilamentSlotCommand rejects out-of-range and non-integer channels', () => {
+  for (const bad of [-1, 4, 1.5, NaN, Infinity, '0', null]) {
+    assert.throws(
+      () => buildManualFilamentSlotCommand(bad, {}),
+      { message: /channel/i },
+      `expected channel ${String(bad)} to be rejected`
+    );
+  }
+});
+
+test('buildManualFilamentSlotCommand accepts channel bounds 0 through 3', () => {
+  for (const ok of [0, 1, 2, 3]) {
+    const cmd = buildManualFilamentSlotCommand(ok, {});
+    assert.match(cmd, new RegExp(`CONFIG_EXTRUDER=${ok}\\b`));
+  }
+});
+
+test('buildManualFilamentSlotCommand applies vendor/material/subtype defaults on empty info', () => {
+  const cmd = buildManualFilamentSlotCommand(0, {});
+  assert.equal(
+    cmd,
+    'SET_PRINT_FILAMENT_CONFIG CONFIG_EXTRUDER=0 VENDOR="Generic" FILAMENT_TYPE=PLA FILAMENT_SUBTYPE="Basic" COLOR_NUMS=1 COLORS=FFFFFF MULTI_MODE=0 ALPHA=255 FORCE=1'
+  );
+});
+
+test('buildManualFilamentSlotCommand quotes vendor and subtype but not material', () => {
+  const cmd = buildManualFilamentSlotCommand(2, {
+    VENDOR: 'SUNLU',
+    MAIN_TYPE: 'PETG',
+    SUB_TYPE: 'Matte',
+    RGB_1: 0x1a2b3c,
+    ALPHA: 220,
+  });
+  assert.equal(
+    cmd,
+    'SET_PRINT_FILAMENT_CONFIG CONFIG_EXTRUDER=2 VENDOR="SUNLU" FILAMENT_TYPE=PETG FILAMENT_SUBTYPE="Matte" COLOR_NUMS=1 COLORS=1A2B3C MULTI_MODE=0 ALPHA=220 FORCE=1'
+  );
+});
+
+test('buildManualFilamentSlotCommand preserves spaces in vendor and subtype', () => {
+  const cmd = buildManualFilamentSlotCommand(1, { VENDOR: 'Bambu Lab', SUB_TYPE: 'High Speed' });
+  assert.match(cmd, /VENDOR="Bambu Lab"/);
+  assert.match(cmd, /FILAMENT_SUBTYPE="High Speed"/);
+});
+
+test('buildManualFilamentSlotCommand rejects quote, backslash, and newline in text fields', () => {
+  for (const bad of ['has"quote', 'back\\slash', 'new\nline', 'car\rriage']) {
+    assert.throws(() => buildManualFilamentSlotCommand(0, { VENDOR: bad }), { message: /vendor/i });
+    assert.throws(() => buildManualFilamentSlotCommand(0, { SUB_TYPE: bad }), { message: /subtype/i });
+    assert.throws(() => buildManualFilamentSlotCommand(0, { MAIN_TYPE: bad }), { message: /material/i });
+  }
+});
+
+test('buildManualFilamentSlotCommand rejects MAIN_TYPE with spaces or symbols outside [A-Za-z0-9._+-]', () => {
+  for (const bad of ['PLA CF', 'PLA/CF', 'PLA#', 'PLA CF+', 'PETG HF']) {
+    assert.throws(() => buildManualFilamentSlotCommand(0, { MAIN_TYPE: bad }), { message: /material/i });
+  }
+});
+
+test('buildManualFilamentSlotCommand accepts MAIN_TYPE with hyphen, plus, dot, and underscore', () => {
+  for (const ok of ['PLA', 'PLA-CF', 'PETG.HF', 'PA6_GF', 'PLA+', 'PEI-1010']) {
+    assert.doesNotThrow(() => buildManualFilamentSlotCommand(0, { MAIN_TYPE: ok }));
+  }
+});
+
+test('buildManualFilamentSlotCommand clamps RGB color to 24-bit range and pads to six hex digits', () => {
+  assert.match(buildManualFilamentSlotCommand(0, { RGB_1: 0 }), /COLORS=000000/);
+  assert.match(buildManualFilamentSlotCommand(0, { RGB_1: 0xff }), /COLORS=0000FF/);
+  assert.match(buildManualFilamentSlotCommand(0, { RGB_1: 0xffffff }), /COLORS=FFFFFF/);
+  assert.match(buildManualFilamentSlotCommand(0, { RGB_1: 0x1000000 }), /COLORS=FFFFFF/);
+  assert.match(buildManualFilamentSlotCommand(0, { RGB_1: -42 }), /COLORS=000000/);
+  assert.match(buildManualFilamentSlotCommand(0, { RGB_1: 0x2196f3 }), /COLORS=2196F3/);
+  assert.match(buildManualFilamentSlotCommand(0, { RGB_1: 0.99 }), /COLORS=000000/);
+});
+
+test('buildManualFilamentSlotCommand falls back to FFFFFF color when RGB_1 is missing or non-finite', () => {
+  for (const bad of [undefined, NaN, Infinity, 'blue', {}]) {
+    assert.match(buildManualFilamentSlotCommand(0, { RGB_1: bad }), /COLORS=FFFFFF/);
+  }
+});
+
+test('buildManualFilamentSlotCommand clamps ALPHA to the 0-255 byte range', () => {
+  assert.match(buildManualFilamentSlotCommand(0, { ALPHA: 0 }), /ALPHA=0\b/);
+  assert.match(buildManualFilamentSlotCommand(0, { ALPHA: 255 }), /ALPHA=255\b/);
+  assert.match(buildManualFilamentSlotCommand(0, { ALPHA: 300 }), /ALPHA=255\b/);
+  assert.match(buildManualFilamentSlotCommand(0, { ALPHA: -10 }), /ALPHA=0\b/);
+  assert.match(buildManualFilamentSlotCommand(0, { ALPHA: 0.9 }), /ALPHA=0\b/);
+});
+
+test('buildManualFilamentSlotCommand falls back to ALPHA=255 when ALPHA is missing or non-finite', () => {
+  for (const bad of [undefined, NaN, Infinity, 'full', {}]) {
+    assert.match(buildManualFilamentSlotCommand(0, { ALPHA: bad }), /ALPHA=255\b/);
+  }
+});
+
+test('buildManualFilamentSlotCommand trims surrounding whitespace from text fields', () => {
+  const cmd = buildManualFilamentSlotCommand(0, { VENDOR: '  SUNLU  ', MAIN_TYPE: '  PLA  ', SUB_TYPE: '  Silk  ' });
+  assert.match(cmd, /VENDOR="SUNLU"/);
+  assert.match(cmd, /FILAMENT_TYPE=PLA\b/);
+  assert.match(cmd, /FILAMENT_SUBTYPE="Silk"/);
+});
+
+test('every catalog MAIN_TYPE preset passes the firmware MAIN_TYPE regex and command builder', () => {
+  assert.ok(FILAMENT_MAIN_TYPES.length >= 40, 'MAIN_TYPE catalog should cover the firmware polymers');
+  for (const main of FILAMENT_MAIN_TYPES) {
+    assert.match(main, MAIN_TYPE_PATTERN, `MAIN_TYPE ${main} must match the firmware pattern`);
+    assert.doesNotThrow(
+      () => buildManualFilamentSlotCommand(0, { MAIN_TYPE: main }),
+      `MAIN_TYPE ${main} must be accepted by the command builder`
+    );
+  }
+});
+
+test('filament MAIN_TYPE presets are unique, trimmed, and exclude the non-firmware SUPPORT entry', () => {
+  const lower = FILAMENT_MAIN_TYPES.map((m) => m.toLowerCase());
+  assert.equal(new Set(lower).size, lower.length, 'MAIN_TYPE presets must be unique');
+  for (const m of FILAMENT_MAIN_TYPES) {
+    assert.equal(m, m.trim(), `MAIN_TYPE ${m} must not carry surrounding whitespace`);
+  }
+  assert.equal(FILAMENT_MAIN_TYPES.includes('SUPPORT'), false, 'SUPPORT is not a real firmware material');
+  assert.equal(FILAMENT_MAIN_TYPES.includes('PLA'), true);
+  assert.equal(FILAMENT_MAIN_TYPES.includes('PETG'), true);
+  assert.equal(FILAMENT_MAIN_TYPES.includes('PA6'), true);
+});
+
+test('filament SUB_TYPE presets include the firmware temp-affecting subtypes', () => {
+  for (const sub of ['Basic', 'CF', 'GF', 'Silk', 'Matte', 'HF']) {
+    assert.equal(FILAMENT_SUB_TYPES.includes(sub), true, `expected ${sub} in SUB_TYPE presets`);
+  }
+});
+
+test('every curated MAIN_TYPE has a subtype list starting with Basic and using only known tokens', () => {
+  const allowed = new Set([
+    'Basic', 'Plus', 'Silk', 'Matte', 'HF', 'HS', 'SnapSpeed',
+    'CF', 'GF', 'AF', 'PTFE', 'Wood', 'ESD', 'AERO', 'rCF', 'Marble',
+    '95A', 'High Speed',
+  ]);
+  for (const main of FILAMENT_MAIN_TYPES) {
+    const subs = subtypesForMainType(main);
+    assert.ok(subs.length >= 1, `${main} must expose at least Basic`);
+    assert.equal(subs[0], 'Basic', `${main} subtype list must start with Basic`);
+    for (const sub of subs) {
+      assert.ok(allowed.has(sub), `${main}: unknown subtype token ${sub}`);
+    }
+  }
+});
+
+test('subtypesForMainType falls back to Basic for an unknown MAIN_TYPE', () => {
+  assert.deepEqual([...subtypesForMainType('NOPE')], ['Basic']);
+});
+
+test('curated subtypes include firmware-tuned finishes absent from the chemistry catalog', () => {
+  assert.ok(subtypesForMainType('PLA').includes('Matte'), 'PLA must offer Matte (firmware -5C)');
+  assert.ok(subtypesForMainType('TPU').includes('95A'), 'TPU must offer 95A (firmware 95A HF)');
+  assert.ok(subtypesForMainType('PLA').includes('CF'), 'PLA must offer CF (catalog PLA-CF)');
+  assert.equal(subtypesForMainType('PVA').includes('CF'), false, 'soluble support stays Basic-only');
+});
+
+test('bundled temp catalog covers every MAIN_TYPE the editor exposes', () => {
+  for (const main of FILAMENT_MAIN_TYPES) {
+    const range = filamentTempRange(main);
+    assert.ok(range, `${main} must have a bundled temp range`);
+    assert.ok(range.nozzleMax >= range.nozzleMin, `${main} temp range is inverted`);
+  }
+});
+
+test('slicer temp floor uses material temps, not the old 220C PLA cliff', () => {
+  // PEEK/PEKK/PEI-1010/PPSU must slice HOT, not at the PLA fallback.
+  assert.ok(filamentTempTarget('PEEK') >= 390, `PEEK target ${filamentTempTarget('PEEK')} must be >= 390`);
+  assert.ok(filamentTempTarget('PEKK') >= 380);
+  assert.ok(filamentTempTarget('PEI-1010') >= 370);
+  assert.ok(filamentTempTarget('PPSU') >= 360);
+  // PLA still lands in a sane PLA range.
+  assert.ok(filamentTempTarget('PLA') >= 210 && filamentTempTarget('PLA') <= 245);
+  // Unknown MAIN_TYPE falls back to 220.
+  assert.equal(filamentTempTarget('NOPE'), 220);
+});
+
+test('deriveMainType parses base polymer from compound display strings', () => {
+  assert.equal(deriveMainType('PEEK'), 'PEEK');
+  assert.equal(deriveMainType('PLA CF'), 'PLA');
+  assert.equal(deriveMainType('PA-CF'), 'PA');
+  assert.equal(deriveMainType('PA6-CF'), 'PA6');
+  assert.equal(deriveMainType('PEI-1010 CF'), 'PEI-1010');
+  assert.equal(deriveMainType('PETG HF'), 'PETG');
+  assert.equal(deriveMainType('Empty'), 'PLA');
+  assert.equal(deriveMainType(''), 'PLA');
+});
+
+test('resolveProfileValues falls back to the catalog floor when no firmware flow_temp exists', () => {
+  // No firmware profile -> use bundled catalog target (the safety fix).
+  assert.equal(resolveProfileValues({}, 'PEEK').nozzleTemp, filamentTempTarget('PEEK'));
+  assert.ok(resolveProfileValues({}, 'PEEK').nozzleTemp >= 390, 'PEEK must not slice at 220C');
+  // Firmware flow_temp wins when present.
+  assert.equal(resolveProfileValues({ flow_temp: 220 }, 'PLA').nozzleTemp, 220);
+  // Unknown mainType with no profile -> 220 floor.
+  assert.equal(resolveProfileValues({}, 'NOPE').nozzleTemp, 220);
 });
 
 test('parses the latest Orca M73 progress and remaining time', () => {

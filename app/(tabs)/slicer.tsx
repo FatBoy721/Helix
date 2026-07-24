@@ -549,14 +549,15 @@ export default function SliceLabScreen() {
       }
       if (activeUrl) {
         try {
-          await Promise.all(normalized.map((color, channel) => api.setFilamentSlot(
+          const channels = changedIndex == null ? normalized.map((_, index) => index) : [changedIndex];
+          await Promise.all(channels.map((channel) => api.setFilamentSlot(
             activeUrl,
             channel,
             {
               VENDOR: settings.filamentSlotBrands[channel] || 'Generic',
               MAIN_TYPE: settings.filamentSlotMaterials[channel] || 'PLA',
-              SUB_TYPE: status.filament_detect?.info?.[channel]?.SUB_TYPE || 'Basic',
-              RGB_1: parseInt(color.replace('#', '').slice(0, 6), 16),
+              SUB_TYPE: settings.filamentSlotSubtypes[channel] || status.filament_detect?.info?.[channel]?.SUB_TYPE || 'Basic',
+              RGB_1: parseInt(normalized[channel].replace('#', '').slice(0, 6), 16),
               ALPHA: 255,
             },
           )));
@@ -565,7 +566,7 @@ export default function SliceLabScreen() {
         }
       }
     },
-    [activeUrl, settings.filamentSlotBrands, settings.filamentSlotMaterials, status, updateSettings],
+    [activeUrl, settings.filamentSlotBrands, settings.filamentSlotMaterials, settings.filamentSlotSubtypes, status, updateSettings],
   );
 
   const updateFilamentMaterials = useCallback(
@@ -577,13 +578,14 @@ export default function SliceLabScreen() {
       await updateSettings({ filamentSlotMaterials: normalized });
       if (activeUrl) {
         try {
-          await Promise.all(normalized.map((material, channel) => api.setFilamentSlot(
+          const channels = changedIndex == null ? normalized.map((_, index) => index) : [changedIndex];
+          await Promise.all(channels.map((channel) => api.setFilamentSlot(
             activeUrl,
             channel,
             {
               VENDOR: settings.filamentSlotBrands[channel] || 'Generic',
-              MAIN_TYPE: material,
-              SUB_TYPE: status.filament_detect?.info?.[channel]?.SUB_TYPE || 'Basic',
+              MAIN_TYPE: normalized[channel],
+              SUB_TYPE: settings.filamentSlotSubtypes[channel] || status.filament_detect?.info?.[channel]?.SUB_TYPE || 'Basic',
               RGB_1: parseInt(normalizeFilamentSlotColors(settings.filamentSlotColors)[channel].replace('#', '').slice(0, 6), 16),
               ALPHA: 255,
             },
@@ -593,7 +595,7 @@ export default function SliceLabScreen() {
         }
       }
     },
-    [activeUrl, settings.filamentSlotBrands, settings.filamentSlotColors, settings.filamentSlotMaterials, status, updateSettings],
+    [activeUrl, settings.filamentSlotBrands, settings.filamentSlotColors, settings.filamentSlotMaterials, settings.filamentSlotSubtypes, status, updateSettings],
   );
 
   const updateFilamentBrands = useCallback(
@@ -609,7 +611,7 @@ export default function SliceLabScreen() {
             {
               VENDOR: next[channel] || 'Generic',
               MAIN_TYPE: settings.filamentSlotMaterials[channel] || 'PLA',
-              SUB_TYPE: status.filament_detect?.info?.[channel]?.SUB_TYPE || 'Basic',
+              SUB_TYPE: settings.filamentSlotSubtypes[channel] || status.filament_detect?.info?.[channel]?.SUB_TYPE || 'Basic',
               RGB_1: parseInt(normalizeFilamentSlotColors(settings.filamentSlotColors)[channel].replace('#', '').slice(0, 6), 16),
               ALPHA: 255,
             },
@@ -619,7 +621,37 @@ export default function SliceLabScreen() {
         }
       }
     },
-    [activeUrl, selectedPrinterUrl, settings.filamentSlotBrands, settings.filamentSlotColors, settings.filamentSlotMaterials, status, updateSettings],
+    [activeUrl, selectedPrinterUrl, settings.filamentSlotBrands, settings.filamentSlotColors, settings.filamentSlotMaterials, settings.filamentSlotSubtypes, status, updateSettings],
+  );
+
+  const updateFilamentSubtypes = useCallback(
+    async (next: string[], changedIndex?: number) => {
+      const normalized = Array.from({ length: 4 }, (_, i) => {
+        const value = next[i]?.trim();
+        return value || settings.filamentSlotSubtypes[i] || 'Basic';
+      });
+      await updateSettings({ filamentSlotSubtypes: normalized });
+      const printerUrl = activeUrl || selectedPrinterUrl;
+      if (printerUrl) {
+        try {
+          const channels = changedIndex == null ? normalized.map((_, index) => index) : [changedIndex];
+          await Promise.all(channels.map((channel) => api.setFilamentSlot(
+            printerUrl,
+            channel,
+            {
+              VENDOR: settings.filamentSlotBrands[channel] || 'Generic',
+              MAIN_TYPE: settings.filamentSlotMaterials[channel] || 'PLA',
+              SUB_TYPE: normalized[channel],
+              RGB_1: parseInt(normalizeFilamentSlotColors(settings.filamentSlotColors)[channel].replace('#', '').slice(0, 6), 16),
+              ALPHA: 255,
+            },
+          )));
+        } catch (error) {
+          Alert.alert('Printer update unavailable', error instanceof Error ? error.message : 'Helix saved the value locally.');
+        }
+      }
+    },
+    [activeUrl, selectedPrinterUrl, settings.filamentSlotBrands, settings.filamentSlotColors, settings.filamentSlotMaterials, settings.filamentSlotSubtypes, updateSettings],
   );
 
   const openToolpathPreview = useCallback(async () => {
@@ -823,10 +855,12 @@ export default function SliceLabScreen() {
           slotColors={settings.filamentSlotColors}
           slotBrands={settings.filamentSlotBrands}
           slotMaterials={settings.filamentSlotMaterials}
+          slotSubtypes={settings.filamentSlotSubtypes}
           slots={filamentSlots}
           onChange={updateFilamentSlots}
           onBrandsChange={updateFilamentBrands}
           onMaterialsChange={updateFilamentMaterials}
+          onSubtypesChange={updateFilamentSubtypes}
         />
         <Text style={styles.mutedText}>
           {toolLoad.known

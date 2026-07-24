@@ -524,7 +524,7 @@ export default function Dashboard() {
   const mainSnapshotUrl = resolveSnapshotUrl(mainWebcam?.snapshot_url, settings.cameraUrl, activeBaseUrl);
   const hasCamera = show.camera && !!mainCameraUrl;
 
-  const updateFilamentSlots = useCallback(async (next: string[]) => {
+  const updateFilamentSlots = useCallback(async (next: string[], changedIndex?: number) => {
     const normalized = normalizeFilamentSlotColors(next);
     await update({ filamentSlotColors: normalized });
     try {
@@ -534,14 +534,15 @@ export default function Dashboard() {
     }
     if (activeBaseUrl) {
       try {
-        await Promise.all(normalized.map((color, channel) => api.setFilamentSlot(
+        const channels = changedIndex == null ? normalized.map((_, index) => index) : [changedIndex];
+        await Promise.all(channels.map((channel) => api.setFilamentSlot(
           activeBaseUrl,
           channel,
           {
             VENDOR: settings.filamentSlotBrands[channel] || 'Generic',
             MAIN_TYPE: settings.filamentSlotMaterials[channel] || 'PLA',
-            SUB_TYPE: status.filament_detect?.info?.[channel]?.SUB_TYPE || 'Basic',
-            RGB_1: parseInt(color.replace('#', '').slice(0, 6), 16),
+            SUB_TYPE: settings.filamentSlotSubtypes[channel] || status.filament_detect?.info?.[channel]?.SUB_TYPE || 'Basic',
+            RGB_1: parseInt(normalized[channel].replace('#', '').slice(0, 6), 16),
             ALPHA: 255,
           },
         )));
@@ -549,19 +550,20 @@ export default function Dashboard() {
         Alert.alert('Printer update unavailable', error instanceof Error ? error.message : 'Helix saved the value locally.');
       }
     }
-  }, [activeBaseUrl, settings.filamentSlotBrands, settings.filamentSlotMaterials, status, update]);
+  }, [activeBaseUrl, settings.filamentSlotBrands, settings.filamentSlotMaterials, settings.filamentSlotSubtypes, status, update]);
 
-  const updateFilamentMaterials = useCallback(async (next: string[]) => {
+  const updateFilamentMaterials = useCallback(async (next: string[], changedIndex?: number) => {
     await update({ filamentSlotMaterials: next });
     if (activeBaseUrl) {
       try {
-        await Promise.all(next.map((material, channel) => api.setFilamentSlot(
+        const channels = changedIndex == null ? next.map((_, index) => index) : [changedIndex];
+        await Promise.all(channels.map((channel) => api.setFilamentSlot(
           activeBaseUrl,
           channel,
           {
             VENDOR: settings.filamentSlotBrands[channel] || 'Generic',
-            MAIN_TYPE: material || 'PLA',
-            SUB_TYPE: status.filament_detect?.info?.[channel]?.SUB_TYPE || 'Basic',
+            MAIN_TYPE: next[channel] || 'PLA',
+            SUB_TYPE: settings.filamentSlotSubtypes[channel] || status.filament_detect?.info?.[channel]?.SUB_TYPE || 'Basic',
             RGB_1: parseInt(normalizeFilamentSlotColors(settings.filamentSlotColors)[channel].replace('#', '').slice(0, 6), 16),
             ALPHA: 255,
           },
@@ -570,7 +572,7 @@ export default function Dashboard() {
         Alert.alert('Printer update unavailable', error instanceof Error ? error.message : 'Helix saved the value locally.');
       }
     }
-  }, [activeBaseUrl, settings.filamentSlotBrands, settings.filamentSlotColors, status, update]);
+  }, [activeBaseUrl, settings.filamentSlotBrands, settings.filamentSlotColors, settings.filamentSlotSubtypes, status, update]);
 
   const updateFilamentBrands = useCallback(async (next: string[], changedIndex?: number) => {
     await update({ filamentSlotBrands: next });
@@ -583,7 +585,7 @@ export default function Dashboard() {
           {
             VENDOR: next[channel] || 'Generic',
             MAIN_TYPE: settings.filamentSlotMaterials[channel] || 'PLA',
-            SUB_TYPE: status.filament_detect?.info?.[channel]?.SUB_TYPE || 'Basic',
+            SUB_TYPE: settings.filamentSlotSubtypes[channel] || status.filament_detect?.info?.[channel]?.SUB_TYPE || 'Basic',
             RGB_1: parseInt(normalizeFilamentSlotColors(settings.filamentSlotColors)[channel].replace('#', '').slice(0, 6), 16),
             ALPHA: 255,
           },
@@ -592,7 +594,33 @@ export default function Dashboard() {
         Alert.alert('Printer update unavailable', error instanceof Error ? error.message : 'Helix saved the value locally.');
       }
     }
-  }, [activeBaseUrl, settings.filamentSlotBrands, settings.filamentSlotColors, settings.filamentSlotMaterials, status, update]);
+  }, [activeBaseUrl, settings.filamentSlotBrands, settings.filamentSlotColors, settings.filamentSlotMaterials, settings.filamentSlotSubtypes, status, update]);
+
+  const updateFilamentSubtypes = useCallback(async (next: string[], changedIndex?: number) => {
+    const normalized = Array.from({ length: 4 }, (_, i) => {
+      const value = next[i]?.trim();
+      return value || settings.filamentSlotSubtypes[i] || 'Basic';
+    });
+    await update({ filamentSlotSubtypes: normalized });
+    if (activeBaseUrl) {
+      try {
+        const channels = changedIndex == null ? normalized.map((_, index) => index) : [changedIndex];
+        await Promise.all(channels.map((channel) => api.setFilamentSlot(
+          activeBaseUrl,
+          channel,
+          {
+            VENDOR: settings.filamentSlotBrands[channel] || 'Generic',
+            MAIN_TYPE: settings.filamentSlotMaterials[channel] || 'PLA',
+            SUB_TYPE: normalized[channel],
+            RGB_1: parseInt(normalizeFilamentSlotColors(settings.filamentSlotColors)[channel].replace('#', '').slice(0, 6), 16),
+            ALPHA: 255,
+          },
+        )));
+      } catch (error) {
+        Alert.alert('Printer update unavailable', error instanceof Error ? error.message : 'Helix saved the value locally.');
+      }
+    }
+  }, [activeBaseUrl, settings.filamentSlotBrands, settings.filamentSlotColors, settings.filamentSlotMaterials, settings.filamentSlotSubtypes, update]);
 
   const printerName = activePrinter?.name?.trim() || t('Printer');
   const connectionHost = shortUrl(activeUrl || selectedPrinterUrl);
@@ -871,9 +899,11 @@ export default function Dashboard() {
                     slotColors={settings.filamentSlotColors}
                     slotBrands={settings.filamentSlotBrands}
                     slotMaterials={settings.filamentSlotMaterials}
+                    slotSubtypes={settings.filamentSlotSubtypes}
                     onChange={updateFilamentSlots}
                     onBrandsChange={updateFilamentBrands}
                     onMaterialsChange={updateFilamentMaterials}
+                    onSubtypesChange={updateFilamentSubtypes}
                   />
                 )}
               </View>
