@@ -14,6 +14,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { colors, spacing } from '../../constants/theme';
 import {
+  addExtractProgressListener,
   clearLastSlice,
   extractModelPlate,
   getGcodeFilamentGrams,
@@ -111,6 +112,19 @@ type ToolLoadInfo = {
   blockReason: string | null;
 };
 
+const EXTRACT_SAYINGS = [
+  'Slicing the un-sliceable…',
+  'Convincing triangles to behave…',
+  'Aligning the molecular lattice…',
+  'Counting layers like sheep…',
+  'Polishing vertices to a shine…',
+  'Negotiating with the build plate…',
+  'Bribing the extruder…',
+  'Untangling the spaghetti code…',
+  'Consulting the print gods…',
+  'Hammering pixels into plastic…',
+];
+
 export default function SliceLabScreen() {
   const router = useRouter();
   const [result, setResult] = useState<LoadState>({ state: 'loading' });
@@ -125,9 +139,11 @@ export default function SliceLabScreen() {
   const [printStart, setPrintStart] = useState<PrintStartState>({ state: 'idle' });
   const [mwAuthed, setMwAuthed] = useState(false);
   const [plates, setPlates] = useState<ModelPlate[]>([]);
-  const [selectedPlate, setSelectedPlate] = useState<{ id: number; path: string; name: string } | null>(null);
+  const [selectedPlate, setSelectedPlate] = useState<{ id: number; name: string } | null>(null);
   const [platesFor, setPlatesFor] = useState<string | null>(null);
   const [extracting, setExtracting] = useState(false);
+  const [extractProgress, setExtractProgress] = useState<{ percent: number; phase: string } | null>(null);
+  const [sayingIdx, setSayingIdx] = useState(0);
   const [preprocessOpen, setPreprocessOpen] = useState(false);
   const [sendProgress, setSendProgress] = useState(0);
   const [perToolGrams, setPerToolGrams] = useState<number[]>([]);
@@ -167,6 +183,14 @@ export default function SliceLabScreen() {
     if (!settingsLoaded) return;
     setFilamentSlotColors(effectiveFilamentSlotColors).catch(() => {});
   }, [settingsLoaded, effectiveFilamentSlotColors]);
+
+  // Rotate the playful "sayings" while the prepare overlay is up so there's
+  // always motion even between native progress ticks.
+  useEffect(() => {
+    if (!extracting) return;
+    const id = setInterval(() => setSayingIdx((i) => (i + 1) % EXTRACT_SAYINGS.length), 2400);
+    return () => clearInterval(id);
+  }, [extracting]);
 
   // Mirror the printer list for the native print dialog's printer picker.
   useEffect(() => {
@@ -485,22 +509,16 @@ export default function SliceLabScreen() {
   }, [modelFilePath, platesFor]);
 
   const choosePlate = useCallback(
-    async (plate: ModelPlate) => {
-      if (!modelFilePath || selectedPlate?.id === plate.id) return;
-      setExtracting(true);
-      try {
-        const extracted = await extractModelPlate(modelFilePath, plate.id);
-        setSelectedPlate({ id: plate.id, path: extracted.filePath, name: plate.name });
-        setSlice({ state: 'idle' });
-        setUpload({ state: 'idle' });
-        setPrintStart({ state: 'idle' });
-      } catch (error) {
-        Alert.alert('Plate', error instanceof Error ? error.message : String(error));
-      } finally {
-        setExtracting(false);
-      }
+    (plate: ModelPlate) => {
+      if (selectedPlate?.id === plate.id) return;
+      // Selection only — extraction happens in prepareAndSlice so tapping a
+      // plate card is instant instead of blocking on the native repack.
+      setSelectedPlate({ id: plate.id, name: plate.name });
+      setSlice({ state: 'idle' });
+      setUpload({ state: 'idle' });
+      setPrintStart({ state: 'idle' });
     },
-    [modelFilePath, selectedPlate],
+    [selectedPlate],
   );
 
   const prepareAndSlice = useCallback(async () => {
@@ -513,11 +531,22 @@ export default function SliceLabScreen() {
       Alert.alert('Filament', toolLoad.blockReason);
       return;
     }
-    const path = selectedPlate?.path ?? download.result.filePath;
-    const title = selectedPlate
-      ? `${download.result.fileName} — ${selectedPlate.name}`
-      : download.result.fileName;
+    let path = download.result.filePath;
+    let title = download.result.fileName;
+    setExtracting(true);
+    const sub = addExtractProgressListener((p) => setExtractProgress(p));
+    // Yield one frame so React paints the overlay BEFORE the (possibly very
+    // fast) native extraction + activity launch. Without this, the native call
+    // resolves and the Activity covers the screen before the overlay ever
+    // renders — so the user only sees a dulled button, never the progress bar.
+    await new Promise((resolve) => setTimeout(resolve, 60));
     try {
+      if (selectedPlate) {
+        const extracted = await extractModelPlate(download.result.filePath, selectedPlate.id);
+        path = extracted.filePath;
+        title = `${download.result.fileName} — ${selectedPlate.name}`;
+        setExtractProgress({ percent: 100, phase: 'Opening slicer…' });
+      }
       const materialProfiles = await resolveNativeMaterialProfiles(
         connection === 'connected' ? activeUrl : null,
         filamentSlots,
@@ -535,6 +564,10 @@ export default function SliceLabScreen() {
       );
     } catch (error) {
       Alert.alert('Prepare & Slice', error instanceof Error ? error.message : String(error));
+    } finally {
+      sub.remove();
+      setExtractProgress(null);
+      setExtracting(false);
     }
   }, [activeUrl, connection, download, effectiveFilamentSlotColors, filamentSlots, toolLoad, plates, selectedPlate]);
 
@@ -973,12 +1006,6 @@ export default function SliceLabScreen() {
                 );
               })}
             </ScrollView>
-            {extracting ? (
-              <View style={styles.loadingRow}>
-                <ActivityIndicator color={colors.primary} />
-                <Text style={styles.body}>Preparing plate…</Text>
-              </View>
-            ) : null}
           </View>
         ) : null}
         {hasModel ? (
@@ -997,7 +1024,11 @@ export default function SliceLabScreen() {
           >
             <MaterialCommunityIcons name="cube-scan" size={20} color={colors.text} />
             <Text style={styles.buttonText}>
-              {plates.length > 1 && !selectedPlate ? 'Pick a plate above' : 'Prepare & Slice'}
+              {extracting
+                ? 'Preparing plate…'
+                : plates.length > 1 && !selectedPlate
+                  ? 'Pick a plate above'
+                  : 'Prepare & Slice'}
             </Text>
           </TouchableOpacity>
         ) : null}
@@ -1038,6 +1069,36 @@ export default function SliceLabScreen() {
         </View>
       ) : null}
     </ScrollView>
+
+    {extracting ? (
+      <View style={styles.prepareOverlay}>
+        <View style={styles.prepareCard}>
+          <Text style={styles.prepareTitle}>
+            {selectedPlate ? `Preparing ${selectedPlate.name}` : 'Preparing model'}
+          </Text>
+          {extractProgress ? (
+            <>
+              <View style={styles.progressTrack}>
+                <View
+                  style={[
+                    styles.progressFill,
+                    { width: `${Math.max(2, Math.min(100, extractProgress.percent))}%` },
+                  ]}
+                />
+              </View>
+              <Text style={styles.progressPct}>{extractProgress.percent}%</Text>
+              <Text style={styles.preparePhase}>{extractProgress.phase}</Text>
+              <Text style={styles.prepareSaying}>{EXTRACT_SAYINGS[sayingIdx]}</Text>
+            </>
+          ) : (
+            <>
+              <ActivityIndicator size="large" color={colors.primary} />
+              <Text style={styles.prepareSub}>Opening slicer…</Text>
+            </>
+          )}
+        </View>
+      </View>
+    ) : null}
 
     <PrintPreprocessDialog
       visible={preprocessOpen}
@@ -1340,6 +1401,77 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.sm,
+  },
+  prepareOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(8, 10, 12, 0.82)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: spacing.lg,
+  },
+  prepareCard: {
+    backgroundColor: colors.card,
+    borderColor: colors.border,
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: spacing.lg,
+    width: '82%',
+    maxWidth: 340,
+    alignItems: 'center',
+    gap: spacing.md,
+  },
+  prepareTitle: {
+    color: colors.text,
+    fontSize: 15,
+    lineHeight: 19,
+    fontWeight: '800',
+    textAlign: 'center',
+  },
+  progressTrack: {
+    width: '100%',
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: colors.border,
+    overflow: 'hidden',
+  },
+  progressFill: {
+    height: '100%',
+    borderRadius: 4,
+    backgroundColor: colors.primary,
+  },
+  progressPct: {
+    color: colors.text,
+    fontSize: 22,
+    lineHeight: 26,
+    fontWeight: '800',
+    fontVariant: ['tabular-nums'],
+    textAlign: 'center',
+  },
+  preparePhase: {
+    color: colors.subtext,
+    fontSize: 13,
+    lineHeight: 17,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  prepareSaying: {
+    color: colors.subtext,
+    fontSize: 12,
+    lineHeight: 16,
+    fontStyle: 'italic',
+    fontWeight: '500',
+    textAlign: 'center',
+  },
+  prepareSub: {
+    color: colors.subtext,
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: '600',
+    textAlign: 'center',
   },
   body: {
     color: colors.text,

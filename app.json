@@ -24,7 +24,7 @@
     },
     "android": {
       "package": "org.crabcore.u1control",
-      "versionCode": 16,
+      "versionCode": 17,
       "softwareKeyboardLayoutMode": "resize",
       "permissions": [
         "android.permission.POST_NOTIFICATIONS"
