@@ -11,9 +11,11 @@ type Props = {
   slotColors: string[];
   slotBrands: string[];
   slotMaterials: string[];
-  onChange: (colors: string[]) => void;
+  slotSubtypes: string[];
+  onChange: (colors: string[], changedIndex?: number) => void;
   onBrandsChange: (brands: string[], changedIndex?: number) => void;
-  onMaterialsChange: (materials: string[]) => void;
+  onMaterialsChange: (materials: string[], changedIndex?: number) => void;
+  onSubtypesChange: (subtypes: string[], changedIndex?: number) => void;
 };
 
 function printerText(value: unknown): string | undefined {
@@ -34,6 +36,7 @@ function resolveSlots(
   slotColors: string[],
   slotBrands: string[],
   slotMaterials: string[],
+  slotSubtypes: string[],
 ): FilamentSlotDisplay[] {
   const task = status.print_task_config && typeof status.print_task_config === 'object'
     ? status.print_task_config
@@ -52,11 +55,12 @@ function resolveSlots(
     const materialType = printerText(materialsFromPrinter[index]);
     const subtype = printerText(subtypesFromPrinter[index]);
     const material = [materialType, subtype].filter(Boolean).join(' ') || undefined;
+    const manualMaterial = [slotMaterials[index], slotSubtypes[index]].filter(Boolean).join(' ');
     return {
       index,
       color: color ?? fallbackColors[index],
       brand: vendor && vendor !== 'GENERIC' ? vendor : slotBrands[index] ?? 'Generic',
-      material: material ?? slotMaterials[index] ?? 'PLA',
+      material: material ?? (manualMaterial || 'PLA'),
       status: loaded === true ? 'loaded' : loaded === false ? 'empty' : 'unknown',
       source: color || material ? 'printer' : 'manual',
     };
@@ -68,13 +72,15 @@ export default function FilamentDashboardCard({
   slotColors,
   slotBrands,
   slotMaterials,
+  slotSubtypes,
   onChange,
   onBrandsChange,
   onMaterialsChange,
+  onSubtypesChange,
 }: Props) {
   const slots = useMemo(
-    () => resolveSlots(status, slotColors, slotBrands, slotMaterials),
-    [status, slotColors, slotBrands, slotMaterials],
+    () => resolveSlots(status, slotColors, slotBrands, slotMaterials, slotSubtypes),
+    [status, slotColors, slotBrands, slotMaterials, slotSubtypes],
   );
 
   return (
@@ -84,10 +90,12 @@ export default function FilamentDashboardCard({
         slotColors={slotColors}
         slotBrands={slotBrands}
         slotMaterials={slotMaterials}
+        slotSubtypes={slotSubtypes}
         slots={slots}
         onChange={onChange}
         onBrandsChange={onBrandsChange}
         onMaterialsChange={onMaterialsChange}
+        onSubtypesChange={onSubtypesChange}
       />
     </View>
   );

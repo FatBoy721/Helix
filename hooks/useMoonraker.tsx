@@ -120,6 +120,7 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
   const connectedRef = useRef(false);
   const disconnectNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const appStateRef = useRef(AppState.currentState);
+  const backgroundedAtRef = useRef<number | null>(null);
 
   settingsRef.current = settings;
 
@@ -601,11 +602,24 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
 
     const sub = AppState.addEventListener('change', (state) => {
       appStateRef.current = state;
-      if (state !== 'active' && disconnectNoticeTimerRef.current) {
-        clearTimeout(disconnectNoticeTimerRef.current);
-        disconnectNoticeTimerRef.current = null;
+      if (state !== 'active') {
+        if (disconnectNoticeTimerRef.current) {
+          clearTimeout(disconnectNoticeTimerRef.current);
+          disconnectNoticeTimerRef.current = null;
+        }
+        if (backgroundedAtRef.current == null) {
+          backgroundedAtRef.current = Date.now();
+        }
+        return;
       }
-      if (state === 'active' && (!wsRef.current || wsRef.current.readyState !== WS_OPEN)) {
+      // Returning to the foreground. React Native WebSockets can report OPEN
+      // after Android Doze silently killed the underlying TCP connection, so
+      // don't trust readyState alone — force a reconnect when the app was
+      // backgrounded long enough for that to happen.
+      const bgGap = backgroundedAtRef.current ? Date.now() - backgroundedAtRef.current : 0;
+      backgroundedAtRef.current = null;
+      const socketDead = !wsRef.current || wsRef.current.readyState !== WS_OPEN;
+      if (socketDead || bgGap > 3000) {
         failCountRef.current = 0;
         if (settingsRef.current.connectionMode === 'auto') {
           urlIndexRef.current = 0;
