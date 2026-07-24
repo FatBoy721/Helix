@@ -241,6 +241,17 @@ export async function extractModelPlate(path: string, plateId: number): Promise<
   return nativeModule.extractPlate(path.replace(/^file:\/\//, ''), plateId);
 }
 
+export type ExtractProgress = { percent: number; phase: string };
+
+/**
+ * Subscribes to native "extractProgress" events emitted while a plate is being
+ * repacked (byte-counted over the two streaming passes). Returns an EmitterSubscription
+ * (call .remove() when done).
+ */
+export function addExtractProgressListener(cb: (p: ExtractProgress) => void) {
+  return DeviceEventEmitter.addListener('extractProgress', cb);
+}
+
 /**
  * Slices an STL/3MF with the native engine. Accepts a file:// uri or plain path.
  * onProgress receives native "HelixSliceProgress" events while the slice runs.
