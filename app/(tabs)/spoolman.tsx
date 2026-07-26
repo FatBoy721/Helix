@@ -17,7 +17,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useMoonraker } from '../../hooks/useMoonraker';
 import { useSettings } from '../../hooks/useSettings';
-import { api, normalizeBaseUrl, restartMoonraker, uploadConfigFile } from '../../services/moonraker';
+import { api, applyConfigIfChanged, normalizeBaseUrl } from '../../services/moonraker';
 import Dropdown from '../../components/Dropdown';
 import SpoolLabel from '../../components/SpoolLabel';
 import SpoolScanner from '../../components/SpoolScanner';
@@ -174,14 +174,13 @@ export default function SpoolmanScreen() {
     if (!server) return;
     setConfiguring(true);
     try {
-      await uploadConfigFile(
+      const changed = await applyConfigIfChanged(
         activeUrl,
         'extended/moonraker',
         'spoolman.cfg',
         `# Spoolman filament tracking (written by Helix)\n[spoolman]\nserver: ${server}\nsync_rate: 5\n`
       );
-      await restartMoonraker(activeUrl);
-      await new Promise((r) => setTimeout(r, 8000));
+      if (changed) await new Promise((r) => setTimeout(r, 8000));
       await refresh();
     } catch (e: any) {
       Alert.alert(t('Error'), String(e?.message ?? e));

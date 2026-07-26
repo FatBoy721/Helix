@@ -354,6 +354,71 @@ class HelixSlicerModule(
     }
   }
 
+  /**
+   * Repacks [path] (any 3MF the engine accepts — typically an extracted plate)
+   * into a temp 3MF where every object is reassigned to [targetTool] (0-based)
+   * and the multi-filament project config is stripped, so a re-slice produces
+   * single-tool gcode in that one material. Resolves the new filePath.
+   */
+  @ReactMethod
+  fun collapseModel(path: String, targetTool: Int, promise: Promise) {
+    try {
+      val file = File(path.removePrefix("file://"))
+      if (!file.exists()) {
+        promise.reject("E_NO_FILE", "Model file not found: ${file.absolutePath}")
+        return
+      }
+      val outFile = File(reactApplicationContext.filesDir, "collapsed_tool_${targetTool}.3mf")
+      PlateExtractor.collapseToSingleExtruder(file, targetTool, outFile)
+      if (!outFile.exists() || outFile.length() == 0L) {
+        promise.reject("E_COLLAPSE", "Failed to collapse model to tool $targetTool.")
+        return
+      }
+      promise.resolve(outFile.absolutePath)
+    } catch (error: Throwable) {
+      promise.reject("E_COLLAPSE", error.message, error)
+    }
+  }
+
+  /**
+   * Repacks [path] so each object's extruder is remapped per [extruderMapJson]
+   * (JSON object { "<1-based source extruder>": <0-based target slot>, ... }),
+   * keeping the file multi-filament so the re-slice stays multi-colour. Used for
+   * per-colour remap (e.g. red->slot 2, blue->slot 3). Resolves the new filePath.
+   */
+  @ReactMethod
+  fun remapModel(path: String, extruderMapJson: String, promise: Promise) {
+    try {
+      val file = File(path.removePrefix("file://"))
+      if (!file.exists()) {
+        promise.reject("E_NO_FILE", "Model file not found: ${file.absolutePath}")
+        return
+      }
+      val map = HashMap<Int, Int>()
+      val obj = JSONObject(extruderMapJson)
+      val keys = obj.keys()
+      while (keys.hasNext()) {
+        val key = keys.next()
+        key.toIntOrNull()?.let { srcExtruder ->
+          map[srcExtruder] = obj.getInt(key).coerceIn(0, 3)
+        }
+      }
+      if (map.isEmpty()) {
+        promise.reject("E_REMAP", "Extruder map is empty.")
+        return
+      }
+      val outFile = File(reactApplicationContext.filesDir, "remapped_${System.nanoTime()}.3mf")
+      PlateExtractor.remapExtruders(file, map, outFile)
+      if (!outFile.exists() || outFile.length() == 0L) {
+        promise.reject("E_REMAP", "Failed to remap model.")
+        return
+      }
+      promise.resolve(outFile.absolutePath)
+    } catch (error: Throwable) {
+      promise.reject("E_REMAP", error.message, error)
+    }
+  }
+
   private fun emitExtractProgress(percent: Int, phase: String) {
     val params = Arguments.createMap().apply {
       putInt("percent", percent)
@@ -591,6 +656,8 @@ class HelixSlicerModule(
         putDouble("estimatedFilamentGrams", LastSliceStore.estimatedFilamentGrams.toDouble())
         putInt("initialTool", LastSliceStore.initialTool)
         putInt("usedToolMask", LastSliceStore.usedToolMask)
+        LastSliceStore.sliceSettingsJson?.let { putString("sliceSettings", it) }
+        LastSliceStore.materialProfilesJson?.let { putString("materialProfiles", it) }
       },
     )
   }
@@ -709,18 +776,28 @@ class HelixSlicerModule(
           ?.coerceIn(0, 3)
           ?: 0
         val o = options
-        val sliceSettings = HelixSliceSettings.fromBridgeOptions(
-          supportEnabled = o?.takeIf { it.hasKey("supportEnabled") }?.getBoolean("supportEnabled"),
-          supportType = o?.takeIf { it.hasKey("supportType") }?.getString("supportType"),
-          supportAngle = o?.takeIf { it.hasKey("supportAngle") }?.getDouble("supportAngle"),
-          supportFilament = o?.takeIf { it.hasKey("supportFilament") }?.getInt("supportFilament"),
-          supportInterfaceFilament = o?.takeIf { it.hasKey("supportInterfaceFilament") }
-            ?.getInt("supportInterfaceFilament"),
-          supportBuildPlateOnly = o?.takeIf { it.hasKey("supportBuildPlateOnly") }
-            ?.getBoolean("supportBuildPlateOnly"),
-          supportPattern = o?.takeIf { it.hasKey("supportPattern") }?.getString("supportPattern"),
-          brimWidth = o?.takeIf { it.hasKey("brimWidth") }?.getDouble("brimWidth"),
-        )
+        // Re-slice path: RN may pass the full sliceSettings JSON captured from
+        // the prepare screen (covers supports/brim/infill/ironing), which takes
+        // precedence over the granular bridge keys. Individual keys still layer
+        // on top for callers that use them.
+        val sliceSettings = if (o?.hasKey("sliceSettings") == true) {
+          HelixSliceSettings.fromJson(o.getString("sliceSettings"))
+        } else {
+          HelixSliceSettings.fromBridgeOptions(
+            supportEnabled = o?.takeIf { it.hasKey("supportEnabled") }?.getBoolean("supportEnabled"),
+            supportType = o?.takeIf { it.hasKey("supportType") }?.getString("supportType"),
+            supportAngle = o?.takeIf { it.hasKey("supportAngle") }?.getDouble("supportAngle"),
+            supportFilament = o?.takeIf { it.hasKey("supportFilament") }?.getInt("supportFilament"),
+            supportInterfaceFilament = o?.takeIf { it.hasKey("supportInterfaceFilament") }
+              ?.getInt("supportInterfaceFilament"),
+            supportBuildPlateOnly = o?.takeIf { it.hasKey("supportBuildPlateOnly") }
+              ?.getBoolean("supportBuildPlateOnly"),
+            supportPattern = o?.takeIf { it.hasKey("supportPattern") }?.getString("supportPattern"),
+            brimWidth = o?.takeIf { it.hasKey("brimWidth") }?.getDouble("brimWidth"),
+          )
+        }
+        val materialProfilesJson = o?.takeIf { it.hasKey("materialProfiles") }?.getString("materialProfiles")
+        val forceExtruderCount = o?.takeIf { it.hasKey("forceExtruderCount") }?.getInt("forceExtruderCount")
         val outcome = HelixSliceRunner.run(
           reactApplicationContext,
           lib,
@@ -728,6 +805,8 @@ class HelixSlicerModule(
           onProgress = { pct, stage -> emitProgress(pct, stage) },
           initialTool = initialTool,
           sliceSettings = sliceSettings,
+          materialProfilesJson = materialProfilesJson,
+          forceExtruderCount = forceExtruderCount,
         ) {
           o?.let { opts ->
             if (opts.hasKey("layerHeight")) layerHeight = opts.getDouble("layerHeight").toFloat()

@@ -7,7 +7,7 @@ import {
   FCM_ANNOUNCEMENTS_KEY,
   type AppNotification,
 } from '../constants/changelog';
-import { restartMoonraker, uploadConfigFile } from './moonraker';
+import { applyConfigIfChanged } from './moonraker';
 import { withQueryParameter } from './notificationEvents';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
@@ -210,6 +210,7 @@ export async function configureFcmForPrinter(
     return false;
   }
 
+  const webhookUrl = payload.webhookUrl as string;
   const notifier = [
     ['complete', 'Print complete', '{event_args[1].filename} finished'],
     ['error', 'Print failed', '{event_args[1].filename} failed'],
@@ -217,37 +218,40 @@ export async function configureFcmForPrinter(
     ['paused', 'Print paused', '{event_args[1].filename} is paused'],
   ].map(([event, title, body]) => [
     `[notifier helix_${event}]`,
-    `url: ${moonrakerWebhookUrl(payload.webhookUrl as string, event)}`,
+    `url: ${moonrakerWebhookUrl(webhookUrl, event)}`,
     `events: ${event}`,
     `title: ${title}`,
     `body: ${body}`,
     '',
   ].join('\n')).join('\n');
 
+  const content = `# Managed by Helix. Do not edit manually.\n${notifier}`;
+  const registrationMarker = `${printerId}:${token}`;
+
   try {
-    await uploadConfigFile(
+    // Idempotency: restarting Moonraker drops the /usr/bin/gui MQTT feed and
+    // freezes the printer's touchscreen for ~20-30s, so only touch the printer
+    // when the notifier config actually changed (new token / webhook / printer).
+    await applyConfigIfChanged(
       printerBaseUrl,
       'extended/moonraker',
       'helix-push.cfg',
-      `# Managed by Helix. Do not edit manually.\n${notifier}`
+      content
     );
-    await restartMoonraker(printerBaseUrl);
-    const registrationMarker = `${printerId}:${token}`;
+
+    await SecureStore.setItemAsync(FCM_CONFIGURED_TOKEN_KEY, registrationMarker);
+
     if (options?.sendTest === false) {
-      await SecureStore.setItemAsync(FCM_CONFIGURED_TOKEN_KEY, registrationMarker);
       return true;
     }
 
-    const test = await fetch(withQueryParameter(payload.webhookUrl, 'event', 'complete'), {
+    const test = await fetch(withQueryParameter(webhookUrl, 'event', 'complete'), {
       method: 'POST',
       headers: {
         'X-Title': 'Helix test',
         'X-Message': 'Firebase push notifications are working.',
       },
     });
-    if (test.ok) {
-      await SecureStore.setItemAsync(FCM_CONFIGURED_TOKEN_KEY, registrationMarker);
-    }
     return test.ok;
   } catch {
     return false;

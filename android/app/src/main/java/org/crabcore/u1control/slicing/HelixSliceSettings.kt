@@ -13,6 +13,7 @@ import android.widget.TextView
 import android.widget.ArrayAdapter
 import com.u1.slicer.data.SliceConfig
 import org.crabcore.u1control.R
+import org.json.JSONObject
 
 /** User-facing slice overrides on the prepare screen (Phase 1 — SliceConfig fields only). */
 data class HelixSliceSettings(
@@ -48,6 +49,26 @@ data class HelixSliceSettings(
   fun hasIroningEnabled(): Boolean = ironingType != "no ironing"
 
   fun hasInfillOverride(): Boolean = infillDensity >= 0f || infillPattern != "default"
+
+  /** Round-trip serialization so a background re-slice can replay the exact
+   *  prepare-screen overrides (supports/brim/infill/ironing). */
+  fun toJson(): String = JSONObject().apply {
+    put("supportsEnabled", supportsEnabled)
+    put("supportType", supportType)
+    put("supportAngle", supportAngle)
+    put("supportFilament", supportFilament)
+    put("supportInterfaceFilament", supportInterfaceFilament)
+    put("supportBuildPlateOnly", supportBuildPlateOnly)
+    put("supportPattern", supportPattern)
+    put("brimWidthMm", brimWidthMm.toDouble())
+    put("infillDensity", infillDensity.toDouble())
+    put("infillPattern", infillPattern)
+    put("ironingType", ironingType)
+    put("ironingPattern", ironingPattern)
+    put("ironingFlow", ironingFlow)
+    put("ironingSpacing", ironingSpacing.toDouble())
+    put("ironingSpeed", ironingSpeed)
+  }.toString()
 
   fun applyTo(config: SliceConfig) {
     config.supportEnabled = supportsEnabled
@@ -126,6 +147,31 @@ data class HelixSliceSettings(
       supportPattern?.let { settings.supportPattern = it }
       brimWidth?.let { settings.brimWidthMm = it.toFloat() }
       return settings
+    }
+
+    /** Reconstruct from [toJson] output; null/blank/garbage → defaults. */
+    fun fromJson(json: String?): HelixSliceSettings {
+      if (json.isNullOrBlank()) return HelixSliceSettings()
+      return runCatching {
+        val o = JSONObject(json)
+        HelixSliceSettings(
+          supportsEnabled = o.optBoolean("supportsEnabled"),
+          supportType = o.optString("supportType", "normal(auto)"),
+          supportAngle = o.optInt("supportAngle", 30).coerceIn(0, 90),
+          supportFilament = o.optInt("supportFilament", 0),
+          supportInterfaceFilament = o.optInt("supportInterfaceFilament", -1),
+          supportBuildPlateOnly = o.optBoolean("supportBuildPlateOnly"),
+          supportPattern = o.optString("supportPattern", "default"),
+          brimWidthMm = o.optDouble("brimWidthMm", 0.0).toFloat(),
+          infillDensity = o.optDouble("infillDensity", -1.0).toFloat(),
+          infillPattern = o.optString("infillPattern", "default"),
+          ironingType = o.optString("ironingType", "no ironing"),
+          ironingPattern = o.optString("ironingPattern", "zig-zag"),
+          ironingFlow = o.optInt("ironingFlow", 10),
+          ironingSpacing = o.optDouble("ironingSpacing", 0.15).toFloat(),
+          ironingSpeed = o.optInt("ironingSpeed", 30),
+        )
+      }.getOrDefault(HelixSliceSettings())
     }
   }
 }

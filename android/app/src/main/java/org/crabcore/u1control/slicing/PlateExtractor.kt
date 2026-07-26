@@ -134,6 +134,13 @@ object PlateExtractor {
       if (items.isEmpty()) throw IllegalStateException("No <build> items in ${src.name}")
       onProgress?.invoke(31, "Resolving objects…")
 
+      // Per-object filament/extruder lives ONLY in Metadata/model_settings.config
+      // (Bambu omits it from <item>), as <object id="N"><metadata key="extruder"
+      // value="M"/> (1-based). The native engine ignores <item extruder>; it reads
+      // per-object extruder from this config. We capture source object->extruder
+      // here and (below) emit a config keyed by the RENUMBERED output object ids.
+      val extruders = readObjectExtruders(zip)
+
       // Resolve the plate's leaves: DFS from kept build items, composing 3MF
       // row-vector transforms (combined = component x item). One output object
       // per UNIQUE source mesh (shared geometry -> one <object> + many <item>s);
@@ -141,7 +148,7 @@ object PlateExtractor {
       val meshOutId = LinkedHashMap<MeshSrc, Int>()
       val outItems = ArrayList<OutItem>()
       var nextId = 0
-      fun expand(objId: Int, xform: DoubleArray, printable: String?, partPath: String?, path: HashSet<Int>) {
+      fun expand(objId: Int, xform: DoubleArray, printable: String?, partPath: String?, path: HashSet<Int>, extruder: String?) {
         if (objId in path) return // cycle guard (3MF forbids cycles; defensive)
         val node = graph[objId]
         val subs = node?.components
@@ -150,16 +157,16 @@ object PlateExtractor {
           // Pure group object: recurse into its components, composing transforms.
           val nextPath = HashSet(path).apply { add(objId) }
           for (c in subs) {
-            expand(c.sub, composeTransforms(parseTransform(c.transform), xform), printable, c.partPath, nextPath)
+            expand(c.sub, composeTransforms(parseTransform(c.transform), xform), printable, c.partPath, nextPath, extruder)
           }
         } else if (hasOwnMesh || partPath != null) {
           // Leaf mesh object: emit it (de-duplicated by source mesh).
           val outId = meshOutId.getOrPut(MeshSrc(partPath, objId)) { ++nextId }
-          outItems.add(OutItem(outId, xform, printable))
+          outItems.add(OutItem(outId, xform, printable, extruder))
         }
       }
       for (bi in items) {
-        if (bi.objid in keep) expand(bi.objid, parseTransform(bi.transform), bi.printable, null, hashSetOf())
+        if (bi.objid in keep) expand(bi.objid, parseTransform(bi.transform), bi.printable, null, hashSetOf(), extruders[bi.objid])
       }
       if (outItems.isEmpty()) throw IllegalStateException("Plate ${plate.id} has no printable objects")
 
@@ -167,6 +174,40 @@ object PlateExtractor {
       ZipOutputStream(outFile.outputStream().buffered()).use { zos ->
         writeEntry(zos, "[Content_Types].xml", MINIMAL_CONTENT_TYPES)
         writeEntry(zos, "_rels/.rels", MINIMAL_RELS)
+        // Carry over the source's project settings (filament colours/types) so the
+        // native engine's project config (nativeGetProjectConfig) knows this is a
+        // multi-material project with the right palette — otherwise every object
+        // collapses to extruder 0 / machine-slot colours. Streamed verbatim.
+        zip.getEntry("Metadata/project_settings.config")?.let { entry ->
+          zos.putNextEntry(ZipEntry("Metadata/project_settings.config"))
+          zip.getInputStream(entry).use { input ->
+            val buf = ByteArray(64 * 1024)
+            while (true) { val n = input.read(buf); if (n < 0) break; zos.write(buf, 0, n) }
+          }
+          zos.closeEntry()
+        }
+        // Per-object extruder, keyed by the RENUMBERED output object ids. The
+        // engine ignores <item extruder>; it reads extruder from this config's
+        // top-level <object id="N"><metadata key="extruder" value="M"/> blocks
+        // (1-based), matching the source layout: objects are DIRECT children of
+        // <config> (NOT wrapped in <plate> — wrapping changes the plate count
+        // the engine validates and makes it reject the archive).
+        val outExtruders = LinkedHashMap<Int, String>()
+        for (oi in outItems) {
+          val ex = oi.extruder ?: continue
+          outExtruders.putIfAbsent(oi.outId, ex)
+        }
+        if (outExtruders.isNotEmpty()) {
+          val sb = StringBuilder()
+          sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<config>\n")
+          for ((outId, ex) in outExtruders) {
+            sb.append("  <object id=\""); sb.append(outId); sb.append("\">\n")
+            sb.append("   <metadata key=\"extruder\" value=\""); sb.append(ex); sb.append("\"/>\n")
+            sb.append("  </object>\n")
+          }
+          sb.append("</config>\n")
+          writeEntry(zos, "Metadata/model_settings.config", sb.toString())
+        }
         zos.putNextEntry(ZipEntry("3D/3dmodel.model"))
         val w = OutputStreamWriter(zos, Charsets.UTF_8)
         val langAttr = if (rootUnit[1].isNotEmpty()) " xml:lang=\"${rootUnit[1]}\"" else ""
@@ -214,6 +255,128 @@ object PlateExtractor {
     return outFile
   }
 
+  /**
+   * Collapses [src] (any 3MF the engine accepts — typically an extracted plate)
+   * into [outFile] with EVERY object reassigned to [targetTool] (0-based), and
+   * the multi-filament project config stripped so loadModel sees a single
+   * filament. Used to re-slice a multi-color model in one loaded material.
+   *
+   * PrusaSlicer's per-object extruder is read at loadModel() time from
+   * Metadata/model_settings.config (1-based) — there is no setObjectExtruder
+   * JNI, and forceSingleTool() does not remap existing tags. So a faithful
+   * collapse must rewrite that config (all objects -> targetTool+1) AND drop
+   * Metadata/project_settings.config (so readFilamentCount() == 1 and the
+   * engine takes its single-tool path instead of the multi-tool one).
+   */
+  fun collapseToSingleExtruder(src: File, targetTool: Int, outFile: File): File {
+    val tool = targetTool.coerceIn(0, 3)
+    val extruderValue = (tool + 1).toString()
+    val ids = readObjectIdsFromModel(src)
+    check(ids.isNotEmpty()) { "No objects found in ${src.name}" }
+    val configXml = buildString {
+      append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<config>\n")
+      for (id in ids) {
+        append("  <object id=\""); append(id); append("\">\n")
+        append("   <metadata key=\"extruder\" value=\""); append(extruderValue); append("\"/>\n")
+        append("  </object>\n")
+      }
+      append("</config>\n")
+    }
+    val buf = ByteArray(64 * 1024)
+    ZipFile(src).use { zip ->
+      ZipOutputStream(outFile.outputStream().buffered()).use { zos ->
+        for (entry in zip.entries()) {
+          val n = entry.name
+          when {
+            n.equals("Metadata/project_settings.config", ignoreCase = true) -> {
+              // Drop: forces readFilamentCount() == 1 -> single-tool slice.
+            }
+            n.equals("Metadata/model_settings.config", ignoreCase = true) -> {
+              zos.putNextEntry(ZipEntry(n))
+              zos.write(configXml.toByteArray(Charsets.UTF_8))
+              zos.closeEntry()
+            }
+            else -> {
+              zos.putNextEntry(ZipEntry(n))
+              zip.getInputStream(entry).use { input ->
+                while (true) {
+                  val read = input.read(buf)
+                  if (read < 0) break
+                  zos.write(buf, 0, read)
+                }
+              }
+              zos.closeEntry()
+            }
+          }
+        }
+      }
+    }
+    return outFile
+  }
+
+  /**
+   * Repacks [src] into a temp 3MF where each object's extruder is remapped per
+   * [extruderMap]: { original extruder value (1-based) -> target ACE slot (0-based) }.
+   * Objects whose extruder isn't a key keep their original assignment. Unlike
+   * [collapseToSingleExtruder] this KEEPS Metadata/project_settings.config so the
+   * engine stays multi-filament (configureMultiTool) — the slice remains
+   * multi-colour, just with each colour routed to the user's chosen loaded slot.
+   * Caller must pass forceExtruderCount = (max target slot + 1) to the slice so
+   * configureMultiTool sizes the extruder array to cover every mapped tool.
+   */
+  fun remapExtruders(src: File, extruderMap: Map<Int, Int>, outFile: File): File {
+    require(extruderMap.isNotEmpty()) { "extruderMap must not be empty" }
+    val buf = ByteArray(64 * 1024)
+    ZipFile(src).use { zip ->
+      val ids = readZipText(zip, "3D/3dmodel.model")
+        ?.let { OBJECT_BLOCK.findAll(it).mapNotNull { g -> g.groupValues[1].toIntOrNull() }.distinct().toList() }
+        ?: emptyList()
+      check(ids.isNotEmpty()) { "No objects found in ${src.name}" }
+      val current = readObjectExtruders(zip)
+      val configXml = buildString {
+        append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<config>\n")
+        for (id in ids) {
+          val raw = current[id]?.toIntOrNull()
+          val targetSlot = if (raw != null && extruderMap.containsKey(raw)) {
+            extruderMap.getValue(raw).coerceIn(0, 3)
+          } else {
+            ((raw ?: 1) - 1).coerceIn(0, 3)
+          }
+          append("  <object id=\""); append(id); append("\">\n")
+          append("   <metadata key=\"extruder\" value=\""); append(targetSlot + 1); append("\"/>\n")
+          append("  </object>\n")
+        }
+        append("</config>\n")
+      }
+      ZipOutputStream(outFile.outputStream().buffered()).use { zos ->
+        for (entry in zip.entries()) {
+          val n = entry.name
+          if (n.equals("Metadata/model_settings.config", ignoreCase = true)) {
+            zos.putNextEntry(ZipEntry(n))
+            zos.write(configXml.toByteArray(Charsets.UTF_8))
+            zos.closeEntry()
+          } else {
+            zos.putNextEntry(ZipEntry(n))
+            zip.getInputStream(entry).use { input ->
+              while (true) {
+                val read = input.read(buf)
+                if (read < 0) break
+                zos.write(buf, 0, read)
+              }
+            }
+            zos.closeEntry()
+          }
+        }
+      }
+    }
+    return outFile
+  }
+
+  private fun readObjectIdsFromModel(file: File): List<Int> {
+    val xml = readEntryText(file, "3D/3dmodel.model") ?: return emptyList()
+    return OBJECT_BLOCK.findAll(xml).mapNotNull { it.groupValues[1].toIntOrNull() }.distinct().toList()
+  }
+
   private fun writeEntry(zos: ZipOutputStream, name: String, text: String) {
     zos.putNextEntry(ZipEntry(name))
     zos.write(text.toByteArray(Charsets.UTF_8))
@@ -225,6 +388,7 @@ object PlateExtractor {
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
  <Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>
+ <Default Extension="config" ContentType="application/xml"/>
 </Types>
 """
   private val MINIMAL_RELS =
@@ -266,7 +430,7 @@ object PlateExtractor {
   private data class ObjNode(val components: List<ComponentRef>, val hasMesh: Boolean)
   private data class BuildItem(val objid: Int, val transform: String?, val printable: String?)
   private data class MeshSrc(val partPath: String?, val objId: Int)
-  private data class OutItem(val outId: Int, val xform: DoubleArray, val printable: String?)
+  private data class OutItem(val outId: Int, val xform: DoubleArray, val printable: String?, val extruder: String?)
 
   /**
    * Maps bytes read out of a stream to a determinate [base..base+span] percent
@@ -361,6 +525,37 @@ object PlateExtractor {
   }
 
   /** Streams [entry] (3D/3dmodel.model) copying each object whose id is in [pending] (id -> outId). */
+  /**
+   * Bambu stores each object's filament/extruder assignment in
+   * Metadata/model_settings.config (`<object id="N"><metadata key="extruder"
+   * value="M"/>`), NOT on 3D/3dmodel.model's `<item>`. The native PrusaSlicer
+   * engine reads extruder only from `<item>`, so without this remap every
+   * extracted object collapses to extruder 0 and multi-colour prints lose their
+   * colour split. Bambu's value is 1-based (filament 1 = first slot); 3MF's
+   * `<item extruder>` and the engine are 0-based, so we subtract 1. Returns
+   * object id -> extruder value in engine (0-based) indexing.
+   */
+  private fun readObjectExtruders(zip: ZipFile): Map<Int, String> {
+    val cfg = readZipText(zip, "Metadata/model_settings.config") ?: return emptyMap()
+    val objectBlock = Regex(
+      "<object\\b[^>]*\\bid=\"(\\d+)\"[^>]*>(.*?)</object>",
+      setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE),
+    )
+    val extruderMeta = Regex("<metadata\\s+key=\"extruder\"\\s+value=\"([^\"]*)\"", RegexOption.IGNORE_CASE)
+    val out = HashMap<Int, String>()
+    for (m in objectBlock.findAll(cfg)) {
+      val oid = m.groupValues[1].toIntOrNull() ?: continue
+      val ex = extruderMeta.find(m.groupValues[2])?.groupValues?.get(1) ?: continue
+      out[oid] = ex
+    }
+    return out
+  }
+
+  private fun readZipText(zip: ZipFile, name: String): String? {
+    val entry = zip.getEntry(name) ?: return null
+    return zip.getInputStream(entry).bufferedReader().use { it.readText() }
+  }
+
   private fun streamInlineMeshes(zip: ZipFile, entry: ZipEntry, pending: Map<Int, Int>, w: Writer, meter: Meter?) {
     CountingInputStream(zip.getInputStream(entry), meter).use { input ->
       val parser = newParser(input.buffered())
