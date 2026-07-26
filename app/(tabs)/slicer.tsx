@@ -34,6 +34,9 @@ import {
   injectTimelapseMacros,
   pickModelFile,
   setFilamentSlotColors,
+  collapseModelToTool,
+  remapModelExtruders,
+  sliceModelFile,
   setNativePrinters,
   SharedMakerWorldLink,
   uploadGcodeToPrinter,
@@ -144,6 +147,12 @@ export default function SliceLabScreen() {
   const [extracting, setExtracting] = useState(false);
   const [extractProgress, setExtractProgress] = useState<{ percent: number; phase: string } | null>(null);
   const [sayingIdx, setSayingIdx] = useState(0);
+  // When the user remaps a single-material slice to a different loaded slot in
+  // the print dialog, this holds { fileTool -> chosenLoadedSlot }. Print then
+  // re-slices: if every file tool routes to the SAME slot the model is collapsed
+  // to single-material; otherwise each colour is remapped to its own slot
+  // (multi-colour stays multi-colour). null = use the sliced tools as-is.
+  const [toolRemap, setToolRemap] = useState<Record<number, number> | null>(null);
   const [preprocessOpen, setPreprocessOpen] = useState(false);
   const [sendProgress, setSendProgress] = useState(0);
   const [perToolGrams, setPerToolGrams] = useState<number[]>([]);
@@ -746,8 +755,28 @@ export default function SliceLabScreen() {
       setPrintStart({ state: 'error', message: 'Printer URL is blank.' });
       return;
     }
-    const initialTool = slice.result.initialTool ?? toolLoad.selectedTool;
-    const requiredToolMask = slice.result.usedToolMask ?? (1 << initialTool);
+    const slicedTool = slice.result.initialTool ?? toolLoad.selectedTool;
+    const fileRequiredMask = slice.result.usedToolMask ?? (1 << slicedTool);
+    const fileTools = [0, 1, 2, 3].filter((t) => (fileRequiredMask & (1 << t)) !== 0);
+
+    // Resolve the full per-file-tool target map (default identity) from toolRemap.
+    const remap = toolRemap ?? {};
+    const fullTarget: Record<number, number> = {};
+    for (const ft of fileTools) fullTarget[ft] = remap[ft] ?? ft;
+    const targets = fileTools.map((ft) => fullTarget[ft]);
+    const allSameTarget = targets.length > 0 && targets.every((t) => t === targets[0]);
+    const collapseSlot = allSameTarget ? targets[0] : -1;
+
+    // Re-slice when the user routed any file tool to a different loaded slot.
+    const wantsReslice =
+      fileTools.some((ft) => fullTarget[ft] !== ft) &&
+      Boolean(slice.result.modelPath) &&
+      Boolean(slice.result.sliceSettings) &&
+      Boolean(slice.result.materialProfiles);
+
+    const requiredToolMask = wantsReslice
+      ? targets.reduce((mask, t) => mask | (1 << t), 0)
+      : fileRequiredMask;
     const usedExtruders = [0, 1, 2, 3].filter((tool) => (requiredToolMask & (1 << tool)) !== 0);
     const missingTools = missingLoadedTools(toolLoad, requiredToolMask);
     if (missingTools) {
@@ -755,11 +784,58 @@ export default function SliceLabScreen() {
       return;
     }
 
-    const gcodePath = slice.result.gcodePath;
     const sourceName = download.state === 'success' ? download.result.fileName : null;
-    setPrintStart({ state: 'starting', message: 'Uploading…' });
-    setSendProgress(0.12);
     try {
+      let gcodePath = slice.result.gcodePath;
+      if (wantsReslice) {
+        const onResliceProgress = (percentage: number) =>
+          setSendProgress(0.05 + (Math.max(0, Math.min(100, percentage)) / 100) * 0.06);
+        if (allSameTarget) {
+          // Collapse: every object -> one material (single-tool slice).
+          const chosenMaterial =
+            filamentSlots.find((s) => s.index === collapseSlot)?.material ?? `slot ${collapseSlot}`;
+          setPrintStart({ state: 'starting', message: `Re-slicing for ${chosenMaterial}…` });
+          setSendProgress(0.05);
+          const collapsedPath = await collapseModelToTool(slice.result.modelPath as string, collapseSlot);
+          const resliced = await sliceModelFile(
+            collapsedPath,
+            {
+              initialTool: collapseSlot,
+              sliceSettings: slice.result.sliceSettings,
+              materialProfiles: slice.result.materialProfiles,
+            },
+            onResliceProgress,
+          );
+          if (!resliced.success || !resliced.gcodePath) {
+            throw new Error(resliced.errorMessage || 'Re-slice failed.');
+          }
+          gcodePath = resliced.gcodePath;
+        } else {
+          // Per-colour remap: keep multi-colour, route each file colour to its slot.
+          setPrintStart({ state: 'starting', message: 'Re-slicing per-colour…' });
+          setSendProgress(0.05);
+          const extruderMap: Record<number, number> = {};
+          for (const ft of fileTools) extruderMap[ft + 1] = fullTarget[ft];
+          const forceExtruderCount = Math.max(...targets) + 1;
+          const remappedPath = await remapModelExtruders(slice.result.modelPath as string, extruderMap);
+          const resliced = await sliceModelFile(
+            remappedPath,
+            {
+              initialTool: targets[0],
+              sliceSettings: slice.result.sliceSettings,
+              materialProfiles: slice.result.materialProfiles,
+              forceExtruderCount,
+            },
+            onResliceProgress,
+          );
+          if (!resliced.success || !resliced.gcodePath) {
+            throw new Error(resliced.errorMessage || 'Re-slice failed.');
+          }
+          gcodePath = resliced.gcodePath;
+        }
+      }
+      setPrintStart({ state: 'starting', message: 'Uploading…' });
+      setSendProgress(0.12);
       // Timelapse is gcode-driven: the printer only records frames if the gcode
       // itself calls the TIMELAPSE_* macros at each layer. Inject them before
       // upload when the toggle is on (SET_PRINT_PREFERENCES below just arms the
@@ -829,7 +905,7 @@ export default function SliceLabScreen() {
         message: `Send failed: ${error instanceof Error ? error.message : String(error)}`,
       });
     }
-  }, [activeUrl, slice, toolLoad, download, router]);
+  }, [activeUrl, slice, toolLoad, download, router, toolRemap, filamentSlots]);
 
   const refresh = async () => {
     setRefreshing(true);
@@ -852,6 +928,13 @@ export default function SliceLabScreen() {
     () => filamentSlots.filter((slot) => (slicedRequiredToolMask & (1 << slot.index)) !== 0),
     [filamentSlots, slicedRequiredToolMask],
   );
+  // Tool-remap for the print dialog: each required (file) tool defaults to
+  // itself; toolRemap overrides individual tools to a different loaded slot.
+  const printDialogAssignments = useMemo(() => {
+    const m: Record<number, number> = {};
+    for (const slot of printDialogSlots) m[slot.index] = toolRemap?.[slot.index] ?? slot.index;
+    return m;
+  }, [printDialogSlots, toolRemap]);
 
   // Pull the render thumbnail baked into the sliced gcode (shows in the card
   // immediately, before any upload — same preview the home card uses).
@@ -1102,7 +1185,10 @@ export default function SliceLabScreen() {
 
     <PrintPreprocessDialog
       visible={preprocessOpen}
-      onClose={() => setPreprocessOpen(false)}
+      onClose={() => {
+        setPreprocessOpen(false);
+        setToolRemap(null);
+      }}
       fileName={download.state === 'success' ? download.result.fileName : 'print.gcode'}
       estTimeSeconds={slice.state === 'success' ? slice.result.estimatedTimeSeconds : 0}
       estGramsTotal={slice.state === 'success' ? slice.result.estimatedFilamentGrams : 0}
@@ -1111,11 +1197,17 @@ export default function SliceLabScreen() {
       activePrinterId={settings.activePrinterId}
       onSelectPrinter={selectPrinter}
       slots={printDialogSlots}
+      availableSlots={filamentSlots}
+      assignments={printDialogAssignments}
+      onAssignSlot={(_fileTool, loadedSlot) =>
+        setToolRemap((prev) => ({ ...(prev ?? {}), [_fileTool]: loadedSlot }))
+      }
       perToolGrams={perToolGrams}
       prefs={printPrefs}
       onTogglePref={(pref) => setPrintPrefs((prev) => ({ ...prev, [pref]: !prev[pref] }))}
       sending={printStart.state === 'starting'}
       progress={sendProgress}
+      statusMessage={printStart.state === 'starting' ? printStart.message : null}
       errorMessage={printStart.state === 'error' ? printStart.message : null}
       onSend={uploadAndPrint}
     />

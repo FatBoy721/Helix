@@ -71,7 +71,8 @@ object HelixSliceRunner {
     onProgress: (Int, String) -> Unit,
     initialTool: Int = 0,
     sliceSettings: HelixSliceSettings = HelixSliceSettings(),
-    materialProfiles: List<MaterialProfile> = emptyList(),
+    materialProfilesJson: String? = null,
+    forceExtruderCount: Int? = null,
     configure: SliceConfig.() -> Unit = {},
   ): Outcome {
     if (!slicing.compareAndSet(false, true)) throw BusyError()
@@ -100,12 +101,16 @@ object HelixSliceRunner {
 
         // Multicolor models carry more than one filament in their project config.
         // For those we keep the engine's multi-tool output; only single-colour
-        // prints get pinned to the user's chosen loaded head.
+        // prints get pinned to the user's chosen loaded head. forceExtruderCount
+        // (per-colour remap) lifts the tool count to cover every mapped slot even
+        // when the file declares fewer filaments than the user routed to.
         val filamentCount = readFilamentCount(lib)
-        val multicolor = filamentCount > 1
+        val effectiveCount = maxOf(filamentCount, forceExtruderCount ?: 1).coerceIn(1, 4)
+        val multicolor = effectiveCount > 1
 
         val (startGcode, endGcode) = readMachineGcode(context)
         val selectedTool = initialTool.coerceIn(0, 3)
+        val materialProfiles = parseMaterialProfiles(materialProfilesJson)
         val config = SliceConfig(
           machineStartGcode = startGcode,
           machineEndGcode = endGcode,
@@ -113,7 +118,7 @@ object HelixSliceRunner {
           sliceSettings.applyTo(this)
           configure()
           applyMaterialProfiles(materialProfiles, selectedTool)
-          if (multicolor) configureMultiTool(filamentCount) else forceSingleTool(selectedTool)
+          if (multicolor) configureMultiTool(effectiveCount) else forceSingleTool(selectedTool)
           // Wipe tower position shown/dragged on the prepare screen.
           PrepareSession.towerPositionFor(path)?.let { (tx, ty) ->
             wipeTowerX = tx
@@ -160,7 +165,11 @@ object HelixSliceRunner {
           false
         }
         if (result != null && result.success) {
-          LastSliceStore.record(path, result, selectedTool, toolResult.usedToolMask)
+          LastSliceStore.record(
+            path, result, selectedTool, toolResult.usedToolMask,
+            sliceSettingsJson = sliceSettings.toJson(),
+            materialProfilesJson = materialProfilesJson,
+          )
         }
         return Outcome(result, thumbnailsInjected, selectedTool, toolResult.usedToolMask)
       }

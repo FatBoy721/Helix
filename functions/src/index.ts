@@ -55,16 +55,45 @@ export const relay = onRequest(async (req, res) => {
       return;
     }
 
+    const base = `${req.protocol}://${req.get('host')}`;
+
+    // Idempotent registration: a given (printerId, deviceToken) always resolves
+    // to the SAME webhook URL, so re-registering (app relaunch, reinstall with a
+    // stable token) does not change helix-push.cfg and therefore does not force
+    // a Moonraker restart on the printer. Legacy docs created before the stored
+    // `secret` field have nothing to reuse, so they fall through to a fresh mint.
+    // A genuinely new deviceToken (Android rotated it) is a new pair and
+    // legitimately mints a new secret (one restart, expected).
+    const existing = await devices
+      .where('printerId', '==', printerId)
+      .where('deviceToken', '==', deviceToken)
+      .limit(1)
+      .get();
+    if (!existing.empty) {
+      const snap = existing.docs[0];
+      const stored = snap.data() as { secret?: unknown };
+      if (typeof stored.secret === 'string' && stored.secret) {
+        await snap.ref.set(
+          { enabled: true, updatedAt: FieldValue.serverTimestamp() },
+          { merge: true },
+        );
+        json(res, 200, {
+          webhookUrl: `${base}/relay/v1/events/${encodeURIComponent(stored.secret)}`,
+        });
+        return;
+      }
+    }
+
     const secret = randomBytes(32).toString('base64url');
     await devices.doc(hashSecret(secret)).set({
       deviceToken,
       printerId,
+      secret,
       enabled: true,
       createdAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
     });
 
-    const base = `${req.protocol}://${req.get('host')}`;
     json(res, 200, {
       webhookUrl: `${base}/relay/v1/events/${encodeURIComponent(secret)}`,
     });

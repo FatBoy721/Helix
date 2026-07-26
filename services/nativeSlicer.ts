@@ -51,6 +51,14 @@ export type SliceOptions = {
   brimWidth?: number;
   skirtLoops?: number;
   initialTool?: number;
+  // Re-slice support: full prepare-screen settings + loaded-slot material
+  // profiles (both JSON strings produced by the native side). When present
+  // the native sliceFile replays them so a background re-slice is faithful.
+  sliceSettings?: string;
+  materialProfiles?: string;
+  // Per-colour remap: forces configureMultiTool to size the extruder array to
+  // cover every mapped slot, even when the file declares fewer filaments.
+  forceExtruderCount?: number;
 };
 
 export type NativeSliceResult = {
@@ -65,6 +73,8 @@ export type NativeSliceResult = {
   estimatedFilamentGrams: number;
   initialTool?: number;
   usedToolMask?: number;
+  sliceSettings?: string;
+  materialProfiles?: string;
 };
 
 export type MakerWorldCookies = {
@@ -98,6 +108,8 @@ type HelixSlicerModule = {
   pickModelFile: () => Promise<SharedModelFile>;
   getModelPlates: (path: string) => Promise<ModelPlate[]>;
   extractPlate: (path: string, plateId: number) => Promise<ExtractedPlate>;
+  collapseModel: (path: string, targetTool: number) => Promise<string>;
+  remapModel: (path: string, extruderMapJson: string) => Promise<string>;
   sliceFile: (path: string, options: SliceOptions | null) => Promise<NativeSliceResult>;
   cancelSlice: () => Promise<boolean>;
   captureMakerWorldCookies: () => Promise<MakerWorldCookies>;
@@ -239,6 +251,35 @@ export async function extractModelPlate(path: string, plateId: number): Promise<
     throw new Error('Plate extraction is Android-only.');
   }
   return nativeModule.extractPlate(path.replace(/^file:\/\//, ''), plateId);
+}
+
+/**
+ * Repacks a model 3MF into a temp file where every object is reassigned to
+ * [targetTool] (0-based) and the multi-filament project config is dropped, so a
+ * re-slice produces single-tool gcode in that one loaded material. Used to
+ * "print everything in [chosen material]" for multi-color files. Accepts file://.
+ */
+export async function collapseModelToTool(uriOrPath: string, targetTool: number): Promise<string> {
+  if (Platform.OS !== 'android' || !nativeModule) {
+    throw new Error('Model collapse is Android-only.');
+  }
+  return nativeModule.collapseModel(uriOrPath.replace(/^file:\/\//, ''), targetTool);
+}
+
+/**
+ * Repacks a 3MF so each object's extruder is routed to a user-chosen loaded slot,
+ * KEEPING the file multi-filament so the re-slice stays multi-colour (per-colour
+ * remap). extruderMap keys are 1-based source extruder values, values are 0-based
+ * target ACE slots. Accepts file://.
+ */
+export async function remapModelExtruders(
+  uriOrPath: string,
+  extruderMap: Record<number, number>,
+): Promise<string> {
+  if (Platform.OS !== 'android' || !nativeModule) {
+    throw new Error('Model remap is Android-only.');
+  }
+  return nativeModule.remapModel(uriOrPath.replace(/^file:\/\//, ''), JSON.stringify(extruderMap));
 }
 
 export type ExtractProgress = { percent: number; phase: string };
@@ -406,6 +447,8 @@ export async function getLastSliceResult(): Promise<NativeSliceResult | null> {
     estimatedFilamentGrams: raw.estimatedFilamentGrams,
     initialTool: raw.initialTool,
     usedToolMask: raw.usedToolMask,
+    sliceSettings: raw.sliceSettings,
+    materialProfiles: raw.materialProfiles,
   };
 }
 

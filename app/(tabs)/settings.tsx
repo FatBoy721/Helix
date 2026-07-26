@@ -42,11 +42,10 @@ import { LANGUAGES, t } from '../../services/i18n';
 import { colors, spacing } from '../../constants/theme';
 import {
   api,
+  applyConfigIfChanged,
   normalizeBaseUrl,
   normalizeMoonrakerUrl,
   printerConnectionUrl,
-  restartMoonraker,
-  uploadConfigFile,
   validatePrinterConnectionTarget,
 } from '../../services/moonraker';
 import { getMakerWorldCookies } from '../../services/nativeSlicer';
@@ -769,14 +768,13 @@ function SpoolmanCard({ activeUrl }: { activeUrl: string }) {
     if (!server) return;
     setBusy(true);
     try {
-      await uploadConfigFile(
+      const changed = await applyConfigIfChanged(
         activeUrl,
         'extended/moonraker',
         'spoolman.cfg',
         `# Spoolman filament tracking (written by Helix)\n[spoolman]\nserver: ${server}\nsync_rate: 5\n`
       );
-      await restartMoonraker(activeUrl);
-      await new Promise((r) => setTimeout(r, 8000));
+      if (changed) await new Promise((r) => setTimeout(r, 8000));
       setCurrent(server);
       Alert.alert(t('Saved'), t('Printer now reports filament usage to this Spoolman server.'));
     } catch (e: unknown) {

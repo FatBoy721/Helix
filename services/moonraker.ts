@@ -222,6 +222,30 @@ export async function restartMoonraker(base: string): Promise<void> {
   await fetch(`${base}/server/restart`, { method: 'POST' }).catch(() => {});
 }
 
+// Writes a config file to Moonraker and restarts the service ONLY when the new
+// content differs from the file already on disk. Restarting Moonraker drops the
+// /usr/bin/gui MQTT feed and freezes the printer's touchscreen for ~20-30s, so
+// callers must avoid spurious restarts. Returns true when a restart actually
+// ran (so callers can gate any post-restart settle delay on it).
+export async function applyConfigIfChanged(
+  base: string,
+  dirPath: string,
+  filename: string,
+  content: string
+): Promise<boolean> {
+  let unchanged = false;
+  try {
+    const existing = await fetch(fileUrl(base, 'config', `${dirPath}/${filename}`));
+    if (existing.ok) unchanged = (await existing.text()) === content;
+  } catch {
+    // Read failed (network/auth) — fall through to upload+restart to be safe.
+  }
+  if (unchanged) return false;
+  await uploadConfigFile(base, dirPath, filename, content);
+  await restartMoonraker(base);
+  return true;
+}
+
 function filamentText(value: unknown, fallback: string, field: string): string {
   const text = String(value ?? '').trim() || fallback;
   if (/["\\\r\n]/.test(text)) {

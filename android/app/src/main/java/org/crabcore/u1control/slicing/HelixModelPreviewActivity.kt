@@ -1342,7 +1342,7 @@ class HelixModelPreviewActivity : Activity() {
           },
           initialTool = initialTool,
           sliceSettings = sliceSettings,
-          materialProfiles = HelixSliceRunner.parseMaterialProfiles(materialProfilesJson),
+          materialProfilesJson = materialProfilesJson,
         )
         val result = outcome.result
         runOnUiThread {

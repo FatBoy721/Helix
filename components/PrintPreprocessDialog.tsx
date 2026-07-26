@@ -38,6 +38,7 @@ type Props = {
   onTogglePref: (pref: PrintPref) => void;
   sending: boolean;
   progress: number;
+  statusMessage?: string | null;
   errorMessage?: string | null;
   onSend: (prefs: Readonly<Record<PrintPref, boolean>>) => void;
   sendLabel?: string;
@@ -69,6 +70,7 @@ export default function PrintPreprocessDialog({
   onTogglePref,
   sending,
   progress,
+  statusMessage,
   errorMessage,
   onSend,
   sendLabel = 'Print',
@@ -131,10 +133,11 @@ export default function PrintPreprocessDialog({
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filRow}>
                 {slots.map((slot) => {
                   const grams = perToolGrams[slot.index];
-                  const empty = slot.status === 'empty';
-                  const displayColor = requiredColors?.[slot.index] ?? slot.color;
                   const assignedIndex = assignments[slot.index] ?? slot.index;
                   const assignedSlot = availableSlots.find((candidate) => candidate.index === assignedIndex);
+                  const effectiveSlot = assignedSlot ?? slot;
+                  const empty = effectiveSlot.status === 'empty';
+                  const displayColor = effectiveSlot.color ?? requiredColors?.[slot.index] ?? slot.color;
                   return (
                     <Pressable
                       key={slot.index}
@@ -144,7 +147,7 @@ export default function PrintPreprocessDialog({
                     >
                       <View style={[styles.filTop, { backgroundColor: displayColor }]}>
                         <Text style={[styles.filMat, { color: readableOn(displayColor) }]} numberOfLines={1}>
-                          {slot.material || 'PLA'}
+                          {assignedSlot?.material || slot.material || 'PLA'}
                         </Text>
                         <Text style={[styles.filGrams, { color: readableOn(displayColor) }]}>
                           {typeof grams === 'number' && grams > 0 ? `${grams.toFixed(2)}g` : '—'}
@@ -184,6 +187,9 @@ export default function PrintPreprocessDialog({
 
           <View style={styles.footer}>
             {errorMessage ? <Text style={styles.errText}>{errorMessage}</Text> : null}
+            {sending && statusMessage ? (
+              <Text style={styles.statusText} numberOfLines={1}>{statusMessage}</Text>
+            ) : null}
             <View style={styles.progressRow}>
               <View style={styles.progressTrack}>
                 <View style={[styles.progressFill, { width: `${pct}%` }]} />
@@ -478,6 +484,7 @@ const styles = StyleSheet.create({
   },
   progressFill: { height: '100%', borderRadius: 3, backgroundColor: colors.primary },
   progressPct: { color: colors.subtext, fontSize: 12, fontWeight: '700', minWidth: 34, textAlign: 'right' },
+  statusText: { color: colors.text, fontSize: 13, fontWeight: '700', marginBottom: spacing.xs },
   send: {
     minHeight: 48,
     borderRadius: radius.md,
