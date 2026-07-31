@@ -374,10 +374,6 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'transparent',
   },
-  printerRowActive: {
-    backgroundColor: withAlpha(colors.primary, 0.12),
-    borderColor: withAlpha(colors.primary, 0.4),
-  },
   printerName: { flex: 1, minWidth: 0, color: colors.text, fontSize: 14, fontWeight: '700' },
   printerBody: { flex: 1, minWidth: 0 },
   printerStatus: { color: colors.subtext, fontSize: 11, marginTop: 2 },
