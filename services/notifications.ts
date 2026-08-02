@@ -24,6 +24,8 @@ export type PrinterEvent =
   | 'print_complete'
   | 'print_failed'
   | 'paused'
+  | 'cancelled'
+  | 'progress'
   | 'runout'
   | 'swap_complete'
   | 'printer_error'
@@ -86,7 +88,7 @@ export async function initNotifications(): Promise<void> {
 
 function cacheAnnouncement(content: Notifications.NotificationContent): void {
   const data = content.data as Record<string, unknown> | undefined;
-  if (data?.type === 'helix_test') return;
+  if (data?.type === 'helix_test' || data?.type === 'helix_local') return;
 
   const title = typeof content.title === 'string' ? content.title.trim() : '';
   const body = typeof content.body === 'string' ? content.body.trim() : '';
@@ -338,12 +340,16 @@ export async function sendNtfy(
   }
 }
 
-export async function notifyLocal(title: string, body: string): Promise<boolean> {
+export async function notifyLocal(
+  title: string,
+  body: string,
+  data: Record<string, string> = { type: 'helix_local' }
+): Promise<boolean> {
   try {
     const allowed = await ensureNotificationPermission();
     if (!allowed) return false;
     await Notifications.scheduleNotificationAsync({
-      content: { title, body },
+      content: { title, body, data },
       trigger: null,
     });
     return true;
@@ -363,6 +369,19 @@ export type NotifyKind =
   | 'error'
   | 'disconnected'
   | 'temp';
+
+const PRINTER_EVENT_BY_KIND: Record<NotifyKind, PrinterEvent> = {
+  complete: 'print_complete',
+  failed: 'print_failed',
+  paused: 'paused',
+  cancelled: 'cancelled',
+  progress: 'progress',
+  runout: 'runout',
+  swap: 'swap_complete',
+  error: 'printer_error',
+  disconnected: 'printer_disconnected',
+  temp: 'temperature_warning',
+};
 
 export async function notifyEvent(
   settings: Settings,
@@ -420,11 +439,21 @@ export async function notifyEvent(
   // FCM is the closed-app transport. Keep a local fallback for an open Helix
   // session so a temporary printer webhook failure does not hide an event.
   if (settings.notificationMode === 'fcm') {
-    await notifyLocal(title, message);
+    await notifyLocal(title, message, {
+      type: 'printer_event',
+      event: PRINTER_EVENT_BY_KIND[kind],
+      printerId: settings.activePrinterId || 'active-printer',
+      route: '/',
+    });
     return;
   }
 
   if (settings.notificationMode === 'local' || settings.notificationMode === 'ntfy') {
-    await notifyLocal(title, message);
+    await notifyLocal(title, message, {
+      type: 'printer_event',
+      event: PRINTER_EVENT_BY_KIND[kind],
+      printerId: settings.activePrinterId || 'active-printer',
+      route: '/',
+    });
   }
 }

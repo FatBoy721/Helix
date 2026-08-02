@@ -1,9 +1,8 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
-  Alert,
   KeyboardAvoidingView,
-  Modal,
   Platform,
+  Pressable,
   ScrollView,
   StyleSheet,
   Switch,
@@ -13,11 +12,10 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
 import {
-  ConnectionMode,
   DashboardSections,
   PrinterEntry,
   Settings,
@@ -27,6 +25,7 @@ import { useMoonraker } from '../../hooks/useMoonraker';
 import AboutCard from '../../components/settings/AboutCard';
 import BackupCard from '../../components/settings/BackupCard';
 import MacroDisplayCard from '../../components/settings/MacroDisplayCard';
+import PrinterEditorModal from '../../components/settings/PrinterEditorModal';
 import ThemedDialog from '../../components/ThemedDialog';
 import { buildSettingsSavePatch, hasDraftChanges } from '../../services/settingsDraft';
 import {
@@ -39,17 +38,25 @@ import {
   sendNtfy,
 } from '../../services/notifications';
 import { LANGUAGES, t } from '../../services/i18n';
-import { colors, spacing } from '../../constants/theme';
+import { colors, spacing } from '../../components/settings/cockpitTheme';
+import { useThemedAlert } from '../../hooks/useThemedAlert';
+import { COCKPIT, type IconName } from '../../components/dashboard/shared';
+import {
+  AttentionPanel,
+  IndexRow,
+  ScreenTitle,
+  SectionHeader,
+  type Commit,
+} from '../../components/settings/nova';
 import {
   api,
   applyConfigIfChanged,
+  isTailscaleUrl,
   normalizeBaseUrl,
   normalizeMoonrakerUrl,
   printerConnectionUrl,
-  validatePrinterConnectionTarget,
 } from '../../services/moonraker';
 import { getMakerWorldCookies } from '../../services/nativeSlicer';
-import type { PrinterConnectionValidationError } from '../../services/moonraker';
 
 const ACCENTS = [
   { name: 'Fluidd Blue', hex: '#2196f3' },
@@ -62,19 +69,36 @@ const ACCENTS = [
   { name: 'Purple', hex: '#ab47bc' },
 ];
 
+// Only sections the redesigned dashboard actually renders. The old UI had
+// actions / homeDock / controls panels; they were deleted in the ui-refresh
+// redesign, so their toggles gated nothing — keeping them here just confused
+// the "X of N shown" count and made live toggles look broken. Panda Breath is
+// rebuilt as its own section, so it stays.
 const SECTION_LABELS: { key: keyof DashboardSections; label: string }[] = [
   { key: 'progress', label: 'Progress' },
-  { key: 'actions', label: 'Quick actions' },
   { key: 'estop', label: 'Emergency stop' },
-  { key: 'homeDock', label: 'Home & Dock' },
-  { key: 'controls', label: 'Controls' },
-  { key: 'pandaBreath', label: 'Panda Breath controls' },
   { key: 'temps', label: 'Temperatures' },
   { key: 'camera', label: 'Camera' },
   { key: 'gui', label: 'GUI screen' },
   { key: 'filaments', label: 'Filaments' },
+  { key: 'pandaBreath', label: 'Panda Breath' },
   { key: 'macros', label: 'Macros' },
 ];
+
+// The notify-on toggles, in display order. Used both to render the list and to
+// work out whether Notifications is holding unapplied changes.
+const NOTIFY_KEYS = [
+  'notifyPrintComplete',
+  'notifyPrintFailed',
+  'notifyPrintPaused',
+  'notifyPrintCancelled',
+  'notifyPrintProgress',
+  'notifyFilamentRunout',
+  'notifySwapComplete',
+  'notifyPrinterError',
+  'notifyPrinterDisconnected',
+  'notifyTempWarning',
+] as const satisfies readonly (keyof Settings)[];
 
 const NOTIFICATION_MODES: {
   value: Settings['notificationMode'];
@@ -87,39 +111,24 @@ const NOTIFICATION_MODES: {
   { value: 'fcm', label: 'Firebase push', icon: 'cloud-upload-outline' },
 ];
 
-const CONNECTION_MODES: {
-  value: ConnectionMode;
-  label: string;
-  icon: React.ComponentProps<typeof MaterialCommunityIcons>['name'];
-}[] = [
-  { value: 'lan', label: 'LAN only', icon: 'wifi' },
-  { value: 'auto', label: 'Auto', icon: 'swap-horizontal' },
-  { value: 'tailscale', label: 'Tailscale only', icon: 'vpn' },
-];
-
-function alertPrinterConnectionError(error: PrinterConnectionValidationError | null): boolean {
-  if (!error) return false;
-
-  if (error === 'missing-tailscale-url') {
-    Alert.alert(t('Missing Tailscale URL'), t('Tailscale-only mode needs a Tailscale URL.'));
-    return true;
-  }
-
-  Alert.alert(t('Missing printer URL'), t('Enter the printer IP or Moonraker URL.'));
-  return true;
-}
+type RestartService = 'klippy' | 'moonraker';
 
 export default function SettingsScreen() {
+  const { showAlert, alertDialog } = useThemedAlert();
   const { settings, loaded, update } = useSettings();
   const { connection, activeUrl, klippyState, reconnect } = useMoonraker();
   const [draft, setDraft] = useState<Settings | null>(null);
-  const [addingPrinter, setAddingPrinter] = useState(false);
-  const [newName, setNewName] = useState('');
-  const [newUrl, setNewUrl] = useState('');
-  const [newTailscaleUrl, setNewTailscaleUrl] = useState('');
-  const [newConnectionMode, setNewConnectionMode] = useState<ConnectionMode>('lan');
+  // Non-null while the Add printer modal is open: a blank entry the modal
+  // fills in, so adding looks and behaves exactly like editing.
+  const [newPrinter, setNewPrinter] = useState<PrinterEntry | null>(null);
   const [editingPrinterId, setEditingPrinterId] = useState<string | null>(null);
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
+  // null = the index. Nova's whole bet: one screen at a time, so a Save button
+  // always governs exactly what's in front of you.
+  const [section, setSection] = useState<string | null>(null);
+  const [pendingRemoval, setPendingRemoval] = useState<PrinterEntry | null>(null);
+  const [pendingRestart, setPendingRestart] = useState<RestartService | null>(null);
+  const [restartingService, setRestartingService] = useState<RestartService | null>(null);
 
   useEffect(() => {
     if (!loaded) return;
@@ -136,6 +145,35 @@ export default function SettingsScreen() {
     draft.printers.find((p) => p.id === draft.activePrinterId) ?? null;
   const visibleActiveUrl =
     activeUrl || (activePrinterForDisplay ? printerConnectionUrl(activePrinterForDisplay) : '');
+  const activeConnectionName = isTailscaleUrl(visibleActiveUrl) ? 'Tailscale' : 'LAN';
+
+  const confirmServiceRestart = async () => {
+    const service = pendingRestart;
+    if (!service || !visibleActiveUrl || restartingService) return;
+
+    setPendingRestart(null);
+    setRestartingService(service);
+    try {
+      if (service === 'klippy') await api.restartKlippy(visibleActiveUrl);
+      else await api.restartMoonraker(visibleActiveUrl);
+
+      const name = service === 'klippy' ? 'Klippy' : 'Moonraker';
+      showAlert({
+        title: `${name} restart requested`,
+        message: `${name} accepted the restart request over ${activeConnectionName}. Helix will reconnect automatically when it is available again.`,
+        icon: 'restart',
+      });
+    } catch (error) {
+      const name = service === 'klippy' ? 'Klippy' : 'Moonraker';
+      showAlert({
+        title: `${name} restart failed`,
+        message: error instanceof Error ? error.message : String(error),
+        icon: 'alert-circle-outline',
+      });
+    } finally {
+      setRestartingService(null);
+    }
+  };
 
   const dirty = hasDraftChanges(draft, settings);
 
@@ -175,70 +213,68 @@ export default function SettingsScreen() {
 
   const removePrinter = (p: PrinterEntry) => {
     if (settings.printers.length <= 1) return;
-    Alert.alert(t('Remove printer?'), p.name, [
-      { text: t('Cancel'), style: 'cancel' },
-      {
-        text: t('Remove'),
-        style: 'destructive',
-        onPress: () => {
-          const printers = settings.printers.filter((x) => x.id !== p.id);
-          const macroDisplayByPrinter = { ...settings.macroDisplayByPrinter };
-          delete macroDisplayByPrinter[p.id];
-          const patch: Partial<Settings> = { printers, macroDisplayByPrinter };
-          const nextDraft: Settings = { ...draft, printers, macroDisplayByPrinter };
-          if (settings.activePrinterId === p.id) {
-            const next = printers[0];
-            patch.activePrinterId = next.id;
-            patch.primaryUrl = next.url;
-            patch.tailscaleUrl = next.tailscaleUrl;
-            patch.cameraUrl = next.cameraUrl;
-            patch.connectionMode = next.connectionMode;
-            nextDraft.activePrinterId = next.id;
-            nextDraft.primaryUrl = next.url;
-            nextDraft.tailscaleUrl = next.tailscaleUrl;
-            nextDraft.cameraUrl = next.cameraUrl;
-            nextDraft.connectionMode = next.connectionMode;
-          }
-          setDraft(nextDraft);
-          update(patch);
-        },
-      },
-    ]);
+    // Was a native platform alert, which ignored the theme entirely. Now the same
+    // Focus treatment as every other destructive confirm.
+    setPendingRemoval(p);
+  };
+
+  const confirmRemovePrinter = (p: PrinterEntry) => {
+    setPendingRemoval(null);
+    const printers = settings.printers.filter((x) => x.id !== p.id);
+    const macroDisplayByPrinter = { ...settings.macroDisplayByPrinter };
+    delete macroDisplayByPrinter[p.id];
+    const patch: Partial<Settings> = { printers, macroDisplayByPrinter };
+    const nextDraft: Settings = { ...draft, printers, macroDisplayByPrinter };
+    if (settings.activePrinterId === p.id) {
+      const next = printers[0];
+      patch.activePrinterId = next.id;
+      patch.primaryUrl = next.url;
+      patch.tailscaleUrl = next.tailscaleUrl;
+      patch.cameraUrl = next.cameraUrl;
+      patch.connectionMode = next.connectionMode;
+      nextDraft.activePrinterId = next.id;
+      nextDraft.primaryUrl = next.url;
+      nextDraft.tailscaleUrl = next.tailscaleUrl;
+      nextDraft.cameraUrl = next.cameraUrl;
+      nextDraft.connectionMode = next.connectionMode;
+    }
+    setDraft(nextDraft);
+    update(patch);
   };
 
   const saveEditedPrinter = async (printer: PrinterEntry): Promise<boolean> => {
-    const entry: PrinterEntry = {
-      ...printer,
-      name: printer.name.trim() || 'Snapmaker U1',
-      url: normalizeMoonrakerUrl(printer.url),
-      tailscaleUrl: normalizeMoonrakerUrl(printer.tailscaleUrl),
-      cameraUrl: printer.cameraUrl.trim() || '/webcam/webrtc',
-    };
-
-    if (alertPrinterConnectionError(
-      validatePrinterConnectionTarget(entry.connectionMode, entry.url, entry.tailscaleUrl)
-    )) {
-      return false;
-    }
-
-    const printers = draft.printers.map((p) => (p.id === entry.id ? entry : p));
+    const printers = draft.printers.map((p) => (p.id === printer.id ? printer : p));
     const patch: Partial<Settings> = { printers };
     const nextDraft: Settings = { ...draft, printers };
 
-    if (draft.activePrinterId === entry.id) {
-      patch.primaryUrl = entry.url;
-      patch.tailscaleUrl = entry.tailscaleUrl;
-      patch.cameraUrl = entry.cameraUrl;
-      patch.connectionMode = entry.connectionMode;
-      nextDraft.primaryUrl = entry.url;
-      nextDraft.tailscaleUrl = entry.tailscaleUrl;
-      nextDraft.cameraUrl = entry.cameraUrl;
-      nextDraft.connectionMode = entry.connectionMode;
+    if (draft.activePrinterId === printer.id) {
+      patch.primaryUrl = printer.url;
+      patch.tailscaleUrl = printer.tailscaleUrl;
+      patch.cameraUrl = printer.cameraUrl;
+      patch.connectionMode = printer.connectionMode;
+      nextDraft.primaryUrl = printer.url;
+      nextDraft.tailscaleUrl = printer.tailscaleUrl;
+      nextDraft.cameraUrl = printer.cameraUrl;
+      nextDraft.connectionMode = printer.connectionMode;
     }
 
     setDraft(nextDraft);
     await update(patch);
-    setEditingPrinterId(null);
+    return true;
+  };
+
+  const saveNewPrinter = async (printer: PrinterEntry): Promise<boolean> => {
+    const printers = [...settings.printers, printer];
+    const patch: Partial<Settings> = {
+      printers,
+      activePrinterId: printer.id,
+      primaryUrl: printer.url,
+      tailscaleUrl: printer.tailscaleUrl,
+      cameraUrl: printer.cameraUrl,
+      connectionMode: printer.connectionMode,
+    };
+    setDraft({ ...draft, ...patch });
+    await update(patch);
     return true;
   };
 
@@ -259,7 +295,6 @@ export default function SettingsScreen() {
     update({
       dashboard: {
         ...settings.dashboard,
-        controls: key === 'pandaBreath' && value ? true : settings.dashboard.controls,
         [key]: value,
       },
     });
@@ -270,12 +305,12 @@ export default function SettingsScreen() {
       if (Platform.OS === 'android') {
         ToastAndroid.show(message, ToastAndroid.LONG);
       } else {
-        Alert.alert('Notifications', message);
+        showAlert({ title: 'Notifications', message, icon: 'bell-alert-outline' });
       }
     };
 
     if (draft.notificationMode === 'off') {
-      report('Choose a notification mode first.');
+      report(t('Choose a notification mode first.'));
       return;
     }
 
@@ -288,7 +323,7 @@ export default function SettingsScreen() {
       if (Object.keys(patch).length) set(patch);
 
       const ok = await sendNtfy(server, topic, 'Helix test', 'Printer alerts are working.', 3, 'printer');
-      report(ok ? 'Test sent. Check your notification tray.' : 'Test failed. Check the ntfy settings.');
+      report(ok ? t('Test sent. Check your notification tray.') : t('Test failed. Check the ntfy settings.'));
       return;
     }
 
@@ -296,387 +331,550 @@ export default function SettingsScreen() {
       const configured = activeUrl && settings.activePrinterId
         ? await configureFcmForPrinter(activeUrl, settings.activePrinterId)
         : await sendFcmTestNotification();
-      report(configured ? 'Test sent. Check your notification tray.' : 'Test failed. Check Firebase setup.');
+      report(configured ? t('Test sent. Check your notification tray.') : t('Test failed. Check Firebase setup.'));
       return;
     }
 
     const ok = await notifyLocal('Helix test', 'Local printer alerts are working.');
-    report(ok ? 'Test sent. Check your notification tray.' : 'Test failed. Check notification permission.');
+    report(ok ? t('Test sent. Check your notification tray.') : t('Test failed. Check notification permission.'));
   };
+
+  // Only these fields go through the draft, so only these can be "changed but
+  // not applied". Everything else on this screen writes immediately.
+  const notificationsDirty =
+    draft.notificationMode !== settings.notificationMode ||
+    draft.ntfyServer !== settings.ntfyServer ||
+    draft.ntfyTopic !== settings.ntfyTopic ||
+    NOTIFY_KEYS.some((key) => draft[key] !== settings[key]);
+  const filamentDirty = draft.aceUnits !== settings.aceUnits;
+
+  const attention = [
+    notificationsDirty
+      ? { key: 'notifications', title: t('Notifications'), icon: 'bell-outline' as IconName }
+      : null,
+    filamentDirty
+      ? { key: 'filament', title: 'Filament & ACE', icon: 'palette-swatch' as IconName }
+      : null,
+  ].filter(Boolean) as { key: string; title: string; icon: IconName }[];
+
+  const online = connection === 'connected';
+  const activePrinter = draft.printers.find((p) => p.id === draft.activePrinterId);
+  const sectionsOn = SECTION_LABELS.filter(({ key }) => settings.dashboard[key]).length;
+  const notifyOn = NOTIFY_KEYS.filter((key) => draft[key]).length;
+  const accentName = ACCENTS.find((a) => a.hex === draft.accentColor)?.name ?? 'Custom';
+  const languageName = LANGUAGES.find((l) => l.code === draft.language)?.label ?? draft.language;
+
+  const SECTIONS: {
+    key: string;
+    title: string;
+    icon: IconName;
+    commit: Commit;
+    summary: string;
+    dirty?: boolean;
+    warn?: boolean;
+  }[] = [
+    {
+      key: 'connection',
+      title: t('Connection'),
+      icon: 'lan-connect',
+      commit: 'instant',
+      summary: online
+        ? `${t('Connected')} · klippy ${klippyState}`
+        : `${connection.toUpperCase()} — ${visibleActiveUrl || t('no URL')}`,
+      warn: !online,
+    },
+    {
+      key: 'printers',
+      title: t('Printers'),
+      icon: 'printer-3d',
+      commit: 'instant',
+      summary:
+        draft.printers.length === 1
+          ? activePrinter?.name ?? t('No printer')
+          : `${draft.printers.length} ${t('printers')} · ${activePrinter?.name ?? ''}`,
+    },
+    {
+      key: 'dashboard',
+      title: t('Dashboard sections'),
+      icon: 'view-dashboard-outline',
+      commit: 'instant',
+      summary: `${sectionsOn} ${t('of')} ${SECTION_LABELS.length} ${t('sections shown')}`,
+    },
+    {
+      key: 'appearance',
+      title: t('Appearance'),
+      icon: 'palette-outline',
+      commit: 'live',
+      summary: `${accentName} · ${languageName} · ${draft.temperatureUnit === 'c' ? '°C' : '°F'}`,
+    },
+    {
+      key: 'notifications',
+      title: t('Notifications'),
+      icon: 'bell-outline',
+      commit: 'draft',
+      summary:
+        draft.notificationMode === 'off'
+          ? t('Off')
+          : `${NOTIFICATION_MODES.find((m) => m.value === draft.notificationMode)?.label ?? ''} · ${notifyOn}/${NOTIFY_KEYS.length}`,
+      dirty: notificationsDirty,
+    },
+    {
+      key: 'filament',
+      title: 'Filament & ACE',
+      icon: 'palette-swatch',
+      commit: 'draft',
+      summary: `${draft.aceUnits} ACE ${draft.aceUnits === 1 ? 'unit' : 'units'} · Spoolman`,
+      dirty: filamentDirty,
+    },
+    {
+      key: 'integrations',
+      title: 'MakerWorld',
+      icon: 'cloud-outline',
+      commit: 'instant',
+      summary: t('Log in to import shared models'),
+    },
+    {
+      key: 'about',
+      title: t('Backup & About'),
+      icon: 'information-outline',
+      commit: 'instant',
+      summary: t('Export, import, updates'),
+    },
+  ];
+
+  const current = SECTIONS.find((s) => s.key === section) ?? null;
 
   return (
     <KeyboardAvoidingView
       style={styles.screen}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
-      <ScrollView contentContainerStyle={styles.content}>
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>{t('Connection')}</Text>
-          <Text style={styles.connInfo}>
-            {connection.toUpperCase()} — {visibleActiveUrl || 'no URL'} (klippy: {klippyState})
-          </Text>
-          <TouchableOpacity style={styles.smallBtn} onPress={reconnect}>
-            <Text style={styles.smallBtnText}>{t('Reconnect now')}</Text>
-          </TouchableOpacity>
-        </View>
+      <SafeAreaView style={styles.safe} edges={['top']}>
+        <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+          {current === null ? (
+            <>
+              <ScreenTitle title={t('Settings')} online={online} />
 
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>{t('Printers')}</Text>
-          {settings.printers.map((p) => (
-            <View key={p.id} style={styles.printerRow}>
-              <TouchableOpacity style={styles.printerMain} onPress={() => switchPrinter(p)}>
-                <MaterialCommunityIcons
-                  name={
-                    p.id === settings.activePrinterId ? 'radiobox-marked' : 'radiobox-blank'
-                  }
-                  size={18}
-                  color={p.id === settings.activePrinterId ? colors.primary : colors.subtext}
-                />
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.printerName}>{p.name}</Text>
-                  <Text style={styles.printerUrl} numberOfLines={1}>
-                    {printerConnectionUrl(p) || t('No URL set')}
+              <AttentionPanel
+                items={attention}
+                onOpen={setSection}
+                onSave={save}
+                onDiscard={() => setDraft(settings)}
+              />
+
+              <View style={styles.indexCard}>
+                {SECTIONS.map((s, i) => (
+                  <IndexRow
+                    key={s.key}
+                    icon={s.icon}
+                    title={s.title}
+                    summary={s.summary}
+                    dirty={s.dirty}
+                    warn={s.warn}
+                    first={i === 0}
+                    onPress={() => setSection(s.key)}
+                  />
+                ))}
+              </View>
+            </>
+          ) : (
+            <>
+              <SectionHeader
+                title={current.title}
+                commit={current.commit}
+                onBack={() => setSection(null)}
+              />
+
+              {section === 'connection' ? (
+                <View style={styles.card}>
+                  <Text style={styles.connInfo}>
+                    {connection.toUpperCase()} — {visibleActiveUrl || 'no URL'} (klippy: {klippyState})
+                  </Text>
+                  <TouchableOpacity style={styles.connectionBtn} onPress={reconnect}>
+                    <MaterialCommunityIcons name="lan-connect" size={18} color={colors.text} />
+                    <Text style={styles.smallBtnText}>{t('Reconnect now')}</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[
+                      styles.connectionBtn,
+                      (!visibleActiveUrl || restartingService !== null) && styles.disabledBtn,
+                    ]}
+                    disabled={!visibleActiveUrl || restartingService !== null}
+                    onPress={() => setPendingRestart('klippy')}
+                  >
+                    <MaterialCommunityIcons name="restart" size={18} color={colors.warning} />
+                    <Text style={styles.smallBtnText}>
+                      {restartingService === 'klippy' ? 'Restarting Klippy…' : 'Restart Klippy'}
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[
+                      styles.connectionBtn,
+                      (!visibleActiveUrl || restartingService !== null) && styles.disabledBtn,
+                    ]}
+                    disabled={!visibleActiveUrl || restartingService !== null}
+                    onPress={() => setPendingRestart('moonraker')}
+                  >
+                    <MaterialCommunityIcons name="server" size={18} color={colors.warning} />
+                    <Text style={styles.smallBtnText}>
+                      {restartingService === 'moonraker'
+                        ? 'Restarting Moonraker…'
+                        : 'Restart Moonraker'}
+                    </Text>
+                  </TouchableOpacity>
+                  <Text style={styles.connectionRoute}>
+                    Commands use the active {activeConnectionName} address shown above.
                   </Text>
                 </View>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.printerIconBtn}
-                onPress={() => setEditingPrinterId(p.id)}
-                accessibilityLabel={`Edit ${p.name}`}
-              >
-                <MaterialCommunityIcons name="pencil-outline" size={18} color={colors.subtext} />
-              </TouchableOpacity>
-              {settings.printers.length > 1 && (
-                <TouchableOpacity style={styles.printerIconBtn} onPress={() => removePrinter(p)}>
-                  <MaterialCommunityIcons name="trash-can-outline" size={18} color={colors.subtext} />
-                </TouchableOpacity>
-              )}
-            </View>
-          ))}
-          {addingPrinter ? (
-            <View style={styles.addForm}>
-              <TextInput
-                style={styles.fieldInput}
-                value={newName}
-                onChangeText={setNewName}
-                placeholder={t('Name')}
-                placeholderTextColor={colors.subtext}
-              />
-              <TextInput
-                style={styles.fieldInput}
-                value={newUrl}
-                onChangeText={setNewUrl}
-                placeholder={
-                  newConnectionMode === 'tailscale'
-                    ? 'LAN URL optional'
-                    : 'http://192.168.1.x:7125'
-                }
-                placeholderTextColor={colors.subtext}
-                autoCapitalize="none"
-                keyboardType="url"
-              />
-              <TextInput
-                style={styles.fieldInput}
-                value={newTailscaleUrl}
-                onChangeText={setNewTailscaleUrl}
-                placeholder={
-                  newConnectionMode === 'tailscale'
-                    ? 'http://100.x.y.z:7125'
-                    : 'Tailscale URL optional'
-                }
-                placeholderTextColor={colors.subtext}
-                autoCapitalize="none"
-                keyboardType="url"
-              />
-              <ConnectionModeSelector value={newConnectionMode} onChange={setNewConnectionMode} />
-              <TouchableOpacity
-                style={[styles.smallBtn, { backgroundColor: colors.primary }]}
-                onPress={() => {
-                  const url = normalizeMoonrakerUrl(newUrl);
-                  const tailscaleUrl = normalizeMoonrakerUrl(newTailscaleUrl);
-                  if (alertPrinterConnectionError(
-                    validatePrinterConnectionTarget(newConnectionMode, url, tailscaleUrl)
-                  )) {
-                    return;
-                  }
-                  const entry: PrinterEntry = {
-                    id: `p${Date.now()}`,
-                    name: newName.trim() || `Snapmaker ${settings.printers.length + 1}`,
-                    url,
-                    tailscaleUrl,
-                    cameraUrl: '/webcam/webrtc',
-                    connectionMode: newConnectionMode,
-                  };
-                  const printers = [...settings.printers, entry];
-                  update({
-                    printers,
-                    activePrinterId: entry.id,
-                    primaryUrl: entry.url,
-                    tailscaleUrl: entry.tailscaleUrl,
-                    cameraUrl: entry.cameraUrl,
-                    connectionMode: entry.connectionMode,
-                  });
-                  setDraft({
-                    ...draft,
-                    printers,
-                    activePrinterId: entry.id,
-                    primaryUrl: entry.url,
-                    tailscaleUrl: entry.tailscaleUrl,
-                    cameraUrl: entry.cameraUrl,
-                    connectionMode: entry.connectionMode,
-                  });
-                  setNewName('');
-                  setNewUrl('');
-                  setNewTailscaleUrl('');
-                  setNewConnectionMode('lan');
-                  setAddingPrinter(false);
-                }}
-              >
-                <Text style={[styles.smallBtnText, { color: '#fff' }]}>{t('Add printer')}</Text>
-              </TouchableOpacity>
-            </View>
-          ) : (
-            <TouchableOpacity style={styles.smallBtn} onPress={() => setAddingPrinter(true)}>
-              <Text style={styles.smallBtnText}>+ {t('Add printer')}</Text>
-            </TouchableOpacity>
-          )}
-        </View>
+              ) : null}
 
-        <PrinterEditorModal
-          printer={editingPrinter}
-          onClose={() => setEditingPrinterId(null)}
-          onSave={saveEditedPrinter}
-        />
+              {section === 'printers' ? (
+                <View style={styles.card}>
+                  {settings.printers.map((p) => (
+                    <View key={p.id} style={styles.printerRow}>
+                      <TouchableOpacity style={styles.printerMain} onPress={() => switchPrinter(p)}>
+                        <MaterialCommunityIcons
+                          name={p.id === settings.activePrinterId ? 'radiobox-marked' : 'radiobox-blank'}
+                          size={18}
+                          color={p.id === settings.activePrinterId ? colors.primary : colors.subtext}
+                        />
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.printerName}>{p.name}</Text>
+                          <Text style={styles.printerUrl} numberOfLines={1}>
+                            {printerConnectionUrl(p) || t('No URL set')}
+                          </Text>
+                        </View>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={styles.printerIconBtn}
+                        onPress={() => setEditingPrinterId(p.id)}
+                        accessibilityLabel={`Edit ${p.name}`}
+                      >
+                        <MaterialCommunityIcons name="pencil-outline" size={18} color={colors.subtext} />
+                      </TouchableOpacity>
+                      {settings.printers.length > 1 && (
+                        <TouchableOpacity style={styles.printerIconBtn} onPress={() => removePrinter(p)}>
+                          <MaterialCommunityIcons name="trash-can-outline" size={18} color={colors.subtext} />
+                        </TouchableOpacity>
+                      )}
+                    </View>
+                  ))}
+                  <TouchableOpacity
+                    style={styles.smallBtn}
+                    onPress={() =>
+                      setNewPrinter({
+                        id: `p${Date.now()}`,
+                        name: `Snapmaker ${settings.printers.length + 1}`,
+                        url: '',
+                        tailscaleUrl: '',
+                        cameraUrl: '/webcam/webrtc',
+                        connectionMode: 'lan',
+                      })
+                    }
+                  >
+                    <Text style={styles.smallBtnText}>+ {t('Add printer')}</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : null}
 
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>{t('Dashboard sections')}</Text>
-          <View style={styles.sectionGrid}>
-            {SECTION_LABELS.map(({ key, label }) => (
-              <DashboardSectionTile
-                key={key}
-                label={t(label)}
-                value={settings.dashboard[key]}
-                onChange={(v) => updateDashboardSection(key, v)}
-              />
-            ))}
-            <DashboardSectionTile
-              label={t('Confirm emergency stop')}
-              value={settings.estopConfirm}
-              onChange={(v) => update({ estopConfirm: v })}
-            />
-          </View>
-        </View>
+              {section === 'dashboard' ? (
+                <View style={styles.card}>
+                  <View style={styles.sectionGrid}>
+                    {SECTION_LABELS.map(({ key, label }) => (
+                      <DashboardSectionTile
+                        key={key}
+                        label={t(label)}
+                        value={settings.dashboard[key]}
+                        onChange={(v) => updateDashboardSection(key, v)}
+                      />
+                    ))}
+                    <DashboardSectionTile
+                      label={t('Confirm emergency stop')}
+                      value={settings.estopConfirm}
+                      onChange={(v) => update({ estopConfirm: v })}
+                    />
+                  </View>
+                </View>
+              ) : null}
 
-        <MacroDisplayCard />
+              {section === 'appearance' ? (
+                <>
+                  <View style={styles.card}>
+                    <Text style={styles.fieldLabel}>{t('Accent color')}</Text>
+                    <View style={styles.swatchRow}>
+                      {ACCENTS.map((a) => (
+                        <TouchableOpacity
+                          key={a.hex}
+                          style={[
+                            styles.swatch,
+                            { backgroundColor: a.hex },
+                            draft.accentColor === a.hex && styles.swatchActive,
+                          ]}
+                          onPress={() => setLive({ accentColor: a.hex })}
+                        >
+                          {draft.accentColor === a.hex && (
+                            <MaterialCommunityIcons name="check" size={16} color="#fff" />
+                          )}
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                    <Text style={[styles.fieldLabel, { marginTop: spacing.md }]}>{t('Language')}</Text>
+                    <View style={styles.langRow}>
+                      {LANGUAGES.map((l) => (
+                        <TouchableOpacity
+                          key={l.code}
+                          style={[
+                            styles.langChip,
+                            draft.language === l.code && { backgroundColor: colors.primary },
+                          ]}
+                          onPress={() => setLive({ language: l.code })}
+                        >
+                          <Text style={[styles.langText, draft.language === l.code && { color: '#fff' }]}>
+                            {l.label}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                    <Text style={[styles.fieldLabel, { marginTop: spacing.md }]}>
+                      {t('Temperature units')}
+                    </Text>
+                    <View style={styles.modeRow}>
+                      {(['c', 'f'] as const).map((unit) => {
+                        const active = draft.temperatureUnit === unit;
+                        return (
+                          <TouchableOpacity
+                            key={unit}
+                            style={[styles.modeBtn, active && { backgroundColor: colors.primary }]}
+                            onPress={() => setLive({ temperatureUnit: unit })}
+                          >
+                            <Text style={[styles.modeText, active && { color: '#fff' }]}>
+                              {unit === 'c' ? '°C' : '°F'}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  </View>
+                  <MacroDisplayCard />
+                </>
+              ) : null}
 
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>{t('Theme')}</Text>
-          <Text style={styles.fieldLabel}>{t('Accent color')}</Text>
-          <View style={styles.swatchRow}>
-            {ACCENTS.map((a) => (
-              <TouchableOpacity
-                key={a.hex}
-                style={[
-                  styles.swatch,
-                  { backgroundColor: a.hex },
-                  draft.accentColor === a.hex && styles.swatchActive,
-                ]}
-                onPress={() => setLive({ accentColor: a.hex })}
-              >
-                {draft.accentColor === a.hex && (
-                  <MaterialCommunityIcons name="check" size={16} color="#fff" />
-                )}
-              </TouchableOpacity>
-            ))}
-          </View>
-          <Text style={[styles.fieldLabel, { marginTop: spacing.md }]}>{t('Language')}</Text>
-          <View style={styles.langRow}>
-            {LANGUAGES.map((l) => (
-              <TouchableOpacity
-                key={l.code}
-                style={[
-                  styles.langChip,
-                  draft.language === l.code && { backgroundColor: colors.primary },
-                ]}
-                onPress={() => setLive({ language: l.code })}
-              >
-                <Text
-                  style={[styles.langText, draft.language === l.code && { color: '#fff' }]}
-                >
-                  {l.label}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-          <Text style={[styles.fieldLabel, { marginTop: spacing.md }]}>{t('Temperature units')}</Text>
-          <View style={styles.modeRow}>
-            {(['c', 'f'] as const).map((unit) => {
-              const active = draft.temperatureUnit === unit;
-              return (
-                <TouchableOpacity
-                  key={unit}
-                  style={[styles.modeBtn, active && { backgroundColor: colors.primary }]}
-                  onPress={() => setLive({ temperatureUnit: unit })}
-                >
-                  <Text style={[styles.modeText, active && { color: '#fff' }]}>
-                    {unit === 'c' ? '\u00B0C' : '\u00B0F'}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-        </View>
+              {section === 'notifications' ? (
+                <View style={styles.card}>
+                  <View style={styles.modeRow}>
+                    {NOTIFICATION_MODES.map((mode) => {
+                      const active = draft.notificationMode === mode.value;
+                      return (
+                        <TouchableOpacity
+                          key={mode.value}
+                          style={[styles.modeBtn, active && { backgroundColor: colors.primary }]}
+                          onPress={() => setNotificationMode(mode.value)}
+                        >
+                          <MaterialCommunityIcons
+                            name={mode.icon}
+                            size={17}
+                            color={active ? '#fff' : colors.text}
+                          />
+                          <Text style={[styles.modeText, active && { color: '#fff' }]}>
+                            {t(mode.label)}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
 
-        <SpoolmanCard activeUrl={activeUrl} />
+                  {draft.notificationMode === 'ntfy' && (
+                    <View style={styles.ntfyFields}>
+                      <Text style={styles.fieldLabel}>ntfy server</Text>
+                      <TextInput
+                        style={styles.fieldInput}
+                        value={draft.ntfyServer}
+                        onChangeText={(v) => set({ ntfyServer: v })}
+                        placeholder="https://ntfy.sh"
+                        placeholderTextColor={colors.subtext}
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                        keyboardType="url"
+                      />
+                      <Text style={styles.fieldLabel}>ntfy topic</Text>
+                      <View style={styles.topicRow}>
+                        <TextInput
+                          style={[styles.fieldInput, styles.topicInput]}
+                          value={draft.ntfyTopic}
+                          onChangeText={(v) => set({ ntfyTopic: v })}
+                          placeholder="helix-random-topic"
+                          placeholderTextColor={colors.subtext}
+                          autoCapitalize="none"
+                          autoCorrect={false}
+                        />
+                        <TouchableOpacity style={styles.iconBtn} onPress={randomizeNtfyTopic}>
+                          <MaterialCommunityIcons name="dice-5-outline" size={20} color={colors.text} />
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  )}
 
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>{t('ACE units')}</Text>
-          <View style={styles.stepperRow}>
-            <TouchableOpacity
-              style={styles.stepBtn}
-              onPress={() => set({ aceUnits: Math.max(1, draft.aceUnits - 1) })}
-            >
-              <Text style={styles.stepText}>−</Text>
-            </TouchableOpacity>
-            <Text style={styles.stepValue}>{draft.aceUnits}</Text>
-            <TouchableOpacity
-              style={styles.stepBtn}
-              onPress={() => set({ aceUnits: Math.min(4, draft.aceUnits + 1) })}
-            >
-              <Text style={styles.stepText}>+</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>{t('Notifications')}</Text>
-          <View style={styles.modeRow}>
-            {NOTIFICATION_MODES.map((mode) => {
-              const active = draft.notificationMode === mode.value;
-              return (
-                <TouchableOpacity
-                  key={mode.value}
-                  style={[styles.modeBtn, active && { backgroundColor: colors.primary }]}
-                  onPress={() => setNotificationMode(mode.value)}
-                >
-                  <MaterialCommunityIcons
-                    name={mode.icon}
-                    size={17}
-                    color={active ? '#fff' : colors.text}
+                  <View style={styles.divider} />
+                  <Text style={styles.cardTitle}>{t('Notify on')}</Text>
+                  <Toggle
+                    label={t('Print complete')}
+                    value={draft.notifyPrintComplete}
+                    onChange={(v) => set({ notifyPrintComplete: v })}
                   />
-                  <Text style={[styles.modeText, active && { color: '#fff' }]}>
-                    {t(mode.label)}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
+                  <Toggle
+                    label={t('Print failed')}
+                    value={draft.notifyPrintFailed}
+                    onChange={(v) => set({ notifyPrintFailed: v })}
+                  />
+                  <Toggle
+                    label={t('Print paused')}
+                    value={draft.notifyPrintPaused}
+                    onChange={(v) => set({ notifyPrintPaused: v })}
+                  />
+                  <Toggle
+                    label={t('Print cancelled')}
+                    value={draft.notifyPrintCancelled}
+                    onChange={(v) => set({ notifyPrintCancelled: v })}
+                  />
+                  <Toggle
+                    label={t('Print progress (every 10%)')}
+                    value={draft.notifyPrintProgress}
+                    onChange={(v) => set({ notifyPrintProgress: v })}
+                  />
+                  <Toggle
+                    label={t('Filament runout')}
+                    value={draft.notifyFilamentRunout}
+                    onChange={(v) => set({ notifyFilamentRunout: v })}
+                  />
+                  <Toggle
+                    label={t('Filament swap complete')}
+                    value={draft.notifySwapComplete}
+                    onChange={(v) => set({ notifySwapComplete: v })}
+                  />
+                  <Toggle
+                    label={t('Printer error')}
+                    value={draft.notifyPrinterError}
+                    onChange={(v) => set({ notifyPrinterError: v })}
+                  />
+                  <Toggle
+                    label={t('Printer disconnected')}
+                    value={draft.notifyPrinterDisconnected}
+                    onChange={(v) => set({ notifyPrinterDisconnected: v })}
+                  />
+                  <Toggle
+                    label={t('Temperature warning')}
+                    value={draft.notifyTempWarning}
+                    onChange={(v) => set({ notifyTempWarning: v })}
+                  />
+                  <TouchableOpacity style={styles.smallBtn} onPress={testNotifications}>
+                    <Text style={styles.smallBtnText}>{t('Send test notification')}</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : null}
 
-          {draft.notificationMode === 'ntfy' && (
-            <View style={styles.ntfyFields}>
-              <Text style={styles.fieldLabel}>ntfy server</Text>
-              <TextInput
-                style={styles.fieldInput}
-                value={draft.ntfyServer}
-                onChangeText={(v) => set({ ntfyServer: v })}
-                placeholder="https://ntfy.sh"
-                placeholderTextColor={colors.subtext}
-                autoCapitalize="none"
-                autoCorrect={false}
-                keyboardType="url"
-              />
-              <Text style={styles.fieldLabel}>ntfy topic</Text>
-              <View style={styles.topicRow}>
-                <TextInput
-                  style={[styles.fieldInput, styles.topicInput]}
-                  value={draft.ntfyTopic}
-                  onChangeText={(v) => set({ ntfyTopic: v })}
-                  placeholder="helix-random-topic"
-                  placeholderTextColor={colors.subtext}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                />
-                <TouchableOpacity style={styles.iconBtn} onPress={randomizeNtfyTopic}>
-                  <MaterialCommunityIcons name="dice-5-outline" size={20} color={colors.text} />
+              {section === 'filament' ? (
+                <>
+                  <View style={styles.card}>
+                    <Text style={styles.cardTitle}>{t('ACE units')}</Text>
+                    <View style={styles.stepperRow}>
+                      <TouchableOpacity
+                        style={styles.stepBtn}
+                        onPress={() => set({ aceUnits: Math.max(1, draft.aceUnits - 1) })}
+                      >
+                        <Text style={styles.stepText}>−</Text>
+                      </TouchableOpacity>
+                      <Text style={styles.stepValue}>{draft.aceUnits}</Text>
+                      <TouchableOpacity
+                        style={styles.stepBtn}
+                        onPress={() => set({ aceUnits: Math.min(4, draft.aceUnits + 1) })}
+                      >
+                        <Text style={styles.stepText}>+</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                  <SpoolmanCard activeUrl={activeUrl} />
+                </>
+              ) : null}
+
+              {section === 'integrations' ? <MakerWorldCard /> : null}
+
+              {section === 'about' ? (
+                <>
+                  {/* Import replaces saved settings behind the draft's back — drop
+                      the draft so it re-seeds from the imported values. */}
+                  <BackupCard onImported={() => setDraft(null)} />
+                  <AboutCard />
+                </>
+              ) : null}
+
+              {/* The Save button exists only on the screen it governs, and says
+                  "now" because the change isn't live until it's pressed. */}
+              {current.commit === 'draft' && dirty ? (
+                <TouchableOpacity style={styles.saveBtn} onPress={save}>
+                  <MaterialCommunityIcons name="check" size={19} color={COCKPIT.onAccent} />
+                  <Text style={styles.saveText}>{t('Save & Apply now')}</Text>
                 </TouchableOpacity>
-              </View>
-            </View>
+              ) : null}
+            </>
           )}
+        </ScrollView>
+      </SafeAreaView>
 
-          <View style={styles.divider} />
-          <Text style={styles.cardTitle}>{t('Notify on')}</Text>
-          <Toggle
-            label={t('Print complete')}
-            value={draft.notifyPrintComplete}
-            onChange={(v) => set({ notifyPrintComplete: v })}
-          />
-          <Toggle
-            label={t('Print failed')}
-            value={draft.notifyPrintFailed}
-            onChange={(v) => set({ notifyPrintFailed: v })}
-          />
-          <Toggle
-            label={t('Print paused')}
-            value={draft.notifyPrintPaused}
-            onChange={(v) => set({ notifyPrintPaused: v })}
-          />
-          <Toggle
-            label={t('Print cancelled')}
-            value={draft.notifyPrintCancelled}
-            onChange={(v) => set({ notifyPrintCancelled: v })}
-          />
-          <Toggle
-            label={t('Print progress (every 10%)')}
-            value={draft.notifyPrintProgress}
-            onChange={(v) => set({ notifyPrintProgress: v })}
-          />
-          <Toggle
-            label={t('Filament runout')}
-            value={draft.notifyFilamentRunout}
-            onChange={(v) => set({ notifyFilamentRunout: v })}
-          />
-          <Toggle
-            label={t('Filament swap complete')}
-            value={draft.notifySwapComplete}
-            onChange={(v) => set({ notifySwapComplete: v })}
-          />
-          <Toggle
-            label={t('Printer error')}
-            value={draft.notifyPrinterError}
-            onChange={(v) => set({ notifyPrinterError: v })}
-          />
-          <Toggle
-            label={t('Printer disconnected')}
-            value={draft.notifyPrinterDisconnected}
-            onChange={(v) => set({ notifyPrinterDisconnected: v })}
-          />
-          <Toggle
-            label={t('Temperature warning')}
-            value={draft.notifyTempWarning}
-            onChange={(v) => set({ notifyTempWarning: v })}
-          />
-          <TouchableOpacity style={styles.smallBtn} onPress={testNotifications}>
-            <Text style={styles.smallBtnText}>{t('Send test notification')}</Text>
-          </TouchableOpacity>
-        </View>
+      <PrinterEditorModal
+        printer={editingPrinter}
+        onClose={() => setEditingPrinterId(null)}
+        onSave={saveEditedPrinter}
+      />
+      <PrinterEditorModal
+        mode="add"
+        printer={newPrinter}
+        onClose={() => setNewPrinter(null)}
+        onSave={saveNewPrinter}
+      />
 
-        {dirty && (
-          <TouchableOpacity
-            style={[styles.saveBtn, { backgroundColor: colors.primary }]}
-            onPress={save}
-          >
-            <Text style={styles.saveText}>{t('Save & Apply')}</Text>
-          </TouchableOpacity>
-        )}
+      <ThemedDialog
+        visible={pendingRestart !== null}
+        title={pendingRestart === 'klippy' ? 'Restart Klippy?' : 'Restart Moonraker?'}
+        message={
+          pendingRestart === 'klippy'
+            ? `This reloads Klipper and will stop any active print. Send the request over ${activeConnectionName}?`
+            : `Helix and the printer screen may disconnect briefly while Moonraker restarts. Send the request over ${activeConnectionName}?`
+        }
+        icon="restart-alert"
+        onClose={() => setPendingRestart(null)}
+        actions={[
+          {
+            text: pendingRestart === 'klippy' ? 'Restart Klippy' : 'Restart Moonraker',
+            icon: 'restart',
+            variant: pendingRestart === 'klippy' ? 'danger' : 'primary',
+            onPress: confirmServiceRestart,
+          },
+          { text: t('Cancel'), onPress: () => setPendingRestart(null) },
+        ]}
+      />
 
-        <MakerWorldCard />
+      {/* Destructive, so it takes the Focus treatment like the e-stop. */}
+      <ThemedDialog
+        visible={pendingRemoval !== null}
+        title={t('Remove printer?')}
+        message={
+          pendingRemoval
+            ? `${pendingRemoval.name} will be removed from Helix. The printer itself is untouched.`
+            : undefined
+        }
+        icon="trash-can-outline"
+        onClose={() => setPendingRemoval(null)}
+        actions={[
+          {
+            text: t('Remove'),
+            icon: 'trash-can-outline',
+            variant: 'danger',
+            onPress: () => pendingRemoval && confirmRemovePrinter(pendingRemoval),
+          },
+          { text: t('Cancel'), onPress: () => setPendingRemoval(null) },
+        ]}
+      />
 
-        {/* Import replaces saved settings behind the draft's back — drop the
-            draft so it re-seeds from the imported values. */}
-        <BackupCard onImported={() => setDraft(null)} />
-
-        <AboutCard />
-      </ScrollView>
       <ThemedDialog
         visible={saveDialogOpen}
         placement="center"
@@ -693,6 +891,7 @@ export default function SettingsScreen() {
           },
         ]}
       />
+      {alertDialog}
     </KeyboardAvoidingView>
   );
 }
@@ -741,6 +940,7 @@ function MakerWorldCard() {
 // touching the printer — same upload+restart flow as the Spoolman tab.
 function SpoolmanCard({ activeUrl }: { activeUrl: string }) {
   const { settings } = useSettings();
+  const { showAlert, alertDialog } = useThemedAlert();
   const [current, setCurrent] = useState<string | null>(null);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
@@ -776,9 +976,17 @@ function SpoolmanCard({ activeUrl }: { activeUrl: string }) {
       );
       if (changed) await new Promise((r) => setTimeout(r, 8000));
       setCurrent(server);
-      Alert.alert(t('Saved'), t('Printer now reports filament usage to this Spoolman server.'));
+      showAlert({
+        title: t('Saved'),
+        message: t('Printer now reports filament usage to this Spoolman server.'),
+        icon: 'check-circle-outline',
+      });
     } catch (e: unknown) {
-      Alert.alert(t('Error'), e instanceof Error ? e.message : String(e));
+      showAlert({
+        title: t('Error'),
+        message: e instanceof Error ? e.message : String(e),
+        icon: 'alert-circle-outline',
+      });
     } finally {
       setBusy(false);
     }
@@ -818,171 +1026,7 @@ function SpoolmanCard({ activeUrl }: { activeUrl: string }) {
       <Text style={styles.note}>
         {t('The Spoolman address is stored on the printer itself, so every device using it stays in sync.')}
       </Text>
-    </View>
-  );
-}
-
-function PrinterEditorModal({
-  printer,
-  onClose,
-  onSave,
-}: {
-  printer: PrinterEntry | null;
-  onClose: () => void;
-  onSave: (printer: PrinterEntry) => Promise<boolean>;
-}) {
-  const [name, setName] = useState('');
-  const [url, setUrl] = useState('');
-  const [tailscaleUrl, setTailscaleUrl] = useState('');
-  const [cameraUrl, setCameraUrl] = useState('');
-  const [connectionMode, setConnectionMode] = useState<ConnectionMode>('lan');
-  const [saving, setSaving] = useState(false);
-  // Issue #5: bottom sheets draw edge-to-edge, so pad past the Android nav bar.
-  const insets = useSafeAreaInsets();
-
-  useEffect(() => {
-    if (!printer) return;
-    setName(printer.name);
-    setUrl(printer.url);
-    setTailscaleUrl(printer.tailscaleUrl);
-    setCameraUrl(printer.cameraUrl);
-    setConnectionMode(printer.connectionMode);
-  }, [printer]);
-
-  if (!printer) return null;
-
-  const save = async () => {
-    setSaving(true);
-    try {
-      await onSave({
-        ...printer,
-        name,
-        url,
-        tailscaleUrl,
-        cameraUrl,
-        connectionMode,
-      });
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <Modal visible transparent animationType="slide" onRequestClose={onClose}>
-      {/* Modal hosts its own window, so the activity's keyboard resize doesn't
-          apply — "padding" is needed on Android too (issue #5). */}
-      <KeyboardAvoidingView style={styles.modalWrap} behavior="padding">
-        <View style={[styles.modalCard, { paddingBottom: spacing.lg + insets.bottom }]}>
-          <View style={styles.modalHeader}>
-            <View style={styles.modalTitleRow}>
-              <View style={styles.modalIcon}>
-                <MaterialCommunityIcons name="printer-3d" size={20} color={colors.primary} />
-              </View>
-              <Text style={styles.modalTitle}>{t('Edit printer')}</Text>
-            </View>
-            <TouchableOpacity style={styles.printerIconBtn} onPress={onClose}>
-              <MaterialCommunityIcons name="close" size={22} color={colors.subtext} />
-            </TouchableOpacity>
-          </View>
-
-          <ScrollView contentContainerStyle={styles.modalContent} keyboardShouldPersistTaps="handled">
-            <Field
-              label={t('Printer name')}
-              value={name}
-              onChange={setName}
-              placeholder="Snapmaker U1"
-              keyboardType="default"
-              autoCapitalize="words"
-            />
-            <Field
-              label={
-                connectionMode === 'tailscale'
-                  ? t('Printer URL (LAN, optional)')
-                  : t('Printer URL (LAN)')
-              }
-              value={url}
-              onChange={setUrl}
-              placeholder={
-                connectionMode === 'tailscale'
-                  ? 'LAN URL optional'
-                  : 'http://192.168.1.x:7125'
-              }
-            />
-            <Field
-              label={
-                connectionMode === 'tailscale'
-                  ? t('Printer URL (Tailscale)')
-                  : t('Printer URL (Tailscale, optional)')
-              }
-              value={tailscaleUrl}
-              onChange={setTailscaleUrl}
-              placeholder="http://100.x.y.z:7125"
-            />
-            <Field
-              label={t('Camera stream (path or full URL)')}
-              value={cameraUrl}
-              onChange={setCameraUrl}
-              placeholder="/webcam/webrtc"
-            />
-            <View style={styles.field}>
-              <Text style={styles.fieldLabel}>{t('Connection mode')}</Text>
-              <ConnectionModeSelector value={connectionMode} onChange={setConnectionMode} />
-            </View>
-            <Text style={styles.note}>
-              LAN only never uses Tailscale. Tailscale only never falls back to Wi-Fi. Auto tries
-              LAN, then Tailscale.
-            </Text>
-          </ScrollView>
-
-          <View style={styles.modalActions}>
-            <TouchableOpacity style={styles.secondaryAction} onPress={onClose} disabled={saving}>
-              <Text style={styles.secondaryActionText}>{t('Cancel')}</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.primaryAction, saving && { opacity: 0.5 }]}
-              onPress={save}
-              disabled={saving}
-            >
-              <MaterialCommunityIcons name="content-save-outline" size={17} color="#fff" />
-              <Text style={styles.primaryActionText}>
-                {saving ? t('Saving...') : t('Save printer')}
-              </Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </KeyboardAvoidingView>
-    </Modal>
-  );
-}
-
-function ConnectionModeSelector({
-  value,
-  onChange,
-}: {
-  value: ConnectionMode;
-  onChange: (mode: ConnectionMode) => void;
-}) {
-  return (
-    <View style={styles.modeRow}>
-      {CONNECTION_MODES.map((mode) => {
-        const active = value === mode.value;
-        return (
-          <TouchableOpacity
-            key={mode.value}
-            style={[styles.modeBtn, active && { backgroundColor: colors.primary }]}
-            onPress={() => onChange(mode.value)}
-          >
-            <MaterialCommunityIcons
-              name={mode.icon}
-              size={17}
-              color={active ? '#fff' : colors.text}
-            />
-            <Text style={[styles.modeText, active && { color: '#fff' }]}>
-              {t(mode.label)}
-            </Text>
-          </TouchableOpacity>
-        );
-      })}
+      {alertDialog}
     </View>
   );
 }
@@ -997,23 +1041,25 @@ function DashboardSectionTile({
   onChange: (v: boolean) => void;
 }) {
   return (
-    <TouchableOpacity
-      style={styles.sectionTile}
-      onPress={() => onChange(!value)}
-      accessibilityRole="switch"
-      accessibilityState={{ checked: value }}
-    >
-      <Text style={styles.sectionTileText} numberOfLines={2}>
-        {label}
-      </Text>
-      <View pointerEvents="none" style={styles.sectionSwitchWrap}>
-        <Switch
-          value={value}
-          trackColor={{ false: colors.card, true: colors.primary }}
-          thumbColor="#fff"
-        />
-      </View>
-    </TouchableOpacity>
+    <View style={styles.sectionTile}>
+      <Pressable
+        style={styles.sectionTileLabel}
+        onPress={() => onChange(!value)}
+        accessibilityRole="switch"
+        accessibilityState={{ checked: value }}
+        accessibilityLabel={label}
+      >
+        <Text style={styles.sectionTileText} numberOfLines={2}>
+          {label}
+        </Text>
+      </Pressable>
+      <Switch
+        value={value}
+        onValueChange={onChange}
+        trackColor={{ false: colors.card, true: colors.primary }}
+        thumbColor="#fff"
+      />
+    </View>
   );
 }
 
@@ -1076,10 +1122,18 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.bg,
   },
+  safe: { flex: 1 },
   content: {
     padding: spacing.lg,
     gap: spacing.md,
     paddingBottom: spacing.xl * 2,
+  },
+  indexCard: {
+    borderRadius: COCKPIT.radius,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.card,
+    overflow: 'hidden',
   },
   card: {
     backgroundColor: colors.card,
@@ -1169,6 +1223,27 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
   },
+  connectionBtn: {
+    minHeight: 44,
+    marginTop: spacing.sm,
+    borderRadius: 8,
+    backgroundColor: colors.cardAlt,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.sm,
+    paddingHorizontal: spacing.md,
+  },
+  connectionRoute: {
+    color: colors.subtext,
+    fontSize: 11,
+    lineHeight: 16,
+    marginTop: spacing.md,
+    textAlign: 'center',
+  },
+  disabledBtn: {
+    opacity: 0.45,
+  },
   printerRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1198,10 +1273,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  addForm: {
-    gap: spacing.sm,
-    marginTop: spacing.sm,
-  },
   sectionGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -1213,6 +1284,11 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     backgroundColor: colors.cardAlt,
     padding: spacing.sm,
+    flexDirection: 'column',
+    justifyContent: 'space-between',
+  },
+  sectionTileLabel: {
+    flex: 1,
   },
   sectionTileText: {
     color: colors.text,
@@ -1220,10 +1296,6 @@ const styles = StyleSheet.create({
     lineHeight: 15,
     fontWeight: '800',
     minHeight: 30,
-  },
-  sectionSwitchWrap: {
-    alignSelf: 'flex-start',
-    marginTop: 'auto',
   },
   swatchRow: {
     flexDirection: 'row',
@@ -1303,95 +1375,17 @@ const styles = StyleSheet.create({
     marginVertical: spacing.md,
   },
   saveBtn: {
-    borderRadius: 10,
-    paddingVertical: spacing.lg,
+    height: 56,
+    borderRadius: 999,
+    backgroundColor: COCKPIT.accentFill,
+    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
+    gap: 9,
   },
   saveText: {
-    color: '#fff',
+    color: COCKPIT.onAccent,
     fontSize: 15,
-    fontWeight: '800',
-  },
-  modalWrap: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.62)',
-    justifyContent: 'flex-end',
-  },
-  modalCard: {
-    maxHeight: '88%',
-    backgroundColor: colors.bg,
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
-    borderWidth: 1,
-    borderColor: colors.border,
-    padding: spacing.lg,
-  },
-  modalHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: spacing.md,
-    marginBottom: spacing.md,
-  },
-  modalTitleRow: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-  },
-  modalIcon: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: colors.card,
-    borderWidth: 1,
-    borderColor: colors.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  modalTitle: {
-    flex: 1,
-    color: colors.text,
-    fontSize: 16,
-    fontWeight: '800',
-  },
-  modalContent: {
-    gap: spacing.md,
-    paddingBottom: spacing.md,
-  },
-  modalActions: {
-    flexDirection: 'row',
-    gap: spacing.sm,
-    paddingTop: spacing.md,
-  },
-  secondaryAction: {
-    flex: 1,
-    minHeight: 46,
-    borderRadius: 8,
-    backgroundColor: colors.cardAlt,
-    borderWidth: 1,
-    borderColor: colors.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  secondaryActionText: {
-    color: colors.text,
-    fontSize: 13,
-    fontWeight: '800',
-  },
-  primaryAction: {
-    flex: 1,
-    minHeight: 46,
-    borderRadius: 8,
-    backgroundColor: colors.primary,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-  },
-  primaryActionText: {
-    color: '#fff',
-    fontSize: 13,
     fontWeight: '800',
   },
 });

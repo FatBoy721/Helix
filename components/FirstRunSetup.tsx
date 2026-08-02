@@ -12,11 +12,14 @@ import {
   View,
 } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors, spacing } from '../constants/theme';
 import { ConnectionMode, PrinterEntry, useSettings } from '../hooks/useSettings';
 import { normalizeMoonrakerUrl, validatePrinterConnectionTarget } from '../services/moonraker';
 import type { PrinterConnectionValidationError } from '../services/moonraker';
 import { t } from '../services/i18n';
+import TailscaleIcon from './TailscaleIcon';
+import PrinterIcon from './PrinterIcon';
 
 const CONNECTION_MODES: {
   value: ConnectionMode;
@@ -35,6 +38,7 @@ function connectionErrorMessage(error: PrinterConnectionValidationError | null):
 }
 
 export default function FirstRunSetup({ visible }: { visible: boolean }) {
+  const insets = useSafeAreaInsets();
   const { update } = useSettings();
   const [name, setName] = useState('Snapmaker U1');
   const [lanUrl, setLanUrl] = useState('');
@@ -82,21 +86,28 @@ export default function FirstRunSetup({ visible }: { visible: boolean }) {
   };
 
   return (
-    <Modal visible={visible} animationType="fade" transparent={false}>
-      <KeyboardAvoidingView
-        style={styles.screen}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      >
-        <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-          <Image source={require('../assets/icon.png')} style={styles.logo} />
-          <Text style={styles.title}>{t('Welcome to Helix')}</Text>
-          <Text style={styles.copy}>
-            {t(
-              'A mobile Fluidd-style controller for PAXX/Moonraker so you do not have to open the printer web UI every time.'
-            )}
-          </Text>
+    <Modal visible={visible} animationType="fade" transparent statusBarTranslucent>
+      <View style={styles.screen}>
+        <View style={styles.scrim} />
+        <KeyboardAvoidingView
+          style={styles.keyboard}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        >
+          <View style={[styles.deck, { paddingBottom: 18 + insets.bottom }]}>
+            <View style={styles.grabber} />
+            <View style={styles.deckHead}>
+              <Text style={styles.depth}>LAYER 1</Text>
+              <Text style={styles.title}>{t('Welcome to Helix')}</Text>
+            </View>
+            <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+              <Image source={require('../assets/icon.png')} style={styles.logo} />
+              <Text style={styles.copy}>
+                {t(
+                  'A mobile Fluidd-style controller for PAXX/Moonraker so you do not have to open the printer web UI every time.'
+                )}
+              </Text>
 
-          <View style={styles.card}>
+              <View style={styles.card}>
             <Field
               label={t('Printer name')}
               value={name}
@@ -143,11 +154,15 @@ export default function FirstRunSetup({ visible }: { visible: boolean }) {
                     style={[styles.modeBtn, active && { backgroundColor: colors.primary }]}
                     onPress={() => setConnectionMode(mode.value)}
                   >
-                    <MaterialCommunityIcons
-                      name={mode.icon}
-                      size={17}
-                      color={active ? '#fff' : colors.text}
-                    />
+                    {mode.value === 'tailscale' ? (
+                      <TailscaleIcon size={17} color={active ? '#fff' : colors.text} />
+                    ) : (
+                      <MaterialCommunityIcons
+                        name={mode.icon}
+                        size={17}
+                        color={active ? '#fff' : colors.text}
+                      />
+                    )}
                     <Text style={[styles.modeText, active && { color: '#fff' }]}>
                       {t(mode.label)}
                     </Text>
@@ -159,23 +174,22 @@ export default function FirstRunSetup({ visible }: { visible: boolean }) {
               {t('Tailscale only never falls back to Wi-Fi. Auto tries LAN first.')}
             </Text>
 
-            {error ? <Text style={styles.error}>{error}</Text> : null}
-
-            <TouchableOpacity
-              style={[
-                styles.saveBtn,
-                { backgroundColor: colors.primary },
-                saving && { opacity: 0.5 },
-              ]}
-              disabled={saving}
-              onPress={save}
-            >
-              <MaterialCommunityIcons name="printer-3d" size={18} color="#fff" />
-              <Text style={styles.saveText}>{saving ? t('Saving...') : t('Start using Helix')}</Text>
-            </TouchableOpacity>
+                {error ? <Text style={styles.error}>{error}</Text> : null}
+              </View>
+            </ScrollView>
+            <View style={styles.actions}>
+              <TouchableOpacity
+                style={[styles.saveBtn, saving && { opacity: 0.5 }]}
+                disabled={saving}
+                onPress={save}
+              >
+                <PrinterIcon size={18} />
+                <Text style={styles.saveText}>{saving ? t('Saving...') : t('Start using Helix')}</Text>
+              </TouchableOpacity>
+            </View>
           </View>
-        </ScrollView>
-      </KeyboardAvoidingView>
+        </KeyboardAvoidingView>
+      </View>
     </Modal>
   );
 }
@@ -213,33 +227,64 @@ function Field({
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
+  },
+  scrim: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+  },
+  keyboard: {
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  deck: {
+    maxHeight: '82%',
     backgroundColor: colors.bg,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    borderWidth: 1,
+    borderColor: colors.border,
+    overflow: 'hidden',
+  },
+  grabber: {
+    alignSelf: 'center',
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    marginTop: 10,
+    backgroundColor: colors.border,
+  },
+  deckHead: {
+    paddingHorizontal: 18,
+    paddingTop: 12,
+    gap: 3,
+  },
+  depth: {
+    color: colors.subtext,
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 1.3,
   },
   content: {
-    flexGrow: 1,
-    justifyContent: 'center',
-    padding: spacing.xl,
+    padding: 18,
     gap: spacing.md,
   },
   logo: {
-    width: 104,
-    height: 104,
-    borderRadius: 24,
+    width: 80,
+    height: 80,
+    borderRadius: 20,
     alignSelf: 'center',
-    marginBottom: spacing.sm,
   },
   title: {
     color: colors.text,
-    fontSize: 26,
+    fontSize: 19,
     fontWeight: '800',
-    textAlign: 'center',
+    letterSpacing: -0.4,
   },
   copy: {
     color: colors.subtext,
     fontSize: 14,
     lineHeight: 20,
     textAlign: 'center',
-    marginBottom: spacing.md,
   },
   card: {
     backgroundColor: colors.card,
@@ -301,8 +346,9 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   saveBtn: {
-    minHeight: 48,
-    borderRadius: 10,
+    height: 52,
+    borderRadius: 999,
+    backgroundColor: colors.primary,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -312,5 +358,9 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 15,
     fontWeight: '800',
+  },
+  actions: {
+    paddingHorizontal: 18,
+    paddingTop: 6,
   },
 });

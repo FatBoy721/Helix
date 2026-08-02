@@ -311,6 +311,32 @@ class HelixSlicerModule(
   }
 
   /**
+   * Embedded slice stats for each plate of a Bambu/Orca 3MF:
+   * { id, layers, timeSeconds, grams }. Empty when the 3MF has no embedded
+   * plate G-code (geometry-only exports, STLs).
+   */
+  @ReactMethod
+  fun getModelPlateStats(path: String, promise: Promise) {
+    try {
+      val file = File(path.removePrefix("file://"))
+      val arr = Arguments.createArray()
+      if (file.exists()) {
+        for (stats in PlateExtractor.readPlateStats(file)) {
+          arr.pushMap(Arguments.createMap().apply {
+            putInt("id", stats.id)
+            putInt("layers", stats.layers)
+            putInt("timeSeconds", stats.timeSeconds)
+            putDouble("grams", stats.grams)
+          })
+        }
+      }
+      promise.resolve(arr)
+    } catch (error: Throwable) {
+      promise.reject("E_PLATE_STATS", error.message, error)
+    }
+  }
+
+  /**
    * Repacks a single plate of a multi-plate 3MF into its own temp 3MF (only that
    * plate's objects). Resolves { filePath, fileName, objectCount }. The caller
    * should open it with autoArrange=true so the objects re-center on the bed.
@@ -675,8 +701,13 @@ class HelixSlicerModule(
       val list = (0 until printers.size()).mapNotNull { i ->
         val map = printers.getMap(i) ?: return@mapNotNull null
         val url = map.getString("url")?.trim().orEmpty()
-        if (url.isEmpty()) return@mapNotNull null
-        HelixPrinterStore.Printer(map.getString("name")?.trim().orEmpty().ifEmpty { "Printer" }, url)
+        val tailscale = map.getString("tailscaleUrl")?.trim().orEmpty()
+        if (url.isEmpty() && tailscale.isEmpty()) return@mapNotNull null
+        HelixPrinterStore.Printer(
+          map.getString("name")?.trim().orEmpty().ifEmpty { "Printer" },
+          url,
+          tailscale,
+        )
       }
       HelixPrinterStore.write(reactApplicationContext, list)
       promise.resolve(true)
@@ -697,6 +728,43 @@ class HelixSlicerModule(
       promise.resolve(true)
     } catch (error: Throwable) {
       promise.reject("E_FILAMENT_COLORS", error.message, error)
+    }
+  }
+
+  /**
+   * Mirrors the RN filament slot list into native prefs: colours into
+   * [FilamentSlotColors] (paint/preview) and the descriptive half into
+   * [FilamentSlotDetails] so the print preprocess sheet can label each lane
+   * exactly as the RN sheet does without re-deriving anything from Moonraker.
+   */
+  @ReactMethod
+  fun setFilamentSlots(slots: ReadableArray, promise: Promise) {
+    try {
+      val colors = mutableListOf<String>()
+      val details = mutableListOf<FilamentSlotDetails.Slot>()
+      for (i in 0 until slots.size()) {
+        val map = slots.getMap(i) ?: continue
+        val color = map.getString("color")?.trim().orEmpty()
+        if (color.isNotEmpty()) colors.add(color)
+        details.add(
+          FilamentSlotDetails.Slot(
+            material = map.getString("material")?.trim().orEmpty().ifEmpty { "PLA" },
+            mainType = map.getString("mainType")?.trim().orEmpty(),
+            subType = map.getString("subType")?.trim().orEmpty(),
+            brand = map.getString("brand")?.trim().orEmpty(),
+            status = map.getString("status")?.trim().orEmpty().ifEmpty { "unknown" },
+          ),
+        )
+      }
+      if (colors.isNotEmpty()) {
+        FilamentSlotColors.write(reactApplicationContext, colors)
+      }
+      if (details.isNotEmpty()) {
+        FilamentSlotDetails.write(reactApplicationContext, details)
+      }
+      promise.resolve(true)
+    } catch (error: Throwable) {
+      promise.reject("E_FILAMENT_SLOTS", error.message, error)
     }
   }
 

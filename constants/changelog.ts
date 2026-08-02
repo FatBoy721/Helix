@@ -28,6 +28,13 @@ export const FCM_ANNOUNCEMENTS_KEY = 'u1control.notifications.fcm.v1';
 /** Fallback feed baked into the app. Remote entries with the same id override these. */
 export const BAKED_NOTIFICATIONS: AppNotification[] = [
   {
+    id: '2026-08-01-release-3-0-0',
+    type: 'changelog',
+    title: 'Helix 3.0.0 — Major visual refresh',
+    date: '2026-08-01',
+    body: 'By popular demand, Helix has received a major visual refresh throughout the app, with cleaner navigation, clearer printer information, and more consistent controls and dialogs. This release also includes bug fixes and reliability improvements across printer interaction, notifications, updates, filament handling, camera loading, file management, and settings.',
+  },
+  {
     id: '2026-07-21-release-1-2-3',
     type: 'changelog',
     title: 'Helix 1.2.3 is available',

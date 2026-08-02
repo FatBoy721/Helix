@@ -1,20 +1,20 @@
+// Files — the Shelf list, History and Timelapse.
+//
+// The list, search and per-file metadata live in useFileLibrary; this screen
+// owns the print flow that opens when a file is tapped (printer choice, slot
+// assignment, tool remapping and the upload/start sequence).
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import {
-  FlatList,
-  Image,
-  RefreshControl,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
-} from 'react-native';
-import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useMoonraker } from '../../hooks/useMoonraker';
-import { api, FileEntry, printerConnectionUrl, thumbnailUrl } from '../../services/moonraker';
-import HistoryView from '../../components/HistoryView';
-import TimelapseView from '../../components/TimelapseView';
+import { api, printerConnectionUrl, thumbnailUrl } from '../../services/moonraker';
+import ShelfFiles from '../../components/files/ShelfFiles';
+import HistoryPanel from '../../components/files/HistoryPanel';
+import TimelapsePanel from '../../components/files/TimelapsePanel';
+import { COCKPIT as P, alpha } from '../../components/dashboard/shared';
+import { useFileLibrary, type LibraryFile } from '../../hooks/useFileLibrary';
+import { usePrintHistory } from '../../hooks/usePrintHistory';
 import { t } from '../../services/i18n';
-import { colors, spacing } from '../../constants/theme';
 import { useThemedAlert } from '../../hooks/useThemedAlert';
 import { useSettings } from '../../hooks/useSettings';
 import PrintPreprocessDialog, { type PrintPref } from '../../components/PrintPreprocessDialog';
@@ -22,70 +22,25 @@ import type { FilamentSlotDisplay } from '../../components/FilamentSlotsEditor';
 import { normalizeFilamentSlotColors } from '../../constants/filamentColors';
 import * as FileSystem from 'expo-file-system/legacy';
 import { fileUrl } from '../../services/moonraker';
-import { uploadGcodeToPrinter } from '../../services/nativeSlicer';
+import { injectTimelapseMacros, uploadGcodeToPrinter } from '../../services/nativeSlicer';
+import { routeTools } from '../../services/printPreprocess';
 
-// path|modified -> thumbnail URL, null = file genuinely has no thumbnail.
-// cached at module level so scrolling doesn't re-hit /server/files/metadata
-// for every row. modified is in the key so re-sliced files bust the cache.
-const thumbCache = new Map<string, string | null>();
+type Mode = 'files' | 'history' | 'timelapse';
 
-function FileThumb({ base, file }: { base: string; file: FileEntry }) {
-  const cacheKey = `${file.path}|${file.modified}`;
-  const [thumb, setThumb] = useState<string | null | undefined>(thumbCache.get(cacheKey));
-
-  useEffect(() => {
-    if (thumb !== undefined || !base) return;
-    let live = true;
-    (async () => {
-      try {
-        const meta: any = await api.metadata(base, file.path);
-        const thumbs: any[] = Array.isArray(meta?.thumbnails) ? meta.thumbnails : [];
-        const best = thumbs.reduce(
-          (a, b) => (!a || (b?.width ?? 0) > (a.width ?? 0) ? b : a),
-          null as any
-        );
-        const url = best?.relative_path ? thumbnailUrl(base, file.path, best.relative_path) : null;
-        thumbCache.set(cacheKey, url);
-        if (live) setThumb(url);
-      } catch {
-        thumbCache.set(cacheKey, null);
-        if (live) setThumb(null);
-      }
-    })();
-    return () => {
-      live = false;
-    };
-  }, [base, cacheKey, thumb, file.path]);
-
-  if (thumb) {
-    return <Image source={{ uri: thumb }} style={styles.thumb} resizeMode="cover" />;
-  }
-  return (
-    <View style={[styles.thumb, styles.thumbPlaceholder]}>
-      <MaterialCommunityIcons name="file-code-outline" size={24} color={colors.subtext} />
-    </View>
-  );
-}
-
-function formatSize(bytes: number): string {
-  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KB`;
-  return `${bytes} B`;
-}
-
-function formatDate(epoch: number): string {
-  const d = new Date(epoch * 1000);
-  return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-}
+const MODES: { key: Mode; label: string }[] = [
+  { key: 'files', label: 'Files' },
+  { key: 'history', label: 'History' },
+  { key: 'timelapse', label: 'Timelapse' },
+];
 
 export default function FilesScreen() {
   const { connection, activeUrl, status } = useMoonraker();
   const { settings } = useSettings();
-  const [files, setFiles] = useState<FileEntry[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-  const [mode, setMode] = useState<'files' | 'history' | 'timelapse'>('files');
-  const [selectedFile, setSelectedFile] = useState<FileEntry | null>(null);
+  const connected = connection === 'connected';
+  const [mode, setMode] = useState<Mode>('files');
+  const library = useFileLibrary();
+  const history = usePrintHistory(activeUrl, connected);
+  const [selectedFile, setSelectedFile] = useState<LibraryFile | null>(null);
   const [selectedMeta, setSelectedMeta] = useState<any | null>(null);
   const [modalLoading, setModalLoading] = useState(false);
   const [modalError, setModalError] = useState<string | null>(null);
@@ -103,25 +58,7 @@ export default function FilesScreen() {
 
   const printState: string = status.print_stats?.state ?? '';
 
-  const refresh = useCallback(async () => {
-    if (!activeUrl) return;
-    setLoading(true);
-    setError('');
-    try {
-      const list = await api.listFiles(activeUrl);
-      setFiles([...list].sort((a, b) => b.modified - a.modified));
-    } catch (e: any) {
-      setError(String(e?.message ?? e));
-    } finally {
-      setLoading(false);
-    }
-  }, [activeUrl]);
-
-  useEffect(() => {
-    if (connection === 'connected') refresh();
-  }, [connection, refresh]);
-
-  const openPrintModal = useCallback(async (file: FileEntry) => {
+  const openPrintModal = useCallback(async (file: LibraryFile) => {
     if (printState === 'printing' || printState === 'paused') {
       showAlert({
         title: t('Printer busy'),
@@ -250,7 +187,7 @@ export default function FilesScreen() {
     const targetUrl = selectedPrinter.url;
     setSending(true);
     setModalError(null);
-    setSendProgress(0.2);
+    setSendProgress(0.05);
     try {
       const materialMismatch = findMaterialMismatch(selectedMeta, assignments, availableSlots);
       if (materialMismatch) {
@@ -258,95 +195,123 @@ export default function FilesScreen() {
           `This file was sliced for ${materialMismatch.fileMaterial}, but ${materialMismatch.slotName} is loaded in T${materialMismatch.loadedSlot}. Re-slice the model with the loaded material before printing.`,
         );
       }
-      await api.runGcode(
-        targetUrl,
-        `SET_MAIN_STATE MAIN_STATE=IDLE\nSET_PRINT_PREFERENCES BED_LEVEL=${prefs.autoLevel ? 1 : 0} TIME_LAPSE_CAMERA=${prefs.timelapse ? 1 : 0} FLOW_CALIBRATE=${prefs.flowCal ? 1 : 0} FLOW_CALIBRATE_EXTRUDERS=0,1,2,3`,
+
+      // Route file tools onto loaded lanes (manual wins → identity-if-loaded → first-free-loaded lane).
+      const required = fileSlots.length ? fileSlots.map((slot) => slot.index) : [0];
+      const routing = routeTools(required, loadedSlots, assignments);
+      const effectiveAssignments = Object.fromEntries(
+        required.map((tool) => [tool, routing[tool]?.lane ?? tool]),
       );
-      setSendProgress(0.65);
+      const usedExtruders = [...new Set(Object.values(effectiveAssignments) as number[])].sort((a, b) => a - b);
+
+      // Busy check — refuse if the target printer is already printing/paused.
+      const before = await api.queryObjects<{ print_stats?: { state?: string } }>(targetUrl, ['print_stats']);
+      const currentState = before?.status?.print_stats?.state;
+      if (currentState === 'printing' || currentState === 'paused') {
+        throw new Error(`Printer is already ${currentState}.`);
+      }
+
+      // Decide whether we need a local copy: remapped lanes or injected timelapse macros.
+      const needsRemap = targetUrl !== activeUrl
+        || Object.entries(effectiveAssignments).some(([fileTool, lane]) => Number(fileTool) !== lane);
       let printPath = selectedFile.path;
-      if (targetUrl !== activeUrl || Object.entries(assignments).some(([fileTool, loadedSlot]) => Number(fileTool) !== loadedSlot)) {
+      if (needsRemap || prefs.timelapse) {
+        setSendProgress(0.15);
         const sourcePath = `${FileSystem.cacheDirectory ?? ''}helix-reprint-source-${Date.now()}.gcode`;
-        const outputPath = `${FileSystem.cacheDirectory ?? ''}helix-reprint-${Date.now()}.gcode`;
         await FileSystem.downloadAsync(fileUrl(activeUrl, 'gcodes', selectedFile.path), sourcePath);
-        const source = await FileSystem.readAsStringAsync(sourcePath);
-        const remapped = remapGcodeTools(source, assignments);
-        await FileSystem.writeAsStringAsync(outputPath, remapped);
+        let workPath = sourcePath;
+        if (needsRemap) {
+          const source = await FileSystem.readAsStringAsync(sourcePath);
+          const remapped = remapGcodeTools(source, effectiveAssignments);
+          const outputPath = `${FileSystem.cacheDirectory ?? ''}helix-reprint-${Date.now()}.gcode`;
+          await FileSystem.writeAsStringAsync(outputPath, remapped);
+          workPath = outputPath;
+        }
+        if (prefs.timelapse) {
+          setSendProgress(0.35);
+          workPath = await injectTimelapseMacros(workPath);
+        }
         const uploadName = `${fileStem(selectedFile.path)}_helix_reprint_${Date.now()}.gcode`;
-        const uploaded = await uploadGcodeToPrinter(targetUrl, uploadName, outputPath);
+        const uploaded = await uploadGcodeToPrinter(targetUrl, uploadName, workPath);
         printPath = uploaded?.path ?? uploadName;
       }
+
+      // Apply preferences (always explicit — firmware caches prior job state).
+      setSendProgress(0.7);
+      await api.runGcode(
+        targetUrl,
+        `SET_MAIN_STATE MAIN_STATE=IDLE\nSET_PRINT_USED_EXTRUDERS EXTRUDERS=${usedExtruders.join(',')}\nSET_PRINT_PREFERENCES BED_LEVEL=${prefs.autoLevel ? 1 : 0} TIME_LAPSE_CAMERA=${prefs.timelapse ? 1 : 0} FLOW_CALIBRATE=${prefs.flowCal ? 1 : 0} FLOW_CALIBRATE_EXTRUDERS=0,1,2,3`,
+      );
+
+      // Verify the firmware accepted the preferences; abort if not.
+      const applied = await api.queryObjects<{
+        print_task_config?: {
+          auto_bed_leveling?: boolean;
+          time_lapse_camera?: boolean;
+          flow_calibrate?: boolean;
+          flow_calib_extruders?: boolean[];
+          extruders_used?: boolean[];
+        };
+      }>(targetUrl, ['print_task_config']);
+      const taskConfig = applied?.status?.print_task_config;
+      if (
+        taskConfig?.auto_bed_leveling !== prefs.autoLevel ||
+        taskConfig?.time_lapse_camera !== prefs.timelapse ||
+        taskConfig?.flow_calibrate !== prefs.flowCal ||
+        taskConfig?.flow_calib_extruders?.length !== 4 ||
+        !taskConfig?.flow_calib_extruders?.every(Boolean) ||
+        taskConfig?.extruders_used?.length !== 4 ||
+        !taskConfig?.extruders_used?.every((used, tool) => used === usedExtruders.includes(tool))
+      ) {
+        throw new Error('Printer rejected the selected print preferences.');
+      }
+
+      setSendProgress(0.92);
       await api.startPrint(targetUrl, printPath);
       setSendProgress(1);
-      const printed = printPath;
       closePrintModal();
-      showAlert({ title: t('Print started'), message: printed, icon: 'check-circle' });
+      showAlert({ title: t('Print started'), message: printPath, icon: 'check-circle' });
     } catch (e: any) {
       setModalError(String(e?.message ?? e));
     } finally {
       setSending(false);
     }
-  }, [activeUrl, assignments, closePrintModal, selectedFile, showAlert]);
+  }, [activeUrl, assignments, availableSlots, closePrintModal, fileSlots, loadedSlots, selectedFile, selectedMeta, selectedPrinter, showAlert]);
 
-  const empty = useMemo(
-    () => (
-      <Text style={styles.empty}>
-        {connection !== 'connected'
-          ? t('Not connected')
-          : error
-            ? `${t('Error')}: ${error}`
-            : t('No G-code files on printer')}
-      </Text>
-    ),
-    [connection, error]
-  );
+  // The library already fetched the largest thumbnail for the row, so the
+  // dialog can show it immediately instead of waiting on the metadata call.
+  const dialogThumbnail = selectedFile
+    ? selectedFile.thumbUri
+      ?? (selectedMeta ? metadataThumbnail(activeUrl, selectedFile.path, selectedMeta) : null)
+    : null;
 
   return (
-    <>
-      <View style={styles.screen}>
+    <View style={styles.root}>
+      <SafeAreaView style={styles.flex} edges={['top']}>
         <View style={styles.segmentRow}>
-        {(['files', 'history', 'timelapse'] as const).map((m) => (
-          <TouchableOpacity
-            key={m}
-            style={[styles.segment, mode === m && { backgroundColor: colors.primary }]}
-            onPress={() => setMode(m)}
-          >
-            <Text style={[styles.segmentText, mode === m && styles.segmentTextActive]}>
-              {m === 'files' ? t('Files') : m === 'history' ? t('History') : t('Timelapse')}
-            </Text>
-          </TouchableOpacity>
-        ))}
-      </View>
+          {MODES.map((m) => {
+            const on = m.key === mode;
+            return (
+              <Pressable
+                key={m.key}
+                onPress={() => setMode(m.key)}
+                style={[styles.segment, on && styles.segmentOn]}
+              >
+                <Text style={[styles.segmentText, on && styles.segmentTextOn]}>{t(m.label)}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
 
-      {mode === 'history' ? (
-        <HistoryView base={activeUrl} connected={connection === 'connected'} />
-      ) : mode === 'timelapse' ? (
-        <TimelapseView base={activeUrl} connected={connection === 'connected'} />
-      ) : (
-      <FlatList
-        data={files}
-        keyExtractor={(item) => item.path}
-        contentContainerStyle={styles.listContent}
-        refreshControl={
-          <RefreshControl refreshing={loading} onRefresh={refresh} tintColor={colors.subtext} />
-        }
-        ListEmptyComponent={empty}
-        renderItem={({ item }) => (
-          <TouchableOpacity style={styles.fileCard} onPress={() => openPrintModal(item)}>
-            <FileThumb base={activeUrl} file={item} />
-            <View style={styles.fileInfo}>
-              <Text style={styles.fileName} numberOfLines={2}>
-                {item.path}
-              </Text>
-              <View style={styles.fileMeta}>
-                <Text style={styles.metaText}>{formatSize(item.size)}</Text>
-                <Text style={styles.metaText}>{formatDate(item.modified)}</Text>
-              </View>
-            </View>
-          </TouchableOpacity>
+        {mode === 'files' ? (
+          <ShelfFiles library={library} onOpen={openPrintModal} />
+        ) : mode === 'history' ? (
+          <HistoryPanel base={activeUrl} history={history} />
+        ) : (
+          <TimelapsePanel base={activeUrl} connected={connected} />
         )}
-      />
-      )}
-      </View>
+      </SafeAreaView>
+
       {alertDialog}
       <PrintPreprocessDialog
         visible={Boolean(selectedFile)}
@@ -354,7 +319,7 @@ export default function FilesScreen() {
         fileName={selectedFile?.path ?? 'print.gcode'}
         estTimeSeconds={Number(selectedMeta?.estimated_time ?? 0)}
         estGramsTotal={Number(selectedMeta?.filament_weight_total ?? 0)}
-        thumbnail={selectedFile && selectedMeta ? metadataThumbnail(activeUrl, selectedFile.path, selectedMeta) : null}
+        thumbnail={dialogThumbnail}
         printers={printerOptions.map((printer) => ({
           id: printer.id,
           name: printer.name,
@@ -378,86 +343,29 @@ export default function FilesScreen() {
         onSend={reprint}
         sendLabel="Print Again"
       />
-    </>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  screen: {
-    flex: 1,
-    backgroundColor: colors.bg,
-  },
+  root: { flex: 1, backgroundColor: P.bg },
+  flex: { flex: 1 },
+
   segmentRow: {
     flexDirection: 'row',
-    margin: spacing.lg,
+    gap: 4,
+    margin: 16,
     marginBottom: 0,
-    backgroundColor: colors.card,
-    borderRadius: 8,
+    padding: 4,
+    borderRadius: 999,
+    backgroundColor: P.surface,
     borderWidth: 1,
-    borderColor: colors.border,
-    padding: 3,
-    gap: 3,
+    borderColor: P.border,
   },
-  segment: {
-    flex: 1,
-    paddingVertical: spacing.sm,
-    alignItems: 'center',
-    borderRadius: 6,
-  },
-  segmentText: {
-    color: colors.subtext,
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  segmentTextActive: {
-    color: '#fff',
-  },
-  listContent: {
-    padding: spacing.lg,
-    gap: spacing.sm,
-  },
-  fileCard: {
-    backgroundColor: colors.card,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: colors.border,
-    padding: spacing.sm,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.md,
-  },
-  thumb: {
-    width: 56,
-    height: 56,
-    borderRadius: 6,
-    backgroundColor: colors.cardAlt,
-  },
-  thumbPlaceholder: {
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  fileInfo: {
-    flex: 1,
-  },
-  fileName: {
-    color: colors.text,
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  fileMeta: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: 4,
-  },
-  metaText: {
-    color: colors.subtext,
-    fontSize: 11,
-  },
-  empty: {
-    color: colors.subtext,
-    textAlign: 'center',
-    marginTop: spacing.xl * 2,
-  },
+  segment: { flex: 1, height: 40, borderRadius: 999, alignItems: 'center', justifyContent: 'center' },
+  segmentOn: { backgroundColor: alpha(P.accent, 0.18) },
+  segmentText: { color: P.dim, fontSize: 13, fontWeight: '800' },
+  segmentTextOn: { color: P.accent },
 });
 
 function metadataThumbnail(base: string, path: string, meta: any): string | null {

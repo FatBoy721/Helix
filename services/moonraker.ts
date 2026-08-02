@@ -99,6 +99,13 @@ export function resolveCameraUrl(cameraUrl: string, activeBaseUrl: string): stri
   return `http://${host}${cam.startsWith('/') ? cam : '/' + cam}`;
 }
 
+// The printer's own touchscreen, exposed as a webcam entry. Its WebView must
+// stay MOUNTED once shown — remounting /screen/ makes the printer report
+// "No Signal" — so hide it with height 0 + pointerEvents none instead.
+export function isGuiWebcam(webcam: { name: string; stream_url: string }): boolean {
+  return webcam.name.toLowerCase() === 'gui' || /\/screen(?:\/|$)/i.test(webcam.stream_url);
+}
+
 export function resolveSnapshotUrl(
   snapshotUrl: string | undefined,
   streamUrl: string,
@@ -296,6 +303,12 @@ export function buildManualFilamentSlotCommand(
 
 export const api = {
   serverInfo: (base: string) => request(base, '/server/info'),
+
+  restartKlippy: (base: string) =>
+    request<string>(base, '/printer/restart', { method: 'POST' }, 15000),
+
+  restartMoonraker: (base: string) =>
+    request<string>(base, '/server/restart', { method: 'POST' }, 15000),
 
   setFilamentSlot: async (
     base: string,

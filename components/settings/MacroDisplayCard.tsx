@@ -11,7 +11,7 @@ import {
   toggleMacroInDisplay,
 } from '../../services/macroDisplay';
 import { t } from '../../services/i18n';
-import { colors, spacing } from '../../constants/theme';
+import { colors, spacing } from './cockpitTheme';
 
 export default function MacroDisplayCard() {
   const { settings, update } = useSettings();

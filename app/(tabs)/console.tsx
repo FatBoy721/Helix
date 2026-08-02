@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import {
   FlatList,
   KeyboardAvoidingView,
@@ -8,6 +8,7 @@ import {
   StyleSheet,
   Text,
   TouchableOpacity,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import { TextInput } from 'react-native';
@@ -27,10 +28,13 @@ function lineColor(line: ConsoleLine): string {
 
 export default function ConsoleScreen() {
   const { consoleLines, sendGcode, clearConsole, connection, gcodeHelp } = useMoonraker();
+  const helpButtonRef = useRef<View>(null);
   const [input, setInput] = useState('');
   const [helpOpen, setHelpOpen] = useState(false);
   const [helpFilter, setHelpFilter] = useState('');
+  const [helpAnchor, setHelpAnchor] = useState({ x: 0, y: 0, width: 38, height: 48 });
   const insets = useSafeAreaInsets();
+  const window = useWindowDimensions();
 
   const data = useMemo(() => [...consoleLines].reverse(), [consoleLines]);
   const helpCommands = useMemo(
@@ -44,14 +48,21 @@ export default function ConsoleScreen() {
     [gcodeHelp, helpFilter]
   );
 
+  const openHelp = (filter = '') => {
+    setHelpFilter(filter);
+    helpButtonRef.current?.measureInWindow((x, y, width, height) => {
+      setHelpAnchor({ x, y, width, height });
+      setHelpOpen(true);
+    });
+  };
+
   const send = () => {
     const cmd = input.trim();
     if (!cmd) return;
     setInput('');
     const helpMatch = cmd.match(/^\/help(?:\s+(.+))?$/i);
     if (helpMatch) {
-      setHelpFilter(helpMatch[1]?.trim() ?? '');
-      setHelpOpen(true);
+      openHelp(helpMatch[1]?.trim() ?? '');
       return;
     }
     sendGcode(cmd);
@@ -94,11 +105,9 @@ export default function ConsoleScreen() {
           returnKeyType="send"
         />
         <TouchableOpacity
+          ref={helpButtonRef}
           style={styles.helpBtn}
-          onPress={() => {
-            setHelpFilter('');
-            setHelpOpen(true);
-          }}
+          onPress={() => openHelp()}
         >
           <Text style={styles.helpBtnText}>?</Text>
         </TouchableOpacity>
@@ -119,23 +128,38 @@ export default function ConsoleScreen() {
       </View>
 
       <Modal visible={helpOpen} transparent animationType="fade" onRequestClose={() => setHelpOpen(false)}>
-        {/* Modal hosts its own window, so the screen-level KeyboardAvoidingView
-            doesn't reach it — lift the sheet above the keyboard here, and pad
-            past the Android nav bar (issue #5). */}
         <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
-          <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setHelpOpen(false)}>
-            <View
-              style={[styles.helpSheet, { paddingBottom: spacing.lg + insets.bottom }]}
-              onStartShouldSetResponder={() => true}
-            >
+          <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setHelpOpen(false)} />
+          <View
+            pointerEvents="none"
+            style={[
+              styles.helpMirror,
+              {
+                left: helpAnchor.x,
+                top: helpAnchor.y + insets.top,
+                width: helpAnchor.width,
+                height: helpAnchor.height,
+              },
+            ]}
+          >
+            <Text style={styles.helpBtnText}>?</Text>
+          </View>
+          <View
+            style={[
+              styles.helpSheet,
+              {
+                left: Math.max(18, window.width - Math.min(window.width - 36, 460) - 18),
+                bottom: Math.max(insets.bottom + 12, window.height - helpAnchor.y - insets.top + 8),
+                width: Math.min(window.width - 36, 460),
+                maxHeight: Math.min(520, window.height * 0.62),
+              },
+            ]}
+          >
             <View style={styles.helpHeader}>
               <View style={styles.helpTitleWrap}>
                 <Text style={styles.helpTitle}>{t('Printer commands')}</Text>
                 <Text style={styles.helpSubtitle}>{t('Type /help or /help BED in the console.')}</Text>
               </View>
-              <TouchableOpacity style={styles.closeBtn} onPress={() => setHelpOpen(false)}>
-                <Text style={styles.closeText}>X</Text>
-              </TouchableOpacity>
             </View>
 
             <TextInput
@@ -170,8 +194,7 @@ export default function ConsoleScreen() {
                 </Text>
               )}
             </ScrollView>
-            </View>
-          </TouchableOpacity>
+          </View>
         </KeyboardAvoidingView>
       </Modal>
     </KeyboardAvoidingView>
@@ -253,18 +276,25 @@ const styles = StyleSheet.create({
     fontSize: 13,
   },
   modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.58)',
-    justifyContent: 'flex-end',
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+  },
+  helpMirror: {
+    position: 'absolute',
+    borderRadius: 8,
+    backgroundColor: colors.cardAlt,
+    borderWidth: 1,
+    borderColor: colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   helpSheet: {
-    maxHeight: '76%',
-    backgroundColor: colors.bg,
-    borderTopLeftRadius: 18,
-    borderTopRightRadius: 18,
+    position: 'absolute',
+    backgroundColor: colors.card,
+    borderRadius: 16,
     borderWidth: 1,
     borderColor: colors.border,
-    padding: spacing.lg,
+    padding: 12,
   },
   helpHeader: {
     flexDirection: 'row',
@@ -287,20 +317,6 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     marginTop: 3,
   },
-  closeBtn: {
-    width: 34,
-    height: 34,
-    borderRadius: 8,
-    backgroundColor: colors.cardAlt,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  closeText: {
-    color: colors.text,
-    fontSize: 22,
-    lineHeight: 24,
-    fontWeight: '700',
-  },
   helpSearch: {
     backgroundColor: colors.card,
     borderRadius: 8,
@@ -317,9 +333,11 @@ const styles = StyleSheet.create({
     flexGrow: 0,
   },
   helpRow: {
+    minHeight: 52,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.border,
-    paddingVertical: spacing.sm,
+    paddingVertical: 8,
+    justifyContent: 'center',
   },
   helpCommand: {
     color: colors.primary,

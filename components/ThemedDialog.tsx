@@ -1,9 +1,24 @@
+// Confirms and alerts, in the chosen modal system.
+//
+// Shape is derived from consequence and content: destructive confirmations use
+// red Focus, forms use neutral Focus, and acknowledgement-only dialogs use
+// Layer. Deriving it here keeps the system consistent at every call site.
+//
+// The `placement` prop is kept for source compatibility but no longer decides
+// anything; an irreversible action shouldn't be able to opt into looking casual.
 import React from 'react';
-import { KeyboardAvoidingView, Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import {
+  KeyboardAvoidingView,
+  Modal,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { colors, spacing } from '../constants/theme';
-import { useSettings } from '../hooks/useSettings';
+import { alpha, COCKPIT as P } from './dashboard/shared';
 
 type IconName = React.ComponentProps<typeof MaterialCommunityIcons>['name'];
 
@@ -20,20 +35,44 @@ interface Props {
   title: string;
   message?: string;
   icon?: IconName;
+  /** @deprecated Shape now follows the content and actions. */
   placement?: 'bottom' | 'center';
+  /**
+   * Override the derived shape. 'auto' (default) sends anything carrying a
+   * danger action to Focus. Pass 'layer' for a destructive action that is
+   * recoverable — cancelling a print loses the print, not the machine — so it
+   * keeps the red button without taking over the whole screen.
+   */
+  shape?: 'auto' | 'layer' | 'focus';
   onClose: () => void;
   actions: DialogAction[];
   children?: React.ReactNode;
 }
 
-function actionStyle(variant: DialogAction['variant'], accentColor: string) {
-  if (variant === 'primary') return { backgroundColor: accentColor };
-  if (variant === 'danger') return styles.dangerBtn;
-  return styles.secondaryBtn;
-}
+function ActionButton({ action, big }: { action: DialogAction; big?: boolean }) {
+  const variant = action.variant ?? 'secondary';
+  const fg = variant === 'primary' ? P.onAccent : variant === 'danger' ? '#FFFFFF' : P.text;
+  const bg = variant === 'primary' ? P.accentFill : variant === 'danger' ? P.danger : P.surfaceAlt;
 
-function actionTextStyle(variant: DialogAction['variant']) {
-  return variant === 'primary' || variant === 'danger' ? styles.lightActionText : styles.actionText;
+  return (
+    <Pressable
+      onPress={action.onPress}
+      disabled={action.disabled}
+      style={({ pressed }) => [
+        styles.action,
+        { backgroundColor: bg, height: big ? 62 : 52 },
+        action.disabled && { opacity: 0.5 },
+        pressed && { opacity: 0.78 },
+      ]}
+    >
+      {action.icon ? (
+        <MaterialCommunityIcons name={action.icon} size={big ? 22 : 18} color={fg} />
+      ) : null}
+      <Text style={[styles.actionText, { color: fg, fontSize: big ? 16 : 14 }]} numberOfLines={1}>
+        {action.text}
+      </Text>
+    </Pressable>
+  );
 }
 
 export default function ThemedDialog({
@@ -41,69 +80,87 @@ export default function ThemedDialog({
   title,
   message,
   icon,
-  placement = 'bottom',
+  shape = 'auto',
   onClose,
   actions,
   children,
 }: Props) {
-  const centered = placement === 'center';
-  const { settings } = useSettings();
-  const accentColor = settings.accentColor || colors.primary;
-  // Issue #5: bottom sheets draw edge-to-edge, so pad past the Android nav bar.
   const insets = useSafeAreaInsets();
-  return (
-    <Modal visible={visible} animationType={centered ? 'fade' : 'slide'} transparent onRequestClose={onClose}>
-      <KeyboardAvoidingView style={styles.keyboardWrap} behavior="padding">
-        <View style={[styles.wrap, centered && styles.wrapCenter]}>
-          <View
-            style={[
-              styles.card,
-              centered ? styles.cardCenter : { paddingBottom: spacing.lg + insets.bottom },
-            ]}
-          >
-            <View style={styles.header}>
-              <View style={styles.titleRow}>
-                {icon ? (
-                  <View style={styles.iconBadge}>
-                    <MaterialCommunityIcons name={icon} size={20} color={accentColor} />
-                  </View>
-                ) : null}
-                <Text style={styles.title}>{title}</Text>
+  const danger = actions.some((action) => action.variant === 'danger');
+  const confirmation = actions.length > 1;
+  const form = children != null;
+  // An explicit shape wins over the derivation, so a destructive-but-
+  // recoverable action can stay a Layer card instead of taking the screen.
+  const focus =
+    shape === 'focus' || (shape === 'auto' && (danger || confirmation || form));
+  const orderedActions = focus
+    ? [...actions].sort((a, b) => {
+        const priority = (action: DialogAction) =>
+          action.variant === 'danger' || action.variant === 'primary' ? 0 : 1;
+        return priority(a) - priority(b);
+      })
+    : actions;
+
+  if (focus) {
+    return (
+      <Modal visible={visible} animationType="fade" onRequestClose={onClose}>
+        <View style={[danger ? styles.focus : styles.focusForm, { paddingTop: insets.top }]}>
+          {danger ? <View pointerEvents="none" style={styles.focusTint} /> : null}
+          <ScrollView contentContainerStyle={styles.focusBody}>
+            {!form ? (
+              <View
+                style={[
+                  styles.focusIcon,
+                  { backgroundColor: alpha(danger ? P.danger : P.accent, 0.16) },
+                ]}
+              >
+                <MaterialCommunityIcons
+                  name={icon ?? (danger ? 'alert-octagon-outline' : 'help-circle-outline')}
+                  size={44}
+                  color={danger ? P.danger : P.accent}
+                />
               </View>
-              <TouchableOpacity hitSlop={8} onPress={onClose}>
-                <MaterialCommunityIcons name="close" size={22} color={colors.subtext} />
-              </TouchableOpacity>
+            ) : null}
+            <Text style={styles.focusTitle}>{title}</Text>
+            {message ? <Text style={styles.focusMessage}>{message}</Text> : null}
+            {children}
+          </ScrollView>
+
+          {/* Stacked and full-width: a row of small buttons puts the
+              destructive one under your thumb by accident. */}
+          <View style={[styles.focusActions, { paddingBottom: 16 + insets.bottom }]}>
+            {orderedActions.map((action) => (
+              <ActionButton key={action.text} action={action} big />
+            ))}
+          </View>
+        </View>
+      </Modal>
+    );
+  }
+
+  return (
+    <Modal visible={visible} animationType="fade" transparent onRequestClose={onClose}>
+      <KeyboardAvoidingView style={styles.flex} behavior="padding">
+        <Pressable style={styles.scrim} onPress={onClose} />
+        <View style={styles.centreWrap} pointerEvents="box-none">
+          <View style={styles.card}>
+            <View style={styles.iconBadge}>
+              <MaterialCommunityIcons
+                name={icon ?? 'information-outline'}
+                size={26}
+                color={P.accent}
+              />
             </View>
+            <Text style={styles.title}>{title}</Text>
 
             {message ? <Text style={styles.message}>{message}</Text> : null}
 
             {children}
 
             <View style={[styles.actions, actions.length > 2 && styles.actionsStacked]}>
-              {actions.map((action) => {
-                const variant = action.variant ?? 'secondary';
-                return (
-                  <TouchableOpacity
-                    key={action.text}
-                    style={[
-                      styles.actionBtn,
-                      actionStyle(variant, accentColor),
-                      action.disabled && styles.disabledBtn,
-                    ]}
-                    disabled={action.disabled}
-                    onPress={action.onPress}
-                  >
-                    {action.icon ? (
-                      <MaterialCommunityIcons
-                        name={action.icon}
-                        size={16}
-                        color={variant === 'secondary' ? colors.text : '#fff'}
-                      />
-                    ) : null}
-                    <Text style={actionTextStyle(variant)}>{action.text}</Text>
-                  </TouchableOpacity>
-                );
-              })}
+              {actions.map((action) => (
+                <ActionButton key={action.text} action={action} />
+              ))}
             </View>
           </View>
         </View>
@@ -113,108 +170,87 @@ export default function ThemedDialog({
 }
 
 const styles = StyleSheet.create({
-  wrap: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.6)',
-    justifyContent: 'flex-end',
+  flex: { flex: 1 },
+  scrim: { ...StyleSheet.absoluteFillObject, backgroundColor: alpha('#000000', 0.74) },
+
+  // Focus — irreversible actions get the whole screen.
+  focus: { flex: 1, backgroundColor: P.bg },
+  focusForm: { flex: 1, backgroundColor: P.bg },
+  focusTint: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: alpha(P.danger, 0.1),
   },
-  keyboardWrap: {
-    flex: 1,
-  },
-  wrapCenter: {
+  focusBody: {
+    flexGrow: 1,
+    padding: 26,
+    gap: 16,
+    alignItems: 'center',
     justifyContent: 'center',
-    padding: spacing.lg,
   },
+  focusIcon: {
+    width: 92,
+    height: 92,
+    borderRadius: 46,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  focusTitle: {
+    color: P.text,
+    fontSize: 30,
+    fontWeight: '800',
+    letterSpacing: -1,
+    textAlign: 'center',
+  },
+  focusMessage: {
+    color: P.dim,
+    fontSize: 15,
+    fontWeight: '600',
+    lineHeight: 22,
+    textAlign: 'center',
+  },
+  focusActions: { paddingHorizontal: 22, gap: 9 },
+
+  // Layer — everything else.
+  centreWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 26 },
   card: {
-    backgroundColor: colors.bg,
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
-    padding: spacing.lg,
-  },
-  cardCenter: {
     width: '100%',
     maxWidth: 380,
-    alignSelf: 'center',
-    borderRadius: 16,
+    borderRadius: 24,
     borderWidth: 1,
-    borderColor: colors.border,
-  },
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
+    borderColor: P.border,
+    backgroundColor: P.surface,
+    padding: 22,
+    gap: 13,
     alignItems: 'center',
-    gap: spacing.md,
-    marginBottom: spacing.md,
-  },
-  titleRow: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
   },
   iconBadge: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: colors.card,
-    borderWidth: 1,
-    borderColor: colors.border,
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: alpha(P.accent, 0.14),
     alignItems: 'center',
     justifyContent: 'center',
   },
   title: {
-    flex: 1,
-    color: colors.text,
-    fontSize: 16,
-    fontWeight: '700',
+    color: P.text,
+    fontSize: 19,
+    fontWeight: '800',
+    letterSpacing: -0.4,
+    textAlign: 'center',
   },
-  message: {
-    color: colors.subtext,
-    fontSize: 13,
-    lineHeight: 19,
-    marginBottom: spacing.lg,
-  },
-  actions: {
-    flexDirection: 'row',
-    gap: spacing.sm,
-  },
-  actionsStacked: {
-    flexDirection: 'column',
-  },
-  actionBtn: {
-    flex: 1,
-    minHeight: 44,
-    borderRadius: 8,
+  message: { color: P.dim, fontSize: 13, fontWeight: '600', lineHeight: 19, textAlign: 'center' },
+
+  actions: { flexDirection: 'row', gap: 8, alignSelf: 'stretch', paddingTop: 4 },
+  actionsStacked: { flexDirection: 'column' },
+  action: {
+    flexGrow: 1,
+    flexShrink: 1,
+    borderRadius: 999,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 6,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
+    gap: 7,
+    paddingHorizontal: 16,
   },
-  secondaryBtn: {
-    backgroundColor: colors.cardAlt,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  dangerBtn: {
-    backgroundColor: colors.danger,
-  },
-  disabledBtn: {
-    opacity: 0.5,
-  },
-  actionText: {
-    flexShrink: 1,
-    color: colors.text,
-    fontSize: 13,
-    fontWeight: '700',
-    textAlign: 'center',
-  },
-  lightActionText: {
-    flexShrink: 1,
-    color: '#fff',
-    fontSize: 13,
-    fontWeight: '700',
-    textAlign: 'center',
-  },
+  actionText: { fontWeight: '800', flexShrink: 1 },
 });

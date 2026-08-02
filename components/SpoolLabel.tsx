@@ -1,13 +1,13 @@
 import React, { useRef, useState } from 'react';
-import { Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Modal, Pressable, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import QRCode from 'react-native-qrcode-svg';
 import ViewShot from 'react-native-view-shot';
 import * as MediaLibrary from 'expo-media-library';
 import * as Sharing from 'expo-sharing';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { t } from '../services/i18n';
-import { colors, spacing } from '../constants/theme';
-import { useThemedAlert } from '../hooks/useThemedAlert';
+import { colors, spacing, withAlpha } from '../constants/theme';
 
 interface Props {
   spoolId: number;
@@ -24,9 +24,15 @@ export function spoolQrValue(id: number): string {
 }
 
 export default function SpoolLabel({ spoolId, title, material, colorHex, onClose }: Props) {
+  const insets = useSafeAreaInsets();
   const shotRef = useRef<ViewShot>(null);
   const [busy, setBusy] = useState(false);
-  const { showAlert, alertDialog } = useThemedAlert();
+  const [alert, setAlert] = useState<{
+    title: string;
+    message: string;
+    icon: React.ComponentProps<typeof MaterialCommunityIcons>['name'];
+  } | null>(null);
+  const showAlert = setAlert;
 
   const capture = async (): Promise<string | null> => {
     try {
@@ -94,34 +100,41 @@ export default function SpoolLabel({ spoolId, title, material, colorHex, onClose
   };
 
   return (
-    <>
-      <Modal visible animationType="fade" transparent onRequestClose={onClose}>
-        <View style={styles.wrap}>
-        <View style={styles.card}>
-          <View style={styles.header}>
-            <Text style={styles.headerTitle}>{t('Spool label')}</Text>
-            <TouchableOpacity onPress={onClose}>
-              <MaterialCommunityIcons name="close" size={22} color={colors.subtext} />
-            </TouchableOpacity>
+    <Modal visible animationType="fade" transparent onRequestClose={alert ? () => setAlert(null) : onClose}>
+      <View style={styles.wrap}>
+        <Pressable style={StyleSheet.absoluteFill} onPress={busy ? undefined : onClose} />
+        <View
+          style={[
+            styles.deckLayer,
+            { paddingBottom: 18 + insets.bottom },
+            alert && styles.deckLayerBack,
+          ]}
+        >
+          <View style={styles.grabber} />
+          <View style={styles.deckHead}>
+            <Text style={styles.deckDepth}>LAYER 1</Text>
+            <Text style={styles.deckTitle}>{t('Spool label')}</Text>
           </View>
 
-          {/* White label background preserves print contrast. */}
-          <ViewShot ref={shotRef} options={{ format: 'png', quality: 1 }} style={styles.label}>
-            <QRCode value={spoolQrValue(spoolId)} size={140} backgroundColor="#FFFFFF" />
-            <View style={styles.labelText}>
-              <Text style={styles.labelTitle} numberOfLines={2}>
-                {title}
-              </Text>
-              <View style={styles.labelMetaRow}>
-                {colorHex ? (
-                  <View style={[styles.labelDot, { backgroundColor: `#${colorHex.replace('#', '')}` }]} />
-                ) : null}
-                <Text style={styles.labelMeta}>
-                  {[material, `#${spoolId}`].filter(Boolean).join(' · ')}
+          <ScrollView contentContainerStyle={styles.deckBody}>
+            {/* White label background preserves print contrast. */}
+            <ViewShot ref={shotRef} options={{ format: 'png', quality: 1 }} style={styles.label}>
+              <QRCode value={spoolQrValue(spoolId)} size={140} backgroundColor="#FFFFFF" />
+              <View style={styles.labelText}>
+                <Text style={styles.labelTitle} numberOfLines={2}>
+                  {title}
                 </Text>
+                <View style={styles.labelMetaRow}>
+                  {colorHex ? (
+                    <View style={[styles.labelDot, { backgroundColor: `#${colorHex.replace('#', '')}` }]} />
+                  ) : null}
+                  <Text style={styles.labelMeta}>
+                    {[material, `#${spoolId}`].filter(Boolean).join(' · ')}
+                  </Text>
+                </View>
               </View>
-            </View>
-          </ViewShot>
+            </ViewShot>
+          </ScrollView>
 
           <View style={styles.btnRow}>
             <TouchableOpacity
@@ -142,38 +155,61 @@ export default function SpoolLabel({ spoolId, title, material, colorHex, onClose
             </TouchableOpacity>
           </View>
         </View>
-        </View>
-      </Modal>
-      {alertDialog}
-    </>
+
+        {alert ? (
+          <View style={styles.alertLayer}>
+            <Pressable style={StyleSheet.absoluteFill} onPress={() => setAlert(null)} />
+            <View style={styles.alertCard}>
+              <View style={styles.alertIcon}>
+                <MaterialCommunityIcons name={alert.icon} size={26} color={colors.primary} />
+              </View>
+              <Text style={styles.alertTitle}>{alert.title}</Text>
+              <Text style={styles.alertMessage}>{alert.message}</Text>
+              <Pressable style={styles.alertAction} onPress={() => setAlert(null)}>
+                <Text style={styles.alertActionText}>{t('OK')}</Text>
+              </Pressable>
+            </View>
+          </View>
+        ) : null}
+      </View>
+    </Modal>
   );
 }
 
 const styles = StyleSheet.create({
   wrap: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.7)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: spacing.xl,
+    backgroundColor: 'rgba(0,0,0,0.55)',
   },
-  card: {
+  deckLayer: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    maxHeight: '82%',
     backgroundColor: colors.bg,
-    borderRadius: 14,
-    padding: spacing.lg,
-    alignSelf: 'stretch',
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    borderWidth: 1,
+    borderColor: colors.border,
+    overflow: 'hidden',
   },
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: spacing.md,
+  deckLayerBack: {
+    transform: [{ scale: 0.94 }, { translateY: -14 }],
+    opacity: 0.5,
   },
-  headerTitle: {
-    color: colors.text,
-    fontSize: 15,
-    fontWeight: '700',
+  grabber: {
+    alignSelf: 'center',
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    marginTop: 10,
+    backgroundColor: colors.border,
   },
+  deckHead: { paddingHorizontal: 18, paddingTop: 12, gap: 3 },
+  deckDepth: { color: colors.subtext, fontSize: 9, fontWeight: '800', letterSpacing: 1.4 },
+  deckTitle: { color: colors.text, fontSize: 21, fontWeight: '800', letterSpacing: -0.5 },
+  deckBody: { padding: 18 },
   label: {
     backgroundColor: '#FFFFFF',
     borderRadius: 8,
@@ -209,18 +245,19 @@ const styles = StyleSheet.create({
   },
   btnRow: {
     flexDirection: 'row',
-    gap: spacing.sm,
-    marginTop: spacing.md,
+    gap: 8,
+    paddingHorizontal: 18,
+    paddingTop: 14,
   },
   btn: {
     flex: 1,
+    height: 52,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
     backgroundColor: colors.cardAlt,
-    borderRadius: 8,
-    paddingVertical: spacing.md,
+    borderRadius: 999,
   },
   btnText: {
     color: colors.text,
@@ -232,4 +269,54 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     fontSize: 13,
   },
+  alertLayer: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.74)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 26,
+  },
+  alertCard: {
+    width: '100%',
+    maxWidth: 380,
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.card,
+    padding: 22,
+    gap: 13,
+    alignItems: 'center',
+  },
+  alertIcon: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: withAlpha(colors.primary, 0.14),
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  alertTitle: {
+    color: colors.text,
+    fontSize: 19,
+    fontWeight: '800',
+    letterSpacing: -0.4,
+    textAlign: 'center',
+  },
+  alertMessage: {
+    color: colors.subtext,
+    fontSize: 13,
+    fontWeight: '600',
+    lineHeight: 19,
+    textAlign: 'center',
+  },
+  alertAction: {
+    alignSelf: 'stretch',
+    height: 52,
+    borderRadius: 999,
+    backgroundColor: colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 4,
+  },
+  alertActionText: { color: '#fff', fontSize: 14, fontWeight: '800' },
 });

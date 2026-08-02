@@ -2,6 +2,8 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useR
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { setLanguage } from '../services/i18n';
 import { colors } from '../constants/theme';
+import { colors as cockpitColors } from '../components/settings/cockpitTheme';
+import { setAccent } from '../components/dashboard/shared';
 import { DEFAULT_SETTINGS, migrateSettings } from '../services/settingsMigration';
 import type { Settings } from '../services/settingsMigration';
 
@@ -19,10 +21,16 @@ export type {
   Settings,
 } from '../services/settingsMigration';
 
-// StyleSheet.create captures color values at module load time. Accent-colored
-// styles should read colors.primary at render time after this mutation runs.
+// The accent has to land on three separate objects because each surface reads a
+// different one: the dashboard reads `COCKPIT` (via setAccent), the Settings
+// screen reads `cockpitColors.primary`, and the older tabs (files, slicer, ace,
+// progress ring, …) read `colors.primary`. StyleSheet.create values are baked at
+// module load, so accent styles must be read inline to pick this mutation up.
 function applyAppearance(s: Settings) {
-  colors.primary = s.accentColor || DEFAULT_SETTINGS.accentColor;
+  const accent = s.accentColor || DEFAULT_SETTINGS.accentColor;
+  setAccent(accent);
+  cockpitColors.primary = accent;
+  colors.primary = accent;
   setLanguage(s.language || 'en');
 }
 

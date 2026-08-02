@@ -9,6 +9,51 @@ export type MakerWorldDownloadResult = {
   sizeBytes: number;
 };
 
+export type MakerWorldPlateStat = {
+  id: number;
+  timeSeconds: number;
+  grams: number;
+};
+
+/**
+ * Per-plate print time (prediction, seconds) and filament weight (g) from the
+ * MakerWorld design API. These exist even when the downloaded 3MF carries no
+ * embedded plate G-code — which is most MakerWorld exports — so the slicer can
+ * show real Time/Filament numbers before any in-app slice. Layer count is not
+ * published; callers show '--' for it. [] when unavailable (logged out, no
+ * stats, network failure).
+ */
+export async function fetchMakerWorldPlateStats(
+  designId: string,
+  instanceId?: string | null
+): Promise<MakerWorldPlateStat[]> {
+  try {
+    const cookie = (await getMakerWorldCookies().catch(() => null))?.cookies ?? '';
+    const pageUrl = `https://makerworld.com/en/models/${designId}`;
+    const response = await fetch(
+      `https://makerworld.com/api/v1/design-service/design/${designId}`,
+      { headers: browserHeaders(true, pageUrl, cookie) }
+    );
+    if (!response.ok) return [];
+    const json = JSON.parse(await response.text());
+    const instances: any[] = Array.isArray(json?.instances) ? json.instances : [];
+    const instance =
+      instances.find((i) => String(i?.id) === String(instanceId ?? '')) ??
+      instances.find((i) => String(i?.id) === String(json?.defaultInstanceId ?? '')) ??
+      instances[0];
+    const plates: any[] = instance?.extention?.modelInfo?.plates ?? [];
+    return plates
+      .map((plate, index) => ({
+        id: Number(plate?.index) || index + 1,
+        timeSeconds: Number(plate?.prediction) || 0,
+        grams: Number(plate?.weight) || 0,
+      }))
+      .filter((s) => s.timeSeconds > 0 || s.grams > 0);
+  } catch {
+    return [];
+  }
+}
+
 const DESIGN_ID_RE = /(?:https?:\/\/)?(?:www\.)?makerworld\.com\/(?:\w+\/)?models\/(\d+)/i;
 
 const BROWSER_UA =

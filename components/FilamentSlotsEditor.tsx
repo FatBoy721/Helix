@@ -1,6 +1,5 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
-  Dimensions,
   Keyboard,
   Modal,
   ScrollView,
@@ -8,6 +7,7 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -17,10 +17,12 @@ import {
   normalizeFilamentHex,
 } from '../constants/filamentColors';
 import {
+  BRAND_PRESETS,
   DEFAULT_FILAMENT_SUBTYPE,
   FILAMENT_MAIN_TYPES,
   subtypesForMainType,
 } from '../services/filamentMaterials';
+import { t } from '../services/i18n';
 
 export type FilamentSlotStatus = 'loaded' | 'empty' | 'busy' | 'unknown';
 
@@ -29,6 +31,8 @@ export type FilamentSlotDisplay = {
   color: string;
   brand?: string;
   material: string;
+  mainType?: string;
+  subType?: string;
   status: FilamentSlotStatus;
   source?: 'printer' | 'manual';
 };
@@ -45,9 +49,8 @@ type Props = {
   onSubtypesChange: (subtypes: string[], changedIndex?: number) => void;
 };
 
-const BRAND_PRESETS = ['Generic', 'Bambu Lab', 'Hatchbox', 'eSun', 'Overture', 'SUNLU', 'Polymaker', 'Prusament', 'Snapmaker', 'Jayo', 'Other'];
-
 type PickerKind = 'material' | 'subtype' | 'brand';
+type PickerAnchor = { x: number; y: number; width: number; height: number };
 
 type OptionPickerProps = {
   visible: boolean;
@@ -56,8 +59,8 @@ type OptionPickerProps = {
   selected: string;
   onSelect: (value: string) => void;
   onClose: () => void;
-  bottomInset: number;
   maxHeight: number;
+  anchor: PickerAnchor;
 };
 
 function OptionPicker({
@@ -67,28 +70,47 @@ function OptionPicker({
   selected,
   onSelect,
   onClose,
-  bottomInset,
   maxHeight,
+  anchor,
 }: OptionPickerProps) {
+  const window = useWindowDimensions();
+  const belowSpace = window.height - anchor.y - anchor.height - 12;
+  const opensAbove = belowSpace < 220;
+
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <TouchableOpacity
-        style={styles.pickerBackdrop}
-        activeOpacity={1}
-        onPress={onClose}
-      >
-        <TouchableOpacity
-          activeOpacity={1}
-          style={[styles.pickerSheet, { maxHeight, paddingBottom: bottomInset + spacing.sm }]}
-          onPress={() => {}}
+    <Modal
+      visible={visible}
+      transparent
+      animationType="fade"
+      statusBarTranslucent
+      onRequestClose={onClose}
+    >
+      <View style={styles.pickerBackdrop}>
+        <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={onClose} />
+        <View
+          pointerEvents="none"
+          style={[
+            styles.pickerAnchor,
+            { left: anchor.x, top: anchor.y, width: anchor.width, height: anchor.height },
+          ]}
         >
-          <View style={styles.pickerHeader}>
-            <Text style={styles.pickerTitle}>{title}</Text>
-            <TouchableOpacity hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} onPress={onClose}>
-              <Text style={styles.pickerDone}>Done</Text>
-            </TouchableOpacity>
-          </View>
-          <View style={styles.pickerGrabber} />
+          <Text style={styles.dropdownText} numberOfLines={1}>{selected}</Text>
+          <Text style={[styles.dropdownArrow, { color: colors.primary }]}>▲</Text>
+        </View>
+        <View
+          style={[
+            styles.pickerSheet,
+            {
+              left: anchor.x,
+              width: anchor.width,
+              maxHeight,
+              ...(opensAbove
+                ? { bottom: window.height - anchor.y }
+                : { top: anchor.y + anchor.height }),
+            },
+          ]}
+        >
+          <Text style={styles.pickerTitle}>{title}</Text>
           <ScrollView
             style={styles.pickerScroll}
             keyboardShouldPersistTaps="handled"
@@ -111,8 +133,8 @@ function OptionPicker({
               );
             })}
           </ScrollView>
-        </TouchableOpacity>
-      </TouchableOpacity>
+        </View>
+      </View>
     </Modal>
   );
 }
@@ -129,13 +151,24 @@ export default function FilamentSlotsEditor({
   onSubtypesChange,
 }: Props) {
   const insets = useSafeAreaInsets();
-  const window = Dimensions.get('window');
+  const window = useWindowDimensions();
   const [editingSlot, setEditingSlot] = useState<number | null>(null);
   const [hexDraft, setHexDraft] = useState('');
   const [brandChoice, setBrandChoice] = useState('Generic');
   const [customBrandDraft, setCustomBrandDraft] = useState('');
+  const [materialDraft, setMaterialDraft] = useState('PLA');
+  const [subtypeDraft, setSubtypeDraft] = useState(DEFAULT_FILAMENT_SUBTYPE);
   const [picker, setPicker] = useState<PickerKind | null>(null);
+  const [pickerAnchor, setPickerAnchor] = useState<PickerAnchor>({
+    x: spacing.lg,
+    y: 120,
+    width: 320,
+    height: 48,
+  });
   const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const materialRef = useRef<React.ElementRef<typeof TouchableOpacity>>(null);
+  const subtypeRef = useRef<React.ElementRef<typeof TouchableOpacity>>(null);
+  const brandRef = useRef<React.ElementRef<typeof TouchableOpacity>>(null);
 
   React.useEffect(() => {
     const show = Keyboard.addListener('keyboardDidShow', (event) => setKeyboardHeight(event.endCoordinates.height));
@@ -152,57 +185,61 @@ export default function FilamentSlotsEditor({
     const brand = slotBrands[index] ?? 'Generic';
     setBrandChoice(BRAND_PRESETS.includes(brand) ? brand : 'Other');
     setCustomBrandDraft(BRAND_PRESETS.includes(brand) ? '' : brand);
+    setMaterialDraft(slotMaterials[index] || 'PLA');
+    setSubtypeDraft(slotSubtypes[index] || DEFAULT_FILAMENT_SUBTYPE);
     setPicker(null);
   };
 
   const openPicker = (kind: PickerKind) => {
     Keyboard.dismiss();
-    setPicker(kind);
-  };
-
-  const applyBrand = (brand: string) => {
-    if (editingSlot == null) return;
-    const clean = brand.trim();
-    if (!clean) return;
-    const next = [...slotBrands];
-    next[editingSlot] = clean;
-    onBrandsChange(next, editingSlot);
-    setCustomBrandDraft(clean);
+    const ref = kind === 'material' ? materialRef : kind === 'subtype' ? subtypeRef : brandRef;
+    ref.current?.measureInWindow((x, y, width, height) => {
+      setPickerAnchor({ x, y, width, height });
+      setPicker(kind);
+    });
   };
 
   const applyColor = (hex: string) => {
-    if (editingSlot == null) return;
     const normalized = normalizeFilamentHex(hex);
     if (!normalized) return;
-    const next = [...slotColors];
-    next[editingSlot] = normalized;
-    onChange(next, editingSlot);
-    setEditingSlot(null);
+    setHexDraft(normalized.replace('#', ''));
   };
 
   const applyMaterial = (material: string) => {
-    if (editingSlot == null) return;
     const clean = material.trim().toUpperCase();
     if (!clean) return;
-    const nextMaterials = [...slotMaterials];
-    nextMaterials[editingSlot] = clean;
-    onMaterialsChange(nextMaterials, editingSlot);
-
-    const currentSubtype = slotSubtypes[editingSlot] || DEFAULT_FILAMENT_SUBTYPE;
-    if (!subtypesForMainType(clean).includes(currentSubtype)) {
-      const nextSubtypes = [...slotSubtypes];
-      nextSubtypes[editingSlot] = DEFAULT_FILAMENT_SUBTYPE;
-      onSubtypesChange(nextSubtypes, editingSlot);
+    setMaterialDraft(clean);
+    if (!subtypesForMainType(clean).includes(subtypeDraft)) {
+      setSubtypeDraft(DEFAULT_FILAMENT_SUBTYPE);
     }
   };
 
   const applySubtype = (subtype: string) => {
-    if (editingSlot == null) return;
     const clean = subtype.trim();
     if (!clean) return;
-    const next = [...slotSubtypes];
-    next[editingSlot] = clean;
-    onSubtypesChange(next, editingSlot);
+    setSubtypeDraft(clean);
+  };
+
+  const saveEditor = () => {
+    if (editingSlot == null) return;
+    const normalized = normalizeFilamentHex(hexDraft);
+    if (!normalized) return;
+    const brand = brandChoice === 'Other' ? customBrandDraft.trim() : brandChoice;
+    if (!brand) return;
+
+    const nextColors = [...slotColors];
+    const nextBrands = [...slotBrands];
+    const nextMaterials = [...slotMaterials];
+    const nextSubtypes = [...slotSubtypes];
+    nextColors[editingSlot] = normalized;
+    nextBrands[editingSlot] = brand;
+    nextMaterials[editingSlot] = materialDraft;
+    nextSubtypes[editingSlot] = subtypeDraft;
+    onChange(nextColors, editingSlot);
+    onBrandsChange(nextBrands, editingSlot);
+    onMaterialsChange(nextMaterials, editingSlot);
+    onSubtypesChange(nextSubtypes, editingSlot);
+    setEditingSlot(null);
   };
 
   const editorSlot = editingSlot == null ? null : slots?.[editingSlot];
@@ -232,37 +269,40 @@ export default function FilamentSlotsEditor({
               <Text style={[styles.materialText, dimmed && styles.dimText]} numberOfLines={1}>
                 {[brand, material].filter(Boolean).join(' ')}
               </Text>
-              <Text style={[styles.statusText, dimmed && styles.dimText]}>{status}</Text>
+              <Text style={[styles.statusText, dimmed && styles.dimText]}>{t(status)}</Text>
             </TouchableOpacity>
           );
         })}
       </View>
 
-      <Modal visible={editingSlot != null} transparent animationType="fade">
-        <TouchableOpacity
+      <Modal
+        visible={editingSlot != null}
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={() => setEditingSlot(null)}
+      >
+        <View
           style={[styles.backdrop, keyboardHeight > 0 && styles.backdropKeyboard]}
-          activeOpacity={1}
-          onPress={() => setEditingSlot(null)}
         >
-          <TouchableOpacity
-            activeOpacity={1}
+          <View
             style={[styles.sheet, {
-              maxHeight: Math.max(180, window.height - keyboardHeight - insets.top - insets.bottom - spacing.lg * 2),
-              marginTop: keyboardHeight > 0 ? insets.top + spacing.sm : 0,
-              paddingBottom: insets.bottom + spacing.md,
+              flex: 1,
+              maxHeight: Math.max(180, window.height - keyboardHeight),
+              paddingTop: insets.top,
             }]}
-            onPress={() => {}}
           >
+            <View style={styles.sheetHeader}>
+              <Text style={styles.sheetTitle}>{t('Filament')} T{editingSlot ?? 0}</Text>
+            </View>
             <ScrollView
               keyboardShouldPersistTaps="handled"
               keyboardDismissMode="interactive"
               contentContainerStyle={styles.sheetContent}
             >
-              <Text style={styles.sheetTitle}>Filament T{editingSlot ?? 0}</Text>
               <Text style={styles.sheetHint}>
                 {editorSlot?.source === 'printer'
-                  ? 'Printer values are shown when loaded; manual values stay as fallback.'
-                  : 'Choose the filament details for this slot.'}
+                  ? t('Printer values are shown when loaded; manual values stay as fallback.')
+                  : t('Choose the filament details for this slot.')}
               </Text>
               <View style={styles.presetGrid}>
                 {FILAMENT_COLOR_PRESETS.map((preset) => (
@@ -277,18 +317,18 @@ export default function FilamentSlotsEditor({
                   />
                 ))}
               </View>
-              <Text style={styles.hexLabel}>Material</Text>
-              <TouchableOpacity style={styles.dropdown} onPress={() => openPicker('material')}>
-                <Text style={styles.dropdownText}>{slotMaterials[editingSlot ?? 0] || 'PLA'}</Text>
+              <Text style={styles.hexLabel}>{t('Material')}</Text>
+              <TouchableOpacity ref={materialRef} style={styles.dropdown} onPress={() => openPicker('material')}>
+                <Text style={styles.dropdownText}>{materialDraft}</Text>
                 <Text style={styles.dropdownArrow}>▼</Text>
               </TouchableOpacity>
-              <Text style={styles.hexLabel}>Subtype</Text>
-              <TouchableOpacity style={styles.dropdown} onPress={() => openPicker('subtype')}>
-                <Text style={styles.dropdownText}>{slotSubtypes[editingSlot ?? 0] || DEFAULT_FILAMENT_SUBTYPE}</Text>
+              <Text style={styles.hexLabel}>{t('Subtype')}</Text>
+              <TouchableOpacity ref={subtypeRef} style={styles.dropdown} onPress={() => openPicker('subtype')}>
+                <Text style={styles.dropdownText}>{subtypeDraft}</Text>
                 <Text style={styles.dropdownArrow}>▼</Text>
               </TouchableOpacity>
-              <Text style={styles.hexLabel}>Brand</Text>
-              <TouchableOpacity style={styles.dropdown} onPress={() => openPicker('brand')}>
+              <Text style={styles.hexLabel}>{t('Brand')}</Text>
+              <TouchableOpacity ref={brandRef} style={styles.dropdown} onPress={() => openPicker('brand')}>
                 <Text style={styles.dropdownText}>{brandChoice}</Text>
                 <Text style={styles.dropdownArrow}>▼</Text>
               </TouchableOpacity>
@@ -296,12 +336,12 @@ export default function FilamentSlotsEditor({
                 <TextInput
                   style={styles.hexInput}
                   value={customBrandDraft}
-                  onChangeText={(brand) => { setCustomBrandDraft(brand); applyBrand(brand); }}
-                  placeholder="Custom brand"
+                  onChangeText={setCustomBrandDraft}
+                  placeholder={t('Custom brand')}
                   placeholderTextColor={colors.subtext}
                 />
               )}
-              <Text style={styles.hexLabel}>Custom hex</Text>
+              <Text style={styles.hexLabel}>{t('Custom hex')}</Text>
               <View style={styles.hexRow}>
                 <TextInput
                   style={styles.hexInput}
@@ -316,47 +356,57 @@ export default function FilamentSlotsEditor({
                   style={styles.applyBtn}
                   onPress={() => applyColor(hexDraft)}
                 >
-                  <Text style={styles.applyText}>Set</Text>
+                  <Text style={styles.applyText}>{t('Set')}</Text>
                 </TouchableOpacity>
               </View>
             </ScrollView>
-          </TouchableOpacity>
-        </TouchableOpacity>
+            <View style={[styles.focusActions, { paddingBottom: 16 + insets.bottom }]}>
+              <TouchableOpacity style={[styles.focusAction, styles.focusPrimary]} onPress={saveEditor}>
+                <Text style={styles.focusPrimaryText}>{t('Save filament')}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.focusAction, styles.focusCancel]}
+                onPress={() => setEditingSlot(null)}
+              >
+                <Text style={styles.focusCancelText}>{t('Cancel')}</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
       </Modal>
 
       <OptionPicker
         visible={picker === 'material'}
-        title="Material"
+        title={t('Material')}
         options={FILAMENT_MAIN_TYPES}
-        selected={slotMaterials[editingSlot ?? 0] || 'PLA'}
+        selected={materialDraft}
         onSelect={(value) => { applyMaterial(value); setPicker(null); }}
         onClose={() => setPicker(null)}
-        bottomInset={insets.bottom}
         maxHeight={pickerMaxHeight}
+        anchor={pickerAnchor}
       />
       <OptionPicker
         visible={picker === 'subtype'}
-        title="Subtype"
-        options={subtypesForMainType(slotMaterials[editingSlot ?? 0] || 'PLA')}
-        selected={slotSubtypes[editingSlot ?? 0] || DEFAULT_FILAMENT_SUBTYPE}
+        title={t('Subtype')}
+        options={subtypesForMainType(materialDraft)}
+        selected={subtypeDraft}
         onSelect={(value) => { applySubtype(value); setPicker(null); }}
         onClose={() => setPicker(null)}
-        bottomInset={insets.bottom}
         maxHeight={pickerMaxHeight}
+        anchor={pickerAnchor}
       />
       <OptionPicker
         visible={picker === 'brand'}
-        title="Brand"
+        title={t('Brand')}
         options={BRAND_PRESETS}
         selected={brandChoice}
         onSelect={(brand) => {
           setBrandChoice(brand);
           setPicker(null);
-          if (brand !== 'Other') applyBrand(brand);
         }}
         onClose={() => setPicker(null)}
-        bottomInset={insets.bottom}
         maxHeight={pickerMaxHeight}
+        anchor={pickerAnchor}
       />
     </>
   );
@@ -422,27 +472,31 @@ const styles = StyleSheet.create({
   },
   backdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.55)',
-    justifyContent: 'center',
-    padding: spacing.lg,
+    backgroundColor: colors.bg,
+    justifyContent: 'flex-start',
   },
   backdropKeyboard: {
     justifyContent: 'flex-start',
   },
   sheet: {
-    backgroundColor: colors.card,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: colors.border,
-    padding: spacing.md,
+    backgroundColor: colors.bg,
+  },
+  sheetHeader: {
+    alignItems: 'center',
+    paddingHorizontal: 26,
+    paddingTop: 22,
+    paddingBottom: 12,
   },
   sheetContent: {
-    paddingBottom: spacing.sm,
+    paddingHorizontal: 26,
+    paddingBottom: 24,
   },
   sheetTitle: {
     color: colors.text,
-    fontSize: 16,
-    fontWeight: '700',
+    fontSize: 30,
+    fontWeight: '800',
+    letterSpacing: -1,
+    textAlign: 'center',
   },
   sheetHint: {
     color: colors.subtext,
@@ -519,57 +573,65 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     fontSize: 13,
   },
+  focusActions: {
+    paddingHorizontal: 22,
+    paddingTop: 8,
+    gap: 9,
+  },
+  focusAction: {
+    height: 62,
+    borderRadius: 999,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  focusPrimary: { backgroundColor: colors.primary },
+  focusCancel: { backgroundColor: colors.cardAlt },
+  focusPrimaryText: { color: '#fff', fontSize: 16, fontWeight: '800' },
+  focusCancelText: { color: colors.text, fontSize: 16, fontWeight: '800' },
   pickerBackdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.55)',
-    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(0,0,0,0.35)',
+  },
+  pickerAnchor: {
+    position: 'absolute',
+    zIndex: 2,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: colors.card,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.primary,
+    paddingHorizontal: spacing.sm,
   },
   pickerSheet: {
+    position: 'absolute',
+    zIndex: 1,
     backgroundColor: colors.card,
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
+    borderRadius: 16,
     borderWidth: 1,
-    borderBottomWidth: 0,
     borderColor: colors.border,
-    paddingTop: spacing.sm,
-  },
-  pickerHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
+    padding: 12,
+    overflow: 'hidden',
   },
   pickerTitle: {
-    color: colors.text,
-    fontSize: 15,
-    fontWeight: '700',
+    color: colors.subtext,
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 1.1,
+    textTransform: 'uppercase',
+    paddingHorizontal: 8,
+    paddingVertical: 6,
   },
-  pickerDone: {
-    color: colors.primary,
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  pickerGrabber: {
-    width: 36,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: colors.border,
-    alignSelf: 'center',
-    marginBottom: spacing.xs,
-  },
-  pickerScroll: {
-    paddingHorizontal: spacing.sm,
-  },
+  pickerScroll: { flexGrow: 0 },
   pickerOption: {
-    minHeight: 46,
+    height: 52,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: spacing.sm,
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.border,
+    paddingHorizontal: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
   },
   pickerOptionActive: {
     backgroundColor: colors.cardAlt,

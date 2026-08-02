@@ -14,6 +14,23 @@ export const MAIN_TYPE_PATTERN = /^[A-Za-z0-9._+-]+$/;
 
 export const DEFAULT_FILAMENT_SUBTYPE = 'Basic';
 
+// Vendor names offered in the slot editors. Note the firmware only special-cases
+// Generic / Snapmaker / Polymaker for temperatures — the rest are cosmetic, so
+// this list exists for the user's own bookkeeping.
+export const BRAND_PRESETS: readonly string[] = [
+  'Generic',
+  'Bambu Lab',
+  'Hatchbox',
+  'eSun',
+  'Overture',
+  'SUNLU',
+  'Polymaker',
+  'Prusament',
+  'Snapmaker',
+  'Jayo',
+  'Other',
+];
+
 // Base polymers, ordered from common desktop materials to engineering /
 // high-temp / support filaments. Derived from the distinct material_type
 // values in U1 id_material.json (96-material catalog).
