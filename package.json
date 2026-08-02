@@ -1,6 +1,6 @@
 {
   "name": "u1-control",
-  "version": "1.2.8",
+  "version": "3.0.0",
   "license": "AGPL-3.0-or-later",
   "main": "expo-router/entry",
   "private": true,
@@ -21,6 +21,7 @@
     "expo-asset": "~12.0.13",
     "expo-camera": "~17.0.10",
     "expo-constants": "~18.0.13",
+    "expo-document-picker": "~14.0.8",
     "expo-file-system": "~19.0.23",
     "expo-font": "~14.0.12",
     "expo-intent-launcher": "~13.0.8",

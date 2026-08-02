@@ -2,6 +2,7 @@ import React, { useRef, useState } from 'react';
 import { Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { t } from '../services/i18n';
 import { colors, spacing } from '../constants/theme';
 
@@ -25,6 +26,7 @@ export function parseSpoolQr(data: string): number | null {
 }
 
 export default function SpoolScanner({ onScanned, onClose }: Props) {
+  const insets = useSafeAreaInsets();
   const [permission, requestPermission] = useCameraPermissions();
   const [badScan, setBadScan] = useState(false);
   // barcode events fire repeatedly per frame — latch after the first hit
@@ -72,7 +74,10 @@ export default function SpoolScanner({ onScanned, onClose }: Props) {
           </Text>
         </View>
 
-        <TouchableOpacity style={styles.closeBtn} onPress={onClose}>
+        <TouchableOpacity
+          style={[styles.closeBtn, { top: insets.top + 12 }]}
+          onPress={onClose}
+        >
           <MaterialCommunityIcons name="close" size={22} color={colors.text} />
         </TouchableOpacity>
       </View>
@@ -106,12 +111,13 @@ const styles = StyleSheet.create({
   },
   closeBtn: {
     position: 'absolute',
-    top: 50,
-    right: 20,
+    right: 14,
     backgroundColor: 'rgba(30,30,30,0.8)',
-    borderRadius: 18,
-    width: 36,
-    height: 36,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: colors.border,
+    width: 40,
+    height: 40,
     alignItems: 'center',
     justifyContent: 'center',
   },

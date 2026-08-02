@@ -8,7 +8,7 @@ import { useSettings } from '../../hooks/useSettings';
 import { t } from '../../services/i18n';
 import { getSharedModelFile, takeNativePrintSentNotice } from '../../services/nativeSlicer';
 import { setPendingModel } from '../../services/pendingModel';
-import { colors } from '../../constants/theme';
+import { COCKPIT } from '../../components/dashboard/shared';
 
 type IconName = React.ComponentProps<typeof MaterialCommunityIcons>['name'];
 
@@ -66,27 +66,25 @@ export default function TabLayout() {
     <>
       <Tabs
         screenOptions={{
-          headerStyle: { backgroundColor: colors.bg },
+          headerStyle: { backgroundColor: COCKPIT.bg },
           headerShadowVisible: false,
-          headerTintColor: colors.text,
+          headerTintColor: COCKPIT.text,
           headerTitleStyle: { fontWeight: '800' },
           tabBarHideOnKeyboard: true,
+          // Cockpit palette — the redesigned Home owns the look, and a tab bar
+          // in the old theme underneath it read as a different app.
           tabBarStyle: {
-            backgroundColor: colors.card,
+            backgroundColor: COCKPIT.surface,
             borderTopWidth: 1,
-            borderTopColor: colors.border,
+            borderTopColor: COCKPIT.border,
             height: 66 + insets.bottom,
             paddingTop: 5,
             paddingBottom: 7 + insets.bottom,
-            shadowColor: '#000',
-            shadowOpacity: 0.18,
-            shadowRadius: 10,
-            shadowOffset: { width: 0, height: -3 },
-            elevation: 10,
+            elevation: 0,
           },
-          tabBarActiveTintColor: colors.primary,
-          tabBarInactiveTintColor: colors.subtext,
-          tabBarLabelStyle: { fontSize: 9, fontWeight: '700', marginTop: -2 },
+          tabBarActiveTintColor: COCKPIT.accent,
+          tabBarInactiveTintColor: COCKPIT.dim,
+          tabBarLabelStyle: { fontSize: 10, fontWeight: '700', marginTop: -2 },
           tabBarItemStyle: { paddingVertical: 0 },
         }}
       >
@@ -113,7 +111,13 @@ export default function TabLayout() {
         />
         <Tabs.Screen
           name="files"
-          options={{ title: t('Files'), tabBarLabel: t('Files'), tabBarIcon: tabIcon('folder-outline') }}
+          options={{
+            title: t('Files'),
+            // The Shelf screen draws its own safe-area top, like Home.
+            headerShown: false,
+            tabBarLabel: t('Files'),
+            tabBarIcon: tabIcon('folder-outline'),
+          }}
         />
         <Tabs.Screen
           name="ace"
@@ -121,23 +125,41 @@ export default function TabLayout() {
         />
         <Tabs.Screen
           name="slicer"
-          options={{ title: 'Slicer', tabBarLabel: 'Slice', tabBarIcon: tabIcon('cube-outline') }}
+          options={{
+            title: 'Slicer',
+            // Cockpit layout draws its own safe-area top, like Home and Files.
+            headerShown: false,
+            tabBarLabel: 'Slice',
+            tabBarIcon: tabIcon('cube-outline'),
+          }}
         />
         <Tabs.Screen
           name="tools"
-          options={{ title: 'Tools', tabBarLabel: 'Tools', tabBarIcon: tabIcon('view-grid-outline') }}
+          options={{
+            title: 'Tools',
+            // Cockpit layout draws its own safe-area top, like Home and Slice.
+            headerShown: false,
+            tabBarLabel: 'Tools',
+            tabBarIcon: tabIcon('view-grid-outline'),
+          }}
         />
         <Tabs.Screen
           name="settings"
-          options={{ title: t('Settings'), tabBarLabel: t('Settings'), tabBarIcon: tabIcon('cog') }}
+          options={{
+            title: t('Settings'),
+            // Nova draws its own safe-area top and its own back affordance.
+            headerShown: false,
+            tabBarLabel: t('Settings'),
+            tabBarIcon: tabIcon('cog'),
+          }}
         />
       </Tabs>
 
       <ThemedDialog
         visible={nativePrintFilename !== null}
         placement="center"
-        title="Print sent successfully"
-        message={nativePrintFilename ? `${nativePrintFilename.split('/').pop()} is now starting on the printer.` : undefined}
+        title={t('Print sent successfully')}
+        message={nativePrintFilename ? `${nativePrintFilename.split('/').pop()} ${t('is now starting on the printer.')}` : undefined}
         icon="check-circle-outline"
         onClose={() => setNativePrintFilename(null)}
         actions={[

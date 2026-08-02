@@ -24,4 +24,19 @@ object EdgeInsets {
     }
     ViewCompat.requestApplyInsets(root)
   }
+
+  /**
+   * Pads only the bottom of [view] by the nav-bar inset, on top of the padding it
+   * already has. For bottom sheets, which sit against the bottom edge but must
+   * keep their own top and side padding untouched.
+   */
+  fun applyBottom(view: View) {
+    val base = view.paddingBottom
+    ViewCompat.setOnApplyWindowInsetsListener(view) { target, insets ->
+      val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+      target.setPadding(target.paddingLeft, target.paddingTop, target.paddingRight, base + bars.bottom)
+      insets
+    }
+    ViewCompat.requestApplyInsets(view)
+  }
 }

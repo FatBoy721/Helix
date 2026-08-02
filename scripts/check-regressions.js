@@ -35,6 +35,10 @@ const {
   migrateSettings,
 } = require(path.join('..', 'services', 'settingsMigration.ts'));
 const {
+  buildSettingsBackup,
+  parseSettingsBackup,
+} = require(path.join('..', 'services', 'settingsBackup.ts'));
+const {
   buildBugReportUrl,
   compareReleaseVersions,
   isCurrentRelease,
@@ -233,6 +237,23 @@ function settings(overrides = {}) {
     ...overrides,
   };
 }
+
+test('settings backup file JSON round-trips through migration', () => {
+  const original = migrateSettings(settings());
+  const restored = parseSettingsBackup(buildSettingsBackup(original));
+  assert.deepEqual(restored, original);
+});
+
+test('settings backup import rejects invalid and unrelated JSON files', () => {
+  assert.throws(
+    () => parseSettingsBackup('not json'),
+    /does not contain valid JSON/,
+  );
+  assert.throws(
+    () => parseSettingsBackup('{"hello":"world"}'),
+    /does not look like a Helix settings backup/,
+  );
+});
 
 test('dirty check only watches draft-managed settings fields', () => {
   assert.equal(

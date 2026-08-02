@@ -1,18 +1,31 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
-  Image,
+  Pressable,
   RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
-  TouchableOpacity,
+  useWindowDimensions,
   View,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
-import { colors, spacing } from '../../constants/theme';
+import { colors } from '../../constants/theme';
+import { alpha, COCKPIT as P } from '../../components/dashboard/shared';
+import { ProgressBar } from '../../components/ui/progress';
+import { formatDuration } from '../../components/PrintProgress';
+import FilamentEditor from '../../components/dashboard/parts/FilamentEditor';
+import {
+  ActionBar,
+  Banner,
+  HeroCard,
+  PlateStrip,
+  Secondary,
+  StatRow,
+  ToolRail,
+} from '../../components/slicer/parts';
 import {
   addExtractProgressListener,
   clearLastSlice,
@@ -33,27 +46,32 @@ import {
   openNativeModelPreview,
   injectTimelapseMacros,
   pickModelFile,
-  setFilamentSlotColors,
+  setFilamentSlots,
+  type NativeFilamentSlot,
   collapseModelToTool,
   remapModelExtruders,
   sliceModelFile,
   setNativePrinters,
   SharedMakerWorldLink,
   uploadGcodeToPrinter,
+  getModelPlateStats,
+  type ModelPlateStats,
   type SharedModelFile,
 } from '../../services/nativeSlicer';
 import { useMoonraker } from '../../hooks/useMoonraker';
+import { fetchMakerWorldPlateStats } from '../../services/makerWorld';
 import { useACE } from '../../hooks/useACE';
 import type { AceUnit } from '../../hooks/useACE';
 import { useSettings } from '../../hooks/useSettings';
-import FilamentSlotsEditor, { type FilamentSlotDisplay } from '../../components/FilamentSlotsEditor';
+import { type FilamentSlotDisplay } from '../../components/FilamentSlotsEditor';
 import { normalizeFilamentSlotColors } from '../../constants/filamentColors';
 import { takeMwDownload } from '../../services/mwBus';
 import { subscribePendingModel, takePendingModel } from '../../services/pendingModel';
 import { setPrintSentNotice } from '../../services/printSentBus';
 import PrintPreprocessDialog, { type PrintPref } from '../../components/PrintPreprocessDialog';
-import { api, printerConnectionUrl, thumbnailUrl } from '../../services/moonraker';
+import { api, normalizeMoonrakerUrl, printerConnectionUrl, thumbnailUrl } from '../../services/moonraker';
 import { resolveNativeMaterialProfiles } from '../../services/filamentProfiles';
+import { useThemedAlert } from '../../hooks/useThemedAlert';
 
 const MW_DESIGN_RE = /(?:https?:\/\/)?(?:www\.)?makerworld\.com\/(?:\w+\/)?models\/(\d+)/i;
 // The specific print profile/instance the user is viewing, e.g.
@@ -115,6 +133,8 @@ type ToolLoadInfo = {
   blockReason: string | null;
 };
 
+const PAGE = 16;
+
 const EXTRACT_SAYINGS = [
   'Slicing the un-sliceable…',
   'Convincing triangles to behave…',
@@ -130,6 +150,7 @@ const EXTRACT_SAYINGS = [
 
 export default function SliceLabScreen() {
   const router = useRouter();
+  const { showAlert, alertDialog } = useThemedAlert();
   const [result, setResult] = useState<LoadState>({ state: 'loading' });
   const [sharedLink, setSharedLink] = useState<SharedMakerWorldLink | null>(null);
   const [download, setDownload] = useState<DownloadState>({
@@ -144,6 +165,17 @@ export default function SliceLabScreen() {
   const [plates, setPlates] = useState<ModelPlate[]>([]);
   const [selectedPlate, setSelectedPlate] = useState<{ id: number; name: string } | null>(null);
   const [platesFor, setPlatesFor] = useState<string | null>(null);
+  // Embedded 3MF plate render, shown in the hero as soon as a model is picked —
+  // before any slicing happens. Null for STLs and 3MFs without thumbnails.
+  const [modelThumb, setModelThumb] = useState<string | null>(null);
+  // Slice stats baked into the 3MF by the original slicer (MakerWorld etc.) —
+  // lets the stat cards show real numbers before any in-app slice. Empty for
+  // geometry-only 3MFs and STLs.
+  const [modelStats, setModelStats] = useState<ModelPlateStats[]>([]);
+  // MakerWorld API stats for in-app downloads (the 3MFs usually lack embedded
+  // plate G-code, so the native scan above finds nothing). Keyed by file path
+  // so stats from a previous download can't bleed into a freshly opened file.
+  const [mwStats, setMwStats] = useState<{ forPath: string; stats: ModelPlateStats[] } | null>(null);
   const [extracting, setExtracting] = useState(false);
   const [extractProgress, setExtractProgress] = useState<{ percent: number; phase: string } | null>(null);
   const [sayingIdx, setSayingIdx] = useState(0);
@@ -166,8 +198,6 @@ export default function SliceLabScreen() {
   const { activeUrl, connection, status, objectList } = useMoonraker();
   const ace = useACE();
   const { settings, update: updateSettings, loaded: settingsLoaded } = useSettings();
-  const selectedPrinter = settings.printers.find((printer) => printer.id === settings.activePrinterId);
-  const selectedPrinterUrl = selectedPrinter ? printerConnectionUrl(selectedPrinter) : '';
   const toolLoad = useMemo(
     () => resolveToolLoad(status, objectList, ace.units, ace.hardwareDetected, connection),
     [status, objectList, ace.units, ace.hardwareDetected, connection],
@@ -187,11 +217,21 @@ export default function SliceLabScreen() {
     [filamentSlots],
   );
 
-  // Keep native paint/preview prefs aligned with the saved slot colours.
+  // Keep native prefs aligned with the full per-slot filament picture so the
+  // print preprocess sheet can label each lane exactly as the RN slicer does.
   useEffect(() => {
     if (!settingsLoaded) return;
-    setFilamentSlotColors(effectiveFilamentSlotColors).catch(() => {});
-  }, [settingsLoaded, effectiveFilamentSlotColors]);
+    setFilamentSlots(
+      filamentSlots.map((slot): NativeFilamentSlot => ({
+        color: slot.color,
+        material: slot.material,
+        mainType: slot.mainType ?? '',
+        subType: slot.subType ?? '',
+        brand: slot.brand ?? '',
+        status: slot.status,
+      })),
+    ).catch(() => {});
+  }, [settingsLoaded, filamentSlots]);
 
   // Rotate the playful "sayings" while the prepare overlay is up so there's
   // always motion even between native progress ticks.
@@ -202,12 +242,20 @@ export default function SliceLabScreen() {
   }, [extracting]);
 
   // Mirror the printer list for the native print dialog's printer picker.
+  // Send BOTH the preferred url and the alternate (LAN ↔ Tailscale) so the
+  // native dialog can fail over when the user is away from home (LAN down).
   useEffect(() => {
     if (!settingsLoaded) return;
     setNativePrinters(
       settings.printers
-        .map((p) => ({ name: p.name, url: printerConnectionUrl(p) }))
-        .filter((p) => p.url),
+        .map((p) => {
+          const lan = normalizeMoonrakerUrl(p.url || '');
+          const tailscale = normalizeMoonrakerUrl(p.tailscaleUrl || '');
+          const primary = printerConnectionUrl(p);
+          const alternate = primary === lan ? tailscale : lan;
+          return { name: p.name, url: primary, tailscaleUrl: alternate };
+        })
+        .filter((p) => p.url || p.tailscaleUrl),
     ).catch(() => {});
   }, [settingsLoaded, settings.printers]);
 
@@ -235,6 +283,7 @@ export default function SliceLabScreen() {
     setPlates([]);
     setSelectedPlate(null);
     setPlatesFor(null);
+    setMwStats(null);
     setDownload({
       state: 'success',
       message: `Opened ${openedFile.fileName}.`,
@@ -255,9 +304,9 @@ export default function SliceLabScreen() {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (/cancel/i.test(message)) return;
-      Alert.alert('Upload', message);
+      showAlert({ title: 'Upload', message, icon: 'alert-circle-outline' });
     }
-  }, [applyOpenedFile]);
+  }, [applyOpenedFile, showAlert]);
 
   const clearModel = useCallback(() => {
     handledUrlRef.current = null;
@@ -269,6 +318,9 @@ export default function SliceLabScreen() {
     setPlates([]);
     setSelectedPlate(null);
     setPlatesFor(null);
+    setModelThumb(null);
+    setModelStats([]);
+    setMwStats(null);
     setDownload({ state: 'idle', message: '' });
   }, []);
 
@@ -338,6 +390,7 @@ export default function SliceLabScreen() {
     setUpload({ state: 'idle' });
     setPrintStart({ state: 'idle' });
     clearLastSlice().catch(() => {});
+    setMwStats(null);
     setDownload({ state: 'downloading', message: 'Opening MakerWorld…' });
     try {
       const designId = MW_DESIGN_RE.exec(url)?.[1];
@@ -355,6 +408,17 @@ export default function SliceLabScreen() {
         message: 'Model ready.',
         result: downloaded,
       });
+      // The 3MF itself usually has no embedded slice stats — the design API
+      // does (time + filament per plate). Layers stay '--': not published.
+      const plateStats = await fetchMakerWorldPlateStats(designId, instanceId || null);
+      setMwStats(
+        plateStats.length > 0
+          ? {
+              forPath: downloaded.filePath,
+              stats: plateStats.map((s) => ({ ...s, layers: 0 })),
+            }
+          : null
+      );
     } catch (error) {
       handledUrlRef.current = null;
       const message = error instanceof Error ? error.message : String(error);
@@ -497,6 +561,8 @@ export default function SliceLabScreen() {
       setPlates([]);
       setSelectedPlate(null);
       setPlatesFor(null);
+      setModelThumb(null);
+      setModelStats([]);
       return;
     }
     if (platesFor === modelFilePath) return;
@@ -506,11 +572,20 @@ export default function SliceLabScreen() {
         setPlatesFor(modelFilePath);
         setPlates(found.length > 1 ? found : []);
         setSelectedPlate(null);
+        setModelThumb(found[0]?.thumbnail ?? null);
       })
       .catch(() => {
         if (!active) return;
         setPlates([]);
         setSelectedPlate(null);
+        setModelThumb(null);
+      });
+    getModelPlateStats(modelFilePath)
+      .then((stats) => {
+        if (active) setModelStats(stats);
+      })
+      .catch(() => {
+        if (active) setModelStats([]);
       });
     return () => {
       active = false;
@@ -523,6 +598,7 @@ export default function SliceLabScreen() {
       // Selection only — extraction happens in prepareAndSlice so tapping a
       // plate card is instant instead of blocking on the native repack.
       setSelectedPlate({ id: plate.id, name: plate.name });
+      setModelThumb(plate.thumbnail ?? null);
       setSlice({ state: 'idle' });
       setUpload({ state: 'idle' });
       setPrintStart({ state: 'idle' });
@@ -533,11 +609,11 @@ export default function SliceLabScreen() {
   const prepareAndSlice = useCallback(async () => {
     if (download.state !== 'success') return;
     if (plates.length > 1 && !selectedPlate) {
-      Alert.alert('Plates', 'This model has multiple plates — pick one to slice first.');
+      showAlert({ title: 'Plates', message: 'This model has multiple plates — pick one to slice first.' });
       return;
     }
     if (toolLoad.blockReason) {
-      Alert.alert('Filament', toolLoad.blockReason);
+      showAlert({ title: 'Filament', message: toolLoad.blockReason, icon: 'alert-circle-outline' });
       return;
     }
     let path = download.result.filePath;
@@ -572,129 +648,17 @@ export default function SliceLabScreen() {
         materialProfiles,
       );
     } catch (error) {
-      Alert.alert('Prepare & Slice', error instanceof Error ? error.message : String(error));
+      showAlert({
+        title: 'Prepare & Slice',
+        message: error instanceof Error ? error.message : String(error),
+        icon: 'alert-circle-outline',
+      });
     } finally {
       sub.remove();
       setExtractProgress(null);
       setExtracting(false);
     }
-  }, [activeUrl, connection, download, effectiveFilamentSlotColors, filamentSlots, toolLoad, plates, selectedPlate]);
-
-  const updateFilamentSlots = useCallback(
-    async (next: string[], changedIndex?: number) => {
-      const normalized = normalizeFilamentSlotColors(next);
-      await updateSettings({ filamentSlotColors: normalized });
-      try {
-        await setFilamentSlotColors(normalized);
-      } catch {
-        // Native module unavailable on non-Android — settings still saved.
-      }
-      if (activeUrl) {
-        try {
-          const channels = changedIndex == null ? normalized.map((_, index) => index) : [changedIndex];
-          await Promise.all(channels.map((channel) => api.setFilamentSlot(
-            activeUrl,
-            channel,
-            {
-              VENDOR: settings.filamentSlotBrands[channel] || 'Generic',
-              MAIN_TYPE: settings.filamentSlotMaterials[channel] || 'PLA',
-              SUB_TYPE: settings.filamentSlotSubtypes[channel] || status.filament_detect?.info?.[channel]?.SUB_TYPE || 'Basic',
-              RGB_1: parseInt(normalized[channel].replace('#', '').slice(0, 6), 16),
-              ALPHA: 255,
-            },
-          )));
-        } catch (error) {
-          Alert.alert('Printer update unavailable', error instanceof Error ? error.message : 'Helix saved the value locally.');
-        }
-      }
-    },
-    [activeUrl, settings.filamentSlotBrands, settings.filamentSlotMaterials, settings.filamentSlotSubtypes, status, updateSettings],
-  );
-
-  const updateFilamentMaterials = useCallback(
-    async (next: string[], changedIndex?: number) => {
-      const normalized = Array.from({ length: 4 }, (_, i) => {
-        const value = next[i]?.trim().toUpperCase();
-        return value || settings.filamentSlotMaterials[i] || 'PLA';
-      });
-      await updateSettings({ filamentSlotMaterials: normalized });
-      if (activeUrl) {
-        try {
-          const channels = changedIndex == null ? normalized.map((_, index) => index) : [changedIndex];
-          await Promise.all(channels.map((channel) => api.setFilamentSlot(
-            activeUrl,
-            channel,
-            {
-              VENDOR: settings.filamentSlotBrands[channel] || 'Generic',
-              MAIN_TYPE: normalized[channel],
-              SUB_TYPE: settings.filamentSlotSubtypes[channel] || status.filament_detect?.info?.[channel]?.SUB_TYPE || 'Basic',
-              RGB_1: parseInt(normalizeFilamentSlotColors(settings.filamentSlotColors)[channel].replace('#', '').slice(0, 6), 16),
-              ALPHA: 255,
-            },
-          )));
-        } catch (error) {
-          Alert.alert('Printer update unavailable', error instanceof Error ? error.message : 'Helix saved the value locally.');
-        }
-      }
-    },
-    [activeUrl, settings.filamentSlotBrands, settings.filamentSlotColors, settings.filamentSlotMaterials, settings.filamentSlotSubtypes, status, updateSettings],
-  );
-
-  const updateFilamentBrands = useCallback(
-    async (next: string[], changedIndex?: number) => {
-      await updateSettings({ filamentSlotBrands: next });
-      const printerUrl = activeUrl || selectedPrinterUrl;
-      if (printerUrl) {
-        try {
-          const channels = changedIndex == null ? next.map((_, index) => index) : [changedIndex];
-          await Promise.all(channels.map((channel) => api.setFilamentSlot(
-            printerUrl,
-            channel,
-            {
-              VENDOR: next[channel] || 'Generic',
-              MAIN_TYPE: settings.filamentSlotMaterials[channel] || 'PLA',
-              SUB_TYPE: settings.filamentSlotSubtypes[channel] || status.filament_detect?.info?.[channel]?.SUB_TYPE || 'Basic',
-              RGB_1: parseInt(normalizeFilamentSlotColors(settings.filamentSlotColors)[channel].replace('#', '').slice(0, 6), 16),
-              ALPHA: 255,
-            },
-          )));
-        } catch (error) {
-          Alert.alert('Printer update unavailable', error instanceof Error ? error.message : 'Helix saved the value locally.');
-        }
-      }
-    },
-    [activeUrl, selectedPrinterUrl, settings.filamentSlotBrands, settings.filamentSlotColors, settings.filamentSlotMaterials, settings.filamentSlotSubtypes, status, updateSettings],
-  );
-
-  const updateFilamentSubtypes = useCallback(
-    async (next: string[], changedIndex?: number) => {
-      const normalized = Array.from({ length: 4 }, (_, i) => {
-        const value = next[i]?.trim();
-        return value || settings.filamentSlotSubtypes[i] || 'Basic';
-      });
-      await updateSettings({ filamentSlotSubtypes: normalized });
-      const printerUrl = activeUrl || selectedPrinterUrl;
-      if (printerUrl) {
-        try {
-          const channels = changedIndex == null ? normalized.map((_, index) => index) : [changedIndex];
-          await Promise.all(channels.map((channel) => api.setFilamentSlot(
-            printerUrl,
-            channel,
-            {
-              VENDOR: settings.filamentSlotBrands[channel] || 'Generic',
-              MAIN_TYPE: settings.filamentSlotMaterials[channel] || 'PLA',
-              SUB_TYPE: normalized[channel],
-              RGB_1: parseInt(normalizeFilamentSlotColors(settings.filamentSlotColors)[channel].replace('#', '').slice(0, 6), 16),
-              ALPHA: 255,
-            },
-          )));
-        } catch (error) {
-          Alert.alert('Printer update unavailable', error instanceof Error ? error.message : 'Helix saved the value locally.');
-        }
-      }
-    },
-    [activeUrl, selectedPrinterUrl, settings.filamentSlotBrands, settings.filamentSlotColors, settings.filamentSlotMaterials, settings.filamentSlotSubtypes, updateSettings],
-  );
+  }, [activeUrl, connection, download, effectiveFilamentSlotColors, filamentSlots, showAlert, toolLoad, plates, selectedPlate]);
 
   const openToolpathPreview = useCallback(async () => {
     if (slice.state !== 'success') return;
@@ -711,9 +675,13 @@ export default function SliceLabScreen() {
         slice.result.usedToolMask ?? (1 << initialTool),
       );
     } catch (error) {
-      Alert.alert('Toolpath Preview', error instanceof Error ? error.message : String(error));
+      showAlert({
+        title: 'Toolpath Preview',
+        message: error instanceof Error ? error.message : String(error),
+        icon: 'alert-circle-outline',
+      });
     }
-  }, [activeUrl, connection, download, slice, toolLoad]);
+  }, [activeUrl, connection, download, showAlert, slice, toolLoad]);
 
   const openPreprocess = useCallback(() => {
     if (slice.state !== 'success') return;
@@ -811,8 +779,8 @@ export default function SliceLabScreen() {
           }
           gcodePath = resliced.gcodePath;
         } else {
-          // Per-colour remap: keep multi-colour, route each file colour to its slot.
-          setPrintStart({ state: 'starting', message: 'Re-slicing per-colour…' });
+          // Per-color remap: keep multi-color, route each file color to its slot.
+          setPrintStart({ state: 'starting', message: 'Re-slicing per-color…' });
           setSendProgress(0.05);
           const extruderMap: Record<number, number> = {};
           for (const ft of fileTools) extruderMap[ft + 1] = fullTarget[ft];
@@ -917,6 +885,18 @@ export default function SliceLabScreen() {
   const printerReady = connection === 'connected' && Boolean(activeUrl);
   const hasModel = download.state === 'success';
   const sliced = slice.state === 'success';
+  // Pre-slice stats: the file's own embedded G-code first (any 3MF), then the
+  // MakerWorld API numbers for in-app downloads. Selected plate wins, then
+  // plate 1 — real numbers on the cards before anything is sliced here.
+  const plateStats =
+    modelStats.length > 0
+      ? modelStats
+      : mwStats && mwStats.forPath === modelFilePath
+        ? mwStats.stats
+        : [];
+  const embeddedStats = sliced
+    ? null
+    : plateStats.find((s) => s.id === selectedPlate?.id) ?? plateStats[0] ?? null;
   const slicedInitialTool = slice.state === 'success'
     ? slice.result.initialTool ?? toolLoad.selectedTool
     : toolLoad.selectedTool;
@@ -957,205 +937,220 @@ export default function SliceLabScreen() {
     };
   }, [slicedGcodePath]);
 
+  const [editingSlot, setEditingSlot] = useState<number | null>(null);
+  const { width } = useWindowDimensions();
+  const heroHeight = Math.round((width - PAGE * 2) * (9 / 16));
+
+  const heroState = !hasModel
+    ? download.state === 'downloading'
+      ? { label: 'IMPORTING', color: P.warn }
+      : download.state === 'error'
+        ? { label: 'IMPORT FAILED', color: P.danger }
+        : { label: 'NO MODEL', color: P.dim }
+    : extracting
+      ? { label: 'PREPARING', color: P.warn }
+      : sliced
+        ? { label: 'SLICED', color: P.success }
+        : toolLoad.blockReason
+          ? { label: 'BLOCKED', color: P.danger }
+          : { label: 'READY TO SLICE', color: P.accent };
+
+  // The pinned action says why it can't run rather than just going grey. The
+  // order matters: the reason nearest the user's next tap wins.
+  const primaryAction = (() => {
+    if (!hasModel) {
+      const importing = download.state === 'downloading';
+      return {
+        icon: 'tray-arrow-up' as const,
+        label: importing ? 'Importing…' : 'Upload .3mf / .stl',
+        enabled: !importing,
+        onPress: pickLocalModel,
+      };
+    }
+    if (extracting) {
+      return { icon: 'progress-clock' as const, label: 'Preparing…', enabled: false, onPress: noop };
+    }
+    if (sliced) {
+      return {
+        icon: 'printer-3d' as const,
+        label: printerReady ? 'Upload & Print' : 'Printer offline',
+        enabled: printerReady,
+        onPress: openPreprocess,
+      };
+    }
+    if (toolLoad.blockReason) {
+      return {
+        icon: 'alert-circle-outline' as const,
+        label: 'Load filament to slice',
+        enabled: false,
+        onPress: noop,
+      };
+    }
+    if (!ready) {
+      return { icon: 'progress-wrench' as const, label: 'Slicer starting…', enabled: false, onPress: noop };
+    }
+    if (plates.length > 1 && !selectedPlate) {
+      return { icon: 'cube-scan' as const, label: 'Pick a plate above', enabled: false, onPress: noop };
+    }
+    return { icon: 'cube-scan' as const, label: 'Prepare & Slice', enabled: true, onPress: prepareAndSlice };
+  })();
+
   return (
-    <>
-    <ScrollView
-      style={styles.screen}
-      contentContainerStyle={styles.content}
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={colors.primary} />}
-    >
-      <View style={styles.card}>
-        <Text style={styles.sectionTitle}>Filaments</Text>
-        <Text style={styles.mutedText}>T0-T3 filament colors and materials.</Text>
-        <FilamentSlotsEditor
-          slotColors={settings.filamentSlotColors}
-          slotBrands={settings.filamentSlotBrands}
-          slotMaterials={settings.filamentSlotMaterials}
-          slotSubtypes={settings.filamentSlotSubtypes}
-          slots={filamentSlots}
-          onChange={updateFilamentSlots}
-          onBrandsChange={updateFilamentBrands}
-          onMaterialsChange={updateFilamentMaterials}
-          onSubtypesChange={updateFilamentSubtypes}
-        />
-        <Text style={styles.mutedText}>
-          {toolLoad.known
-            ? `Single-colour slices use T${toolLoad.selectedTool}.`
-            : 'Filament load is unknown until Helix can read the printer.'}
-        </Text>
-        {toolLoad.blockReason ? (
-          <Text style={[styles.value, styles.bad]}>{toolLoad.blockReason}</Text>
-        ) : null}
-      </View>
-
-      <View style={styles.card}>
-        <Text style={styles.sectionTitle}>Model</Text>
-        <TouchableOpacity
-          style={styles.secondaryButton}
-          onPress={pickLocalModel}
-          activeOpacity={0.85}
+    <View style={styles.root}>
+      <SafeAreaView style={styles.flex} edges={['top']}>
+        <ScrollView
+          contentContainerStyle={styles.content}
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={P.dim} />
+          }
         >
-          <MaterialCommunityIcons name="upload" size={18} color={colors.text} />
-          <Text style={styles.buttonText}>Upload .3mf / .stl</Text>
-        </TouchableOpacity>
-        <Text
-          style={[
-            styles.value,
-            download.state === 'success'
-              ? styles.good
-              : download.state === 'error'
-                ? styles.bad
-                : styles.mutedValue,
-          ]}
-        >
-          {download.message}
-        </Text>
-        {download.state === 'downloading' ? (
-          <View style={styles.loadingRow}>
-            <ActivityIndicator color={colors.primary} />
-            <Text style={styles.body}>Importing…</Text>
-          </View>
-        ) : null}
-        {hasModel ? (
-          <View style={styles.modelFileRow}>
-            <Text style={[styles.fileName, styles.modelFileName]} numberOfLines={1}>
-              {download.result.fileName}
-            </Text>
-            <TouchableOpacity
-              onPress={clearModel}
-              hitSlop={8}
-              accessibilityLabel="Remove model"
-            >
-              <MaterialCommunityIcons name="trash-can-outline" size={20} color={colors.subtext} />
-            </TouchableOpacity>
-          </View>
-        ) : null}
-        {!mwAuthed ? (
-          <Text style={styles.hintText}>
-            MakerWorld login is in{' '}
-            <Text style={styles.hintLink} onPress={() => router.push('/settings')}>
-              Settings
-            </Text>
-            {' '}— required to import shared models.
-          </Text>
-        ) : null}
-        {sharedLink?.makerWorldUrl && !hasModel && download.state !== 'downloading' ? (
-          <TouchableOpacity
-            style={styles.secondaryButton}
-            onPress={() => startDownload(sharedLink.makerWorldUrl!, true)}
-            activeOpacity={0.85}
-          >
-            <MaterialCommunityIcons name="download" size={18} color={colors.text} />
-            <Text style={styles.buttonText}>Import from link</Text>
-          </TouchableOpacity>
-        ) : null}
-        {hasModel && plates.length > 1 ? (
-          <View style={styles.plateSection}>
-            <Text style={styles.plateHeading}>
-              {plates.length} plates — pick one to slice
-            </Text>
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.plateRow}
-            >
-              {plates.map((plate) => {
-                const active = selectedPlate?.id === plate.id;
-                return (
-                  <TouchableOpacity
-                    key={plate.id}
-                    style={[styles.plateCard, active && styles.plateCardActive]}
-                    onPress={() => choosePlate(plate)}
-                    disabled={extracting}
-                    activeOpacity={0.85}
-                  >
-                    {plate.thumbnail ? (
-                      <Image source={{ uri: plate.thumbnail }} style={styles.plateThumb} resizeMode="cover" />
-                    ) : (
-                      <View style={[styles.plateThumb, styles.platePlaceholder]}>
-                        <MaterialCommunityIcons name="grid" size={22} color={colors.subtext} />
-                      </View>
-                    )}
-                    <Text style={styles.plateName} numberOfLines={1}>{plate.name}</Text>
-                    <Text style={styles.plateMeta}>
-                      {plate.objectCount} obj{plate.objectCount === 1 ? '' : 's'}
-                    </Text>
-                    {active ? (
-                      <View style={styles.plateCheck}>
-                        <MaterialCommunityIcons name="check-circle" size={18} color={colors.primary} />
-                      </View>
-                    ) : null}
-                  </TouchableOpacity>
-                );
-              })}
-            </ScrollView>
-          </View>
-        ) : null}
-        {hasModel ? (
-          <TouchableOpacity
-            style={[
-              styles.button,
-              (!ready || toolLoad.blockReason || extracting || (plates.length > 1 && !selectedPlate)) &&
-                styles.buttonOff,
-            ]}
-            disabled={
-              !ready || Boolean(toolLoad.blockReason) || extracting ||
-              (plates.length > 1 && !selectedPlate)
-            }
-            onPress={prepareAndSlice}
-            activeOpacity={0.85}
-          >
-            <MaterialCommunityIcons name="cube-scan" size={20} color={colors.text} />
-            <Text style={styles.buttonText}>
-              {extracting
-                ? 'Preparing plate…'
-                : plates.length > 1 && !selectedPlate
-                  ? 'Pick a plate above'
-                  : 'Prepare & Slice'}
-            </Text>
-          </TouchableOpacity>
-        ) : null}
-      </View>
+          {!hasModel ? (
+            <Pressable onPress={pickLocalModel} disabled={download.state === 'downloading'}>
+              <HeroCard
+                thumbUri={sliced ? sliceThumb : modelThumb}
+                height={heroHeight}
+                stateLabel={heroState.label}
+                stateColor={heroState.color}
+                fileName={null}
+                percent={extracting && extractProgress ? extractProgress.percent : null}
+                onClear={clearModel}
+                expand
+              />
+            </Pressable>
+          ) : (
+            <HeroCard
+              thumbUri={sliced ? sliceThumb : modelThumb}
+              height={heroHeight}
+              stateLabel={heroState.label}
+              stateColor={heroState.color}
+              fileName={hasModel ? download.result.fileName : null}
+              percent={extracting && extractProgress ? extractProgress.percent : null}
+              onClear={clearModel}
+              expand
+            />
+          )}
 
-      {sliced && hasModel ? (
-        <View style={styles.card}>
-          <Text style={styles.sectionTitle}>Send to printer</Text>
-          {sliceThumb ? (
-            <Image source={{ uri: sliceThumb }} style={styles.slicePreview} resizeMode="contain" />
+          {extracting && extractProgress ? (
+            <ProgressBar
+              progress={Math.max(0.02, Math.min(1, extractProgress.percent / 100))}
+              color={P.accent}
+              trackColor={P.surfaceAlt}
+              height={7}
+            />
           ) : null}
-          <Text style={styles.statsLine}>
-            {slice.result.totalLayers} layers · {Math.round(slice.result.estimatedTimeSeconds / 60)} min ·{' '}
-            {slice.result.estimatedFilamentGrams.toFixed(1)} g
-          </Text>
-          <TouchableOpacity
-            style={[styles.button, !printerReady && styles.buttonOff]}
-            disabled={!printerReady}
-            onPress={openPreprocess}
-            activeOpacity={0.85}
-          >
-            <MaterialCommunityIcons name="printer-3d" size={18} color={colors.text} />
-            <Text style={styles.buttonText}>
-              {printerReady ? 'Upload & Print' : 'Printer offline'}
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.secondaryButton}
-            onPress={dismissSlice}
-            activeOpacity={0.85}
-          >
-            <MaterialCommunityIcons name="close" size={18} color={colors.subtext} />
-            <Text style={[styles.buttonText, { color: colors.subtext }]}>Cancel</Text>
-          </TouchableOpacity>
+
+          {toolLoad.blockReason ? (
+            <Banner tone="bad" icon="alert-circle-outline" text={toolLoad.blockReason} />
+          ) : null}
+
+          {sliced && missingPrintTools ? (
+            <Banner
+              tone="bad"
+              icon="alert-circle-outline"
+              text={`${missingPrintTools} not loaded — this print needs them.`}
+            />
+          ) : null}
+
+          {!ready ? (
+            <Banner tone="muted" icon="progress-wrench" text="Slicer engine is still starting." />
+          ) : null}
+
+          {!mwAuthed ? (
+            <Banner
+              tone="muted"
+              icon="cloud-off-outline"
+              text="MakerWorld login is in Settings — required to import shared models."
+              action="Settings"
+              onAction={() => router.push('/settings')}
+            />
+          ) : null}
+
           {printStart.state === 'error' ? (
-            <Text style={[styles.value, styles.bad]}>{printStart.message}</Text>
+            <Banner tone="bad" icon="printer-alert" text={printStart.message} />
           ) : null}
-        </View>
+
+          {download.message && !toolLoad.blockReason ? (
+            <Text
+              style={[
+                styles.status,
+                download.state === 'success'
+                  ? { color: P.success }
+                  : download.state === 'error'
+                    ? { color: P.danger }
+                    : { color: P.dim },
+              ]}
+            >
+              {download.message}
+            </Text>
+          ) : null}
+
+          {sharedLink?.makerWorldUrl && !hasModel && download.state !== 'downloading' ? (
+            <Secondary
+              icon="download"
+              label="Import from link"
+              accent
+              onPress={() => startDownload(sharedLink.makerWorldUrl!, true)}
+            />
+          ) : null}
+
+          {hasModel && plates.length > 1 ? (
+            <PlateStrip
+              plates={plates}
+              selectedId={selectedPlate?.id ?? null}
+              onPick={choosePlate}
+              disabled={extracting}
+            />
+          ) : null}
+
+          <StatRow
+            on={sliced || embeddedStats !== null}
+            layers={
+              sliced
+                ? String(slice.result.totalLayers)
+                : embeddedStats && embeddedStats.layers > 0
+                  ? String(embeddedStats.layers)
+                  : null
+            }
+            time={
+              sliced
+                ? formatDuration(slice.result.estimatedTimeSeconds)
+                : embeddedStats && embeddedStats.timeSeconds > 0
+                  ? formatDuration(embeddedStats.timeSeconds)
+                  : null
+            }
+            grams={
+              sliced
+                ? `${slice.result.estimatedFilamentGrams.toFixed(1)} g`
+                : embeddedStats && embeddedStats.grams > 0
+                  ? `${embeddedStats.grams.toFixed(1)} g`
+                  : null
+            }
+          />
+
+          <ToolRail slots={filamentSlots} onEdit={setEditingSlot} />
+
+          {sliced ? <Secondary icon="close" label="Cancel slice" onPress={dismissSlice} /> : null}
+        </ScrollView>
+      </SafeAreaView>
+
+      <ActionBar
+        icon={primaryAction.icon}
+        label={primaryAction.label}
+        enabled={primaryAction.enabled}
+        onPress={primaryAction.onPress}
+        bottomInset={0}
+      />
+
+      {editingSlot != null ? (
+        <FilamentEditor slot={editingSlot} onClose={() => setEditingSlot(null)} />
       ) : null}
-    </ScrollView>
 
     {extracting ? (
       <View style={styles.prepareOverlay}>
         <View style={styles.prepareCard}>
+          <View style={styles.prepareIcon}>
+            <MaterialCommunityIcons name="cube-scan" size={26} color={P.accent} />
+          </View>
           <Text style={styles.prepareTitle}>
             {selectedPlate ? `Preparing ${selectedPlate.name}` : 'Preparing model'}
           </Text>
@@ -1175,7 +1170,7 @@ export default function SliceLabScreen() {
             </>
           ) : (
             <>
-              <ActivityIndicator size="large" color={colors.primary} />
+              <ActivityIndicator size="large" color={P.accent} />
               <Text style={styles.prepareSub}>Opening slicer…</Text>
             </>
           )}
@@ -1211,9 +1206,12 @@ export default function SliceLabScreen() {
       errorMessage={printStart.state === 'error' ? printStart.message : null}
       onSend={uploadAndPrint}
     />
-    </>
+    {alertDialog}
+    </View>
   );
 }
+
+function noop() {}
 
 function buildPrinterUploadFilename(sourceName: string | null | undefined, gcodePath: string): string {
   const source = sourceName?.trim() || fileBaseName(gcodePath) || 'print';
@@ -1471,368 +1469,64 @@ function maskToTools(mask: number): string {
 }
 
 const styles = StyleSheet.create({
-  screen: {
-    flex: 1,
-    backgroundColor: colors.bg,
-  },
-  content: {
-    padding: spacing.lg,
-    paddingBottom: spacing.xl + 80,
-    gap: spacing.md,
-  },
-  card: {
-    backgroundColor: colors.card,
-    borderColor: colors.border,
-    borderWidth: 1,
-    borderRadius: 8,
-    padding: spacing.md,
-    gap: spacing.sm,
-  },
-  loadingRow: {
-    minHeight: 48,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-  },
+  root: { flex: 1, backgroundColor: P.bg },
+  flex: { flex: 1 },
+  // Bottom padding clears the pinned action bar.
+  content: { padding: PAGE, paddingBottom: 108, gap: 11, flexGrow: 1 },
+  status: { fontSize: 12, fontWeight: '700' },
+
+  // Prepare overlay, restyled into the Cockpit palette with the rest of the tab.
+  // Kept as a full-screen block rather than folded inline: extraction locks the
+  // screen anyway, and the sayings need somewhere to live.
   prepareOverlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(8, 10, 12, 0.82)',
-    justifyContent: 'center',
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: alpha('#000000', 0.74),
     alignItems: 'center',
-    padding: spacing.lg,
+    justifyContent: 'center',
+    padding: 28,
   },
   prepareCard: {
-    backgroundColor: colors.card,
-    borderColor: colors.border,
+    width: '100%',
+    maxWidth: 380,
+    borderRadius: 24,
     borderWidth: 1,
-    borderRadius: 14,
-    padding: spacing.lg,
-    width: '82%',
-    maxWidth: 340,
+    borderColor: P.border,
+    backgroundColor: P.surface,
+    padding: 22,
+    gap: 13,
     alignItems: 'center',
-    gap: spacing.md,
+  },
+  prepareIcon: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: alpha(P.accent, 0.12),
   },
   prepareTitle: {
-    color: colors.text,
-    fontSize: 15,
-    lineHeight: 19,
+    color: P.text,
+    fontSize: 19,
     fontWeight: '800',
+    letterSpacing: -0.4,
     textAlign: 'center',
   },
+  prepareSub: { color: P.dim, fontSize: 13, fontWeight: '600' },
   progressTrack: {
     width: '100%',
     height: 8,
     borderRadius: 4,
-    backgroundColor: colors.border,
+    backgroundColor: P.surfaceAlt,
     overflow: 'hidden',
   },
-  progressFill: {
-    height: '100%',
-    borderRadius: 4,
-    backgroundColor: colors.primary,
-  },
-  progressPct: {
-    color: colors.text,
-    fontSize: 22,
-    lineHeight: 26,
-    fontWeight: '800',
-    fontVariant: ['tabular-nums'],
-    textAlign: 'center',
-  },
-  preparePhase: {
-    color: colors.subtext,
-    fontSize: 13,
-    lineHeight: 17,
-    fontWeight: '600',
-    textAlign: 'center',
-  },
+  progressFill: { height: '100%', borderRadius: 4, backgroundColor: P.accent },
+  progressPct: { color: P.text, fontSize: 30, fontWeight: '800', letterSpacing: -1 },
+  preparePhase: { color: P.accent, fontSize: 12, fontWeight: '800', textAlign: 'center' },
   prepareSaying: {
-    color: colors.subtext,
+    color: P.dim,
     fontSize: 12,
-    lineHeight: 16,
+    fontWeight: '600',
     fontStyle: 'italic',
-    fontWeight: '500',
     textAlign: 'center',
-  },
-  prepareSub: {
-    color: colors.subtext,
-    fontSize: 12,
-    lineHeight: 16,
-    fontWeight: '600',
-    textAlign: 'center',
-  },
-  body: {
-    color: colors.text,
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: '700',
-  },
-  sectionTitle: {
-    color: colors.text,
-    fontSize: 14,
-    lineHeight: 18,
-    fontWeight: '800',
-  },
-  linkText: {
-    color: colors.primary,
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: '700',
-  },
-  mutedText: {
-    color: colors.subtext,
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: '700',
-  },
-  loadedRow: {
-    gap: spacing.xs,
-    paddingTop: spacing.xs,
-  },
-  loadedLabel: {
-    color: colors.subtext,
-    fontSize: 11,
-    lineHeight: 14,
-    fontWeight: '800',
-    textTransform: 'uppercase',
-  },
-  toolBadges: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: spacing.xs,
-  },
-  toolBadge: {
-    minWidth: 70,
-    borderRadius: 7,
-    borderWidth: 1,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: 7,
-    gap: 2,
-  },
-  toolBadgeLoaded: {
-    backgroundColor: '#13251a',
-    borderColor: '#245f3b',
-  },
-  toolBadgeEmpty: {
-    backgroundColor: '#2a1b1b',
-    borderColor: '#653030',
-  },
-  toolBadgeBusy: {
-    backgroundColor: '#332a16',
-    borderColor: '#624f22',
-  },
-  toolBadgeUnknown: {
-    backgroundColor: colors.cardAlt,
-    borderColor: colors.border,
-  },
-  toolBadgeName: {
-    color: colors.text,
-    fontSize: 12,
-    lineHeight: 15,
-    fontWeight: '900',
-  },
-  toolBadgeStatus: {
-    color: colors.subtext,
-    fontSize: 11,
-    lineHeight: 14,
-    fontWeight: '700',
-    textTransform: 'capitalize',
-  },
-  mutedValue: {
-    color: colors.subtext,
-  },
-  rawText: {
-    color: colors.subtext,
-    fontSize: 12,
-    lineHeight: 17,
-    fontWeight: '600',
-  },
-  previewRow: {
-    minHeight: 76,
-    borderRadius: 8,
-    backgroundColor: colors.cardAlt,
-    borderColor: colors.border,
-    borderWidth: 1,
-    padding: spacing.sm,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-  },
-  slicePreview: {
-    width: '100%',
-    height: 180,
-    borderRadius: 10,
-    backgroundColor: '#0d0f12',
-    marginBottom: spacing.sm,
-  },
-  plateSection: {
-    marginTop: spacing.sm,
-    gap: spacing.xs,
-  },
-  plateHeading: {
-    color: colors.subtext,
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  plateRow: {
-    gap: spacing.sm,
-    paddingVertical: spacing.xs,
-    paddingRight: spacing.sm,
-  },
-  plateCard: {
-    width: 104,
-    borderRadius: 12,
-    padding: spacing.xs,
-    backgroundColor: colors.bg,
-    borderWidth: 2,
-    borderColor: 'transparent',
-  },
-  plateCardActive: {
-    borderColor: colors.primary,
-  },
-  plateThumb: {
-    width: '100%',
-    height: 88,
-    borderRadius: 8,
-    backgroundColor: '#0d0f12',
-  },
-  platePlaceholder: {
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  plateName: {
-    color: colors.text,
-    fontSize: 12,
-    fontWeight: '700',
-    marginTop: 4,
-  },
-  plateMeta: {
-    color: colors.subtext,
-    fontSize: 11,
-    marginTop: 1,
-  },
-  plateCheck: {
-    position: 'absolute',
-    top: spacing.xs + 2,
-    right: spacing.xs + 2,
-    backgroundColor: colors.bg,
-    borderRadius: 10,
-  },
-  previewImage: {
-    width: 58,
-    height: 58,
-    borderRadius: 6,
-    backgroundColor: colors.bg,
-  },
-  previewPlaceholder: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderColor: colors.border,
-    borderWidth: 1,
-  },
-  previewText: {
-    flex: 1,
-    gap: 3,
-  },
-  previewTitle: {
-    color: colors.text,
-    fontSize: 14,
-    lineHeight: 18,
-    fontWeight: '800',
-  },
-  previewPath: {
-    color: colors.subtext,
-    fontSize: 11,
-    lineHeight: 15,
-    fontWeight: '600',
-  },
-  row: {
-    gap: 4,
-    paddingVertical: spacing.sm,
-    borderBottomColor: colors.border,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-  },
-  label: {
-    color: colors.subtext,
-    fontSize: 11,
-    lineHeight: 14,
-    fontWeight: '800',
-    textTransform: 'uppercase',
-  },
-  value: {
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: '700',
-  },
-  good: {
-    color: colors.success,
-  },
-  bad: {
-    color: colors.warning,
-  },
-  button: {
-    minHeight: 46,
-    borderRadius: 8,
-    backgroundColor: colors.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexDirection: 'row',
-    gap: spacing.sm,
-  },
-  buttonOff: {
-    opacity: 0.4,
-  },
-  secondaryButton: {
-    minHeight: 42,
-    borderRadius: 8,
-    backgroundColor: colors.cardAlt,
-    borderColor: colors.border,
-    borderWidth: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexDirection: 'row',
-    gap: spacing.sm,
-  },
-  buttonText: {
-    color: colors.text,
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: '800',
-  },
-  fileName: {
-    color: colors.text,
-    fontSize: 14,
-    fontWeight: '700',
-    marginTop: spacing.xs,
-  },
-  modelFileRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: spacing.sm,
-  },
-  modelFileName: {
-    flex: 1,
-    marginTop: 0,
-  },
-  hintText: {
-    color: colors.subtext,
-    fontSize: 12,
-    lineHeight: 16,
-    marginTop: spacing.sm,
-  },
-  hintLink: {
-    color: colors.primary,
-    fontWeight: '700',
-    textDecorationLine: 'underline',
-  },
-  statsLine: {
-    color: colors.subtext,
-    fontSize: 13,
-    marginBottom: spacing.sm,
   },
 });

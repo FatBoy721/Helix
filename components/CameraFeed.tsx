@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Image, Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { WebView, type WebViewMessageEvent } from 'react-native-webview';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as MediaLibrary from 'expo-media-library';
 import * as ScreenOrientation from 'expo-screen-orientation';
@@ -222,6 +223,12 @@ var SRC = ${JSON.stringify(snapshotUrl)};
 var loading = false;
 var requestTimer = null;
 var paused = window.__helixScreenPaused === true;
+// Polling the printer's screen service too fast overloads its touchscreen
+// (the physical panel can freeze). Idle gently; burst briefly after a touch
+// so the mirror reflects taps/drags, then back off.
+var IDLE_MS = 1500, FAST_MS = 160, FAST_WINDOW_MS = 2500;
+var fastUntil = 0, lastPoll = 0;
+function armFastBurst() { fastUntil = Date.now() + FAST_WINDOW_MS; }
 function bust(u) { return u + '?n=' + Date.now(); }
 function setStatus(t) { statusEl.textContent = t; statusEl.style.display = t ? 'block' : 'none'; }
 function finish(ok) {
@@ -244,12 +251,18 @@ window.helixSetScreenPaused = function (nextPaused) {
     setStatus('');
     return;
   }
+  armFastBurst();
+  lastPoll = Date.now();
   poll();
 };
-setInterval(function () {
-  if (!paused) poll();
-}, 100);
-if (!paused) poll();
+function adaptiveTick() {
+  if (paused) return;
+  var now = Date.now();
+  var gap = now < fastUntil ? FAST_MS : IDLE_MS;
+  if (now - lastPoll >= gap) { lastPoll = now; poll(); }
+}
+setInterval(adaptiveTick, 100);
+if (!paused) { lastPoll = Date.now(); poll(); }
 function getImageCoords(clientX, clientY) {
   var rect = img.getBoundingClientRect();
   if (!rect.width || !rect.height || !img.naturalWidth || !img.naturalHeight) return null;
@@ -280,6 +293,7 @@ async function flushTouch() {
 function sendTouch(action, x, y) {
   // Keep down/up ordering, but replace queued move events with the newest
   // coordinates so slow printer responses cannot build a stale touch backlog.
+  armFastBurst();
   pendingTouch = { action: action, x: x, y: y };
   flushTouch();
 }
@@ -354,6 +368,7 @@ export default function CameraFeed({
   chromeless,
   radius,
 }: Props) {
+  const insets = useSafeAreaInsets();
   const frame = [
     chromeless && styles.chromeless,
     radius != null && { borderRadius: radius },
@@ -575,16 +590,11 @@ export default function CameraFeed({
       <TouchableOpacity style={styles.ctrlBtn} onPress={() => setNonce((n) => n + 1)}>
         <MaterialCommunityIcons name="refresh" size={20} color={colors.text} />
       </TouchableOpacity>
-      <TouchableOpacity
-        style={styles.ctrlBtn}
-        onPress={fullscreen ? closeFullscreen : openFullscreen}
-      >
-        <MaterialCommunityIcons
-          name={fullscreen ? 'fullscreen-exit' : 'fullscreen'}
-          size={20}
-          color={colors.text}
-        />
-      </TouchableOpacity>
+      {!fullscreen ? (
+        <TouchableOpacity style={styles.ctrlBtn} onPress={openFullscreen}>
+          <MaterialCommunityIcons name="fullscreen" size={20} color={colors.text} />
+        </TouchableOpacity>
+      ) : null}
     </View>
   );
 
@@ -619,6 +629,13 @@ export default function CameraFeed({
           {fullscreen && feed}
           {statsPanel}
           {controls}
+          <TouchableOpacity
+            style={[styles.fullscreenClose, { top: insets.top + 12 }]}
+            hitSlop={10}
+            onPress={closeFullscreen}
+          >
+            <MaterialCommunityIcons name="close" size={21} color={colors.text} />
+          </TouchableOpacity>
         </View>
       </Modal>
       {alertDialog}
@@ -698,6 +715,18 @@ const styles = StyleSheet.create({
   fullscreenContainer: {
     flex: 1,
     backgroundColor: '#000',
+  },
+  fullscreenClose: {
+    position: 'absolute',
+    right: 14,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: 'rgba(0,0,0,0.66)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   statsPanel: {
     position: 'absolute',

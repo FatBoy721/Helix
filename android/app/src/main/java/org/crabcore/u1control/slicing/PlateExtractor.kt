@@ -770,6 +770,89 @@ object PlateExtractor {
     return "data:image/png;base64," + android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
   }
 
+  // ------------------------------------------------------------------
+  // Embedded slice stats
+  //
+  // Bambu/Orca 3MFs (everything MakerWorld serves) carry the already-sliced
+  // plate G-code at Metadata/plate_<id>.gcode, and its header comments hold
+  // the layer count, estimated time and filament use. Reading those lets the
+  // app show real numbers for a picked file BEFORE any in-app slicing.
+  // ------------------------------------------------------------------
+
+  data class PlateStats(
+    val id: Int,
+    val layers: Int,
+    val timeSeconds: Int,
+    val grams: Double,
+  )
+
+  private val STAT_LAYERS =
+    Regex(";\\s*total layer number\\s*[:=]\\s*(\\d+)", RegexOption.IGNORE_CASE)
+  private val STAT_TIME =
+    Regex(";\\s*estimated printing time[^=\\n]*=\\s*([^\\n]+)", RegexOption.IGNORE_CASE)
+  private val STAT_GRAMS_TOTAL =
+    Regex(";\\s*total filament used \\[g\\]\\s*[:=]\\s*([\\d.]+)", RegexOption.IGNORE_CASE)
+  private val STAT_GRAMS_LIST =
+    Regex(";\\s*filament used \\[g\\]\\s*=\\s*([\\d.,\\s]+)", RegexOption.IGNORE_CASE)
+  private val TIME_TOKEN = Regex("(\\d+)\\s*([dhms])", RegexOption.IGNORE_CASE)
+
+  /** Stats per plate with embedded G-code; plates without stats are omitted. */
+  fun readPlateStats(file: File): List<PlateStats> {
+    val out = ArrayList<PlateStats>()
+    for (plate in readPlates(file)) {
+      // Header comments live in the first few KB; the plate body can be tens
+      // of MB, so never read the whole entry.
+      val head = readEntryHead(file, "Metadata/plate_${plate.id}.gcode", 256 * 1024) ?: continue
+      val layers = STAT_LAYERS.find(head)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+      val timeSeconds = parseDurationSeconds(STAT_TIME.find(head)?.groupValues?.get(1)) ?: 0
+      val grams = STAT_GRAMS_TOTAL.find(head)?.groupValues?.get(1)?.toDoubleOrNull()
+        ?: STAT_GRAMS_LIST.find(head)?.groupValues?.get(1)
+          ?.split(',')?.sumOf { it.trim().toDoubleOrNull() ?: 0.0 }
+        ?: 0.0
+      if (layers > 0 || timeSeconds > 0 || grams > 0.0) {
+        out.add(PlateStats(plate.id, layers, timeSeconds, grams))
+      }
+    }
+    return out
+  }
+
+  /** "1h 2m 3s" (any subset/order of d/h/m/s tokens) → seconds, or null. */
+  private fun parseDurationSeconds(raw: String?): Int? {
+    if (raw.isNullOrBlank()) return null
+    var total = 0
+    var matched = false
+    for (match in TIME_TOKEN.findAll(raw)) {
+      val value = match.groupValues[1].toIntOrNull() ?: continue
+      matched = true
+      total += when (match.groupValues[2].lowercase()) {
+        "d" -> value * 86400
+        "h" -> value * 3600
+        "m" -> value * 60
+        else -> value
+      }
+    }
+    return if (matched) total else null
+  }
+
+  private fun readEntryHead(file: File, entryName: String, maxBytes: Int): String? = try {
+    ZipFile(file).use { zip ->
+      zip.getEntry(entryName)?.let { entry ->
+        zip.getInputStream(entry).buffered().use { input ->
+          val buffer = ByteArray(maxBytes)
+          var offset = 0
+          while (offset < maxBytes) {
+            val read = input.read(buffer, offset, maxBytes - offset)
+            if (read < 0) break
+            offset += read
+          }
+          String(buffer, 0, offset, Charsets.UTF_8)
+        }
+      }
+    }
+  } catch (_: Throwable) {
+    null
+  }
+
   /** Parse a 3MF 3×4 transform (12 row-major values); identity when absent. */
   private fun parseTransform(s: String?): DoubleArray {
     val t = DoubleArray(12)

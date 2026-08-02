@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import {
   FlatList,
   KeyboardAvoidingView,
@@ -8,8 +8,8 @@ import {
   TextInput,
   TouchableOpacity,
   View,
+  useWindowDimensions,
 } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { t } from '../services/i18n';
 import { colors, spacing } from '../constants/theme';
@@ -31,8 +31,8 @@ interface Props {
   clearable?: boolean;
 }
 
-// bottom-sheet picker. RN has no styled native dropdown and the chip walls
-// were getting out of hand once the lists grew past ~8 entries.
+// Layer picker. RN has no styled native dropdown and the chip walls were
+// getting out of hand once the lists grew past ~8 entries.
 // crabcore
 export default function Dropdown({
   label,
@@ -44,9 +44,9 @@ export default function Dropdown({
 }: Props) {
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState('');
-  // Issue #5: bottom sheets draw edge-to-edge, so pad past the Android nav bar.
-  const insets = useSafeAreaInsets();
-
+  const [anchor, setAnchor] = useState({ x: spacing.lg, y: 100, width: 320, height: 48 });
+  const triggerRef = useRef<React.ElementRef<typeof TouchableOpacity>>(null);
+  const window = useWindowDimensions();
   const selected = options.find((o) => o.key === value) ?? null;
   const searchable = options.length > 8;
 
@@ -60,10 +60,24 @@ export default function Dropdown({
     setFilter('');
   };
 
+  const openPicker = () => {
+    triggerRef.current?.measureInWindow((x, y, width, height) => {
+      setAnchor({ x, y, width, height });
+      setOpen(true);
+    });
+  };
+
+  const belowSpace = window.height - anchor.y - anchor.height - 12;
+  const opensAbove = belowSpace < 220;
+  const popoverMaxHeight = Math.max(
+    160,
+    Math.min(window.height * 0.55, opensAbove ? anchor.y - 12 : belowSpace)
+  );
+
   return (
     <View style={styles.field}>
       <Text style={styles.label}>{label}</Text>
-      <TouchableOpacity style={styles.trigger} onPress={() => setOpen(true)}>
+      <TouchableOpacity ref={triggerRef} style={styles.trigger} onPress={openPicker}>
         {selected?.color ? (
           <View style={[styles.dot, { backgroundColor: selected.color }]} />
         ) : null}
@@ -78,69 +92,96 @@ export default function Dropdown({
         <MaterialCommunityIcons name="chevron-down" size={20} color={colors.subtext} />
       </TouchableOpacity>
 
-      <Modal visible={open} transparent animationType="fade" onRequestClose={close}>
-        {/* Modal hosts its own window, so the activity's keyboard resize doesn't
-            apply — lift the sheet above the keyboard ourselves (issue #5). */}
+      <Modal
+        visible={open}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={close}
+      >
         <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
           <TouchableOpacity style={styles.overlay} activeOpacity={1} onPress={close}>
             <View
-              style={[styles.sheet, { paddingBottom: spacing.xl + insets.bottom }]}
+              style={[
+                styles.anchorField,
+                { left: anchor.x, top: anchor.y, width: anchor.width, height: anchor.height },
+              ]}
               onStartShouldSetResponder={() => true}
             >
-            <View style={styles.sheetHeader}>
-              <Text style={styles.sheetTitle}>{label}</Text>
-              <TouchableOpacity hitSlop={8} onPress={close}>
-                <MaterialCommunityIcons name="close" size={20} color={colors.subtext} />
-              </TouchableOpacity>
+              {selected?.color ? (
+                <View style={[styles.dot, { backgroundColor: selected.color }]} />
+              ) : null}
+              <Text
+                style={[styles.triggerText, !selected && { color: colors.subtext }]}
+                numberOfLines={1}
+              >
+                {selected?.label ?? placeholder ?? t('Select…')}
+              </Text>
+              <MaterialCommunityIcons name="chevron-up" size={20} color={colors.primary} />
             </View>
-            {searchable && (
-              <TextInput
-                style={styles.search}
-                value={filter}
-                onChangeText={setFilter}
-                placeholder={t('Search…')}
-                placeholderTextColor={colors.subtext}
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
-            )}
-            <FlatList
-              data={visible}
-              keyExtractor={(o) => o.key}
-              style={styles.list}
-              keyboardShouldPersistTaps="handled"
-              renderItem={({ item }) => {
-                const isSel = item.key === value;
-                return (
-                  <TouchableOpacity
-                    style={[styles.row, isSel && styles.rowSelected]}
-                    onPress={() => {
-                      onSelect(item.key);
-                      close();
-                    }}
-                  >
-                    {item.color ? (
-                      <View style={[styles.dot, { backgroundColor: item.color }]} />
-                    ) : null}
-                    <Text
-                      style={[
-                        styles.rowText,
-                        item.dimmed && { color: colors.subtext },
-                        isSel && { color: colors.primary, fontWeight: '700' },
-                      ]}
-                      numberOfLines={1}
+
+            <View
+              style={[
+                styles.popover,
+                {
+                  left: anchor.x,
+                  width: anchor.width,
+                  maxHeight: popoverMaxHeight,
+                  ...(opensAbove
+                    ? { bottom: window.height - anchor.y }
+                    : { top: anchor.y + anchor.height }),
+                },
+              ]}
+              onStartShouldSetResponder={() => true}
+            >
+              {searchable && (
+                <TextInput
+                  style={styles.search}
+                  value={filter}
+                  onChangeText={setFilter}
+                  placeholder={t('Search…')}
+                  placeholderTextColor={colors.subtext}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+              )}
+              <FlatList
+                data={visible}
+                keyExtractor={(o) => o.key}
+                style={styles.list}
+                keyboardShouldPersistTaps="handled"
+                renderItem={({ item }) => {
+                  const isSel = item.key === value;
+                  return (
+                    <TouchableOpacity
+                      style={[styles.row, isSel && styles.rowSelected]}
+                      onPress={() => {
+                        onSelect(item.key);
+                        close();
+                      }}
                     >
-                      {item.label}
-                    </Text>
-                    {item.hint ? <Text style={styles.hint}>{item.hint}</Text> : null}
-                    {isSel && (
-                      <MaterialCommunityIcons name="check" size={18} color={colors.primary} />
-                    )}
-                  </TouchableOpacity>
-                );
-              }}
-              ListEmptyComponent={<Text style={styles.empty}>{t('No matches')}</Text>}
-            />
+                      {item.color ? (
+                        <View style={[styles.dot, { backgroundColor: item.color }]} />
+                      ) : null}
+                      <Text
+                        style={[
+                          styles.rowText,
+                          item.dimmed && { color: colors.subtext },
+                          isSel && { color: colors.primary, fontWeight: '700' },
+                        ]}
+                        numberOfLines={1}
+                      >
+                        {item.label}
+                      </Text>
+                      {item.hint ? <Text style={styles.hint}>{item.hint}</Text> : null}
+                      {isSel && (
+                        <MaterialCommunityIcons name="check" size={18} color={colors.primary} />
+                      )}
+                    </TouchableOpacity>
+                  );
+                }}
+                ListEmptyComponent={<Text style={styles.empty}>{t('No matches')}</Text>}
+              />
             </View>
           </TouchableOpacity>
         </KeyboardAvoidingView>
@@ -184,31 +225,31 @@ const styles = StyleSheet.create({
   },
   overlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.6)',
-    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(0,0,0,0.35)',
   },
-  sheet: {
-    backgroundColor: colors.bg,
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
-    paddingTop: spacing.md,
-    paddingHorizontal: spacing.lg,
-    paddingBottom: spacing.xl,
-    maxHeight: '70%',
-  },
-  sheetHeader: {
+  anchorField: {
+    position: 'absolute',
+    zIndex: 2,
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: spacing.sm,
+    gap: spacing.sm,
+    backgroundColor: colors.card,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.primary,
+    paddingHorizontal: spacing.md,
   },
-  sheetTitle: {
-    color: colors.text,
-    fontSize: 15,
-    fontWeight: '700',
+  popover: {
+    position: 'absolute',
+    zIndex: 1,
+    backgroundColor: colors.card,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: colors.border,
+    overflow: 'hidden',
   },
   search: {
-    backgroundColor: colors.card,
+    backgroundColor: colors.cardAlt,
     borderRadius: 8,
     borderWidth: 1,
     borderColor: colors.border,
@@ -216,7 +257,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
     fontSize: 14,
-    marginBottom: spacing.sm,
+    margin: spacing.sm,
   },
   list: {
     flexGrow: 0,
@@ -225,9 +266,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.sm,
-    paddingVertical: spacing.md,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.border,
+    height: 52,
+    paddingHorizontal: 16,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
   },
   rowSelected: {},
   rowText: {

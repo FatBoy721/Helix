@@ -1,6 +1,6 @@
 // Settings export/import for migrating between installs (e.g. the one-time
-// signing-key reinstall). Export shares a JSON file; import accepts pasted
-// JSON and runs it through the normal settings migration.
+// signing-key reinstall). Export shares a JSON file; import reads that file
+// through the system document picker and runs it through normal migration.
 
 import { DEFAULT_SETTINGS, migrateSettings } from './settingsMigration';
 import type { Settings } from './settingsMigration';
@@ -25,8 +25,8 @@ export function buildSettingsBackup(settings: Settings): string {
 }
 
 /**
- * Parses pasted backup text. Accepts the wrapped backup format or a raw
- * settings object (the AsyncStorage blob), so a tester can paste either.
+ * Parses backup JSON. Accepts the wrapped backup format or a raw settings
+ * object (the AsyncStorage blob), so older/manual backups still restore.
  * Throws with a user-readable message when the text is not a Helix backup.
  */
 export function parseSettingsBackup(text: string): Settings {
@@ -34,7 +34,7 @@ export function parseSettingsBackup(text: string): Settings {
   try {
     parsed = JSON.parse(text.trim());
   } catch {
-    throw new Error('That is not valid JSON. Paste the whole backup text.');
+    throw new Error('The selected file does not contain valid JSON.');
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error('That does not look like a Helix settings backup.');
@@ -52,6 +52,27 @@ export function parseSettingsBackup(text: string): Settings {
   }
 
   return migrateSettings(raw as Partial<Settings>);
+}
+
+/** Opens the system file picker and returns validated, migrated settings. */
+export async function pickSettingsBackup(): Promise<Settings | null> {
+  const DocumentPicker = await import('expo-document-picker');
+  const FileSystem = await import('expo-file-system/legacy');
+  const result = await DocumentPicker.getDocumentAsync({
+    type: ['application/json', 'text/json', 'text/plain'],
+    copyToCacheDirectory: true,
+    multiple: false,
+  });
+
+  if (result.canceled || !result.assets[0]) return null;
+
+  const file = result.assets[0];
+  if (typeof file.size === 'number' && file.size > 2 * 1024 * 1024) {
+    throw new Error('That backup is too large. Helix settings backups should be under 2 MB.');
+  }
+
+  const text = await FileSystem.readAsStringAsync(file.uri);
+  return parseSettingsBackup(text);
 }
 
 /** Writes the backup JSON to a temp file and opens the Android share sheet. */

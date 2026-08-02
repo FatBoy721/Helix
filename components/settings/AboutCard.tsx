@@ -5,7 +5,9 @@ import Constants from 'expo-constants';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import ThemedDialog, { DialogAction } from '../ThemedDialog';
 import { ProgressBar } from '../ui';
-import { colors, spacing } from '../../constants/theme';
+import { colors, spacing } from './cockpitTheme';
+import ChangelogDialog from './ChangelogDialog';
+import { useNotifications } from '../../hooks/useNotifications';
 import { DownloadProgress, downloadAndOpenApk, openUrl } from '../../services/apkInstaller';
 import { t } from '../../services/i18n';
 import {
@@ -47,11 +49,13 @@ function githubUpdatesEnabled(): boolean {
 }
 
 export default function AboutCard() {
+  const notifications = useNotifications();
   const [checkingUpdates, setCheckingUpdates] = useState(false);
   const [downloadingUpdate, setDownloadingUpdate] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState<DownloadProgress | null>(null);
   const [progressVisible, setProgressVisible] = useState(true);
   const [dialog, setDialog] = useState<DialogState | null>(null);
+  const [changelogOpen, setChangelogOpen] = useState(false);
   const lastPctRef = useRef(-1);
   const currentBuild = buildCommit();
   const canInstallGitHubApk = githubUpdatesEnabled();
@@ -284,6 +288,11 @@ export default function AboutCard() {
           </Text>
           <MaterialCommunityIcons name="download-outline" size={16} color={colors.subtext} />
         </TouchableOpacity>
+        <TouchableOpacity style={styles.linkRow} onPress={() => setChangelogOpen(true)}>
+          <MaterialCommunityIcons name="history" size={20} color={colors.text} />
+          <Text style={styles.linkText}>{t('Changelog')}</Text>
+          <MaterialCommunityIcons name="chevron-right" size={16} color={colors.subtext} />
+        </TouchableOpacity>
         <TouchableOpacity style={styles.linkRow} onPress={() => openUrl(REPO_URL).catch(() => {})}>
           <MaterialCommunityIcons name="github" size={20} color={colors.text} />
           <Text style={styles.linkText}>GitHub - Helix</Text>
@@ -318,6 +327,11 @@ export default function AboutCard() {
           {currentBuild && currentBuild !== 'dev' ? ` (${currentBuild.slice(0, 7)})` : ''}
         </Text>
       </View>
+      <ChangelogDialog
+        visible={changelogOpen}
+        items={notifications.changelog}
+        onClose={() => setChangelogOpen(false)}
+      />
       <ThemedDialog
         visible={!!dialog}
         title={dialog?.title ?? ''}

@@ -9,27 +9,23 @@ import android.graphics.Paint
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
-import android.content.res.ColorStateList
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
-import android.widget.CheckBox
 import android.widget.FrameLayout
-import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
 import org.json.JSONObject
 import org.crabcore.u1control.MainActivity
-import org.crabcore.u1control.R
 import com.u1.slicer.gcode.GcodeParser
 import com.u1.slicer.gcode.ParsedGcode
 import com.u1.slicer.viewer.GcodeViewerView
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.File
 import java.net.URLEncoder
@@ -77,6 +73,10 @@ class HelixGcodePreviewActivity : Activity() {
   // Print-dialog tool→slot mapping: index = the tool the slicer used, value =
   // the physical U1 slot the user picked for it. Identity until changed.
   private val toolSlotMap = intArrayOf(0, 1, 2, 3)
+
+  // The Ticket-style preprocess sheet; held so the upload thread can drive its
+  // progress overlay, and nulled once the send resolves or the sheet dismisses.
+  private var preprocessSheet: HelixPreprocessSheet? = null
 
   // Keep the model's name on the uploaded file (engine always writes output.gcode).
   private fun deriveUploadName(title: String?): String {
@@ -331,251 +331,78 @@ class HelixGcodePreviewActivity : Activity() {
   // ---------- Print Preprocessing dialog ----------
 
   private fun showPrintPreprocessDialog() {
-    HelixThemedDialog.showFloatingCenter(
-      activity = this,
-      accent = accentColor,
-      title = "Print Preprocessing",
-      iconRes = R.drawable.ic_print,
-      content = buildPreprocessContent(),
-      secondaryLabel = "Cancel",
-      primaryLabel = "Print",
-      onPrimary = { sendToPrinter(true) },
-    )
-  }
-
-  private fun buildPreprocessContent(): View {
-    fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
-
-    val root = LinearLayout(this).apply {
-      orientation = LinearLayout.VERTICAL
-    }
-
-    fun sectionTitle(text: String) = TextView(this).apply {
-      this.text = text
-      textSize = 13f
-      setTextColor(HelixAppTheme.TEXT)
-      typeface = android.graphics.Typeface.DEFAULT_BOLD
-      setPadding(0, dp(12), 0, dp(6))
-    }
-
-    // Model information ------------------------------------------------------
-    root.addView(sectionTitle("Model Information"))
-    root.addView(TextView(this).apply {
-      val mins = (LastSliceStore.estimatedTimeSeconds / 60f).toInt()
-      val grams = LastSliceStore.estimatedFilamentGrams
-      // Effective config the ENGINE actually sliced with (echoed in the gcode
-      // footer) — proves whether profile overrides like ironing really landed.
-      val ironing = findGcodeConfigLine(Regex("""ironing_type\s*=\s*(.+)""", RegexOption.IGNORE_CASE))
-      val infillPat = findGcodeConfigLine(Regex("""sparse_infill_pattern\s*=\s*(.+)""", RegexOption.IGNORE_CASE))
-      val cfgBits = listOfNotNull(
-        infillPat?.let { "infill $it" },
-        ironing?.let { "ironing $it" },
-      ).joinToString(" · ")
-      text = "$uploadName\n${mins} min  ·  ${String.format("%.1f", grams)} g  ·  ${LastSliceStore.totalLayers} layers" +
-        if (cfgBits.isNotEmpty()) "\n$cfgBits" else ""
-      textSize = 12f
-      setTextColor(HelixAppTheme.SUBTEXT)
-    })
-
-    // Printer — tap to send this print to any printer saved in Helix ---------
     val printers = HelixPrinterStore.read(this)
-    if (printers.isNotEmpty()) {
-      root.addView(sectionTitle("Printer"))
-      val printerRow = LinearLayout(this).apply {
-        orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL
-        setPadding(dp(12), dp(10), dp(12), dp(10))
-        background = GradientDrawable().apply {
-          cornerRadius = dp(10).toFloat()
-          setColor(HelixAppTheme.CARD)
-          setStroke(dp(1), HelixAppTheme.BORDER)
-        }
-        isClickable = true
-      }
-      if (moonrakerUrl.isBlank()) moonrakerUrl = printers.first().url
-
-      // Match the connected URL to a saved printer — exact first, then by host
-      // (LAN vs Tailscale URLs share a printer entry).
-      fun hostOf(u: String) = u.substringAfter("://").substringBefore('/').substringBefore(':').lowercase()
-      fun nameFor(url: String): String =
-        printers.firstOrNull { it.url.trimEnd('/') == url.trimEnd('/') }?.name
-          ?: printers.firstOrNull { hostOf(it.url) == hostOf(url) }?.name
-          ?: hostOf(url).ifBlank { "Printer" }
-
-      val printerName = TextView(this).apply {
-        text = nameFor(moonrakerUrl)
-        textSize = 13f
-        setTextColor(HelixAppTheme.TEXT)
-        typeface = android.graphics.Typeface.DEFAULT_BOLD
-      }
-      val printerStatus = TextView(this).apply {
-        text = "Checking…"
-        textSize = 11f
-        setTextColor(HelixAppTheme.SUBTEXT)
-      }
-      fun refreshPrinterStatus() {
-        printerStatus.text = "Checking…"
-        printerStatus.setTextColor(HelixAppTheme.SUBTEXT)
-        fetchPrinterState(moonrakerUrl) { state, color ->
-          runOnUiThread {
-            printerStatus.text = state
-            printerStatus.setTextColor(color)
-          }
-        }
-      }
-      refreshPrinterStatus()
-
-      val nameCol = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
-        layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-        addView(printerName)
-        addView(printerStatus)
-      }
-      printerRow.addView(ImageView(this).apply {
-        setImageResource(R.drawable.ic_print)
-        imageTintList = ColorStateList.valueOf(accentColor)
-        layoutParams = LinearLayout.LayoutParams(dp(18), dp(18)).apply { marginEnd = dp(10) }
-      })
-      printerRow.addView(nameCol)
-      printerRow.addView(TextView(this).apply {
-        text = "▾"
-        textSize = 13f
-        setTextColor(HelixAppTheme.SUBTEXT)
-      })
-      printerRow.setOnClickListener {
-        showPrinterPicker(printerRow, printers) { picked ->
-          moonrakerUrl = picked.url
-          printerName.text = picked.name
-          refreshPrinterStatus()
-        }
-      }
-      root.addView(printerRow, LinearLayout.LayoutParams(
-        LinearLayout.LayoutParams.MATCH_PARENT,
-        LinearLayout.LayoutParams.WRAP_CONTENT,
-      ))
+    if (moonrakerUrl.isBlank()) {
+      moonrakerUrl = printers.firstOrNull { it.url.isNotBlank() || it.tailscaleUrl.isNotBlank() }
+        ?.let { it.url.ifBlank { it.tailscaleUrl } } ?: ""
     }
 
-    // Filament — one card per tool the print ACTUALLY uses. Circle + card tint =
-    // the model's colour for that tool; grams/types parsed from the gcode; load
-    // state from the printer's tool mask. Row centres itself for 1–4 cards.
-    root.addView(sectionTitle("Filament"))
-    val colours = runCatching { GcodeFilamentColors.resolve(this, gcodePath, modelPath.ifBlank { null }) }
-      .getOrDefault(emptyList())
-    val grams = parsePerToolGrams()
-    val types = parseFilamentTypes()
-    val usedTools = (0..3).filter { (requiredToolMask() and (1 shl it)) != 0 }
-      .ifEmpty { listOf(initialTool.coerceIn(0, 3)) }
-
-    val filRow = LinearLayout(this).apply {
-      orientation = LinearLayout.HORIZONTAL
-      gravity = Gravity.CENTER_HORIZONTAL
-      layoutParams = LinearLayout.LayoutParams(
-        LinearLayout.LayoutParams.MATCH_PARENT,
-        LinearLayout.LayoutParams.WRAP_CONTENT,
+    val slotColors = runCatching { FilamentSlotColors.read(this) }.getOrDefault(emptyList())
+    val slotDetails = runCatching { FilamentSlotDetails.read(this) }.getOrDefault(emptyList())
+    val lanes = (0..3).map { slot ->
+      val loaded = loadedToolMask < 0 || (loadedToolMask and (1 shl slot)) != 0
+      val detail = slotDetails.getOrNull(slot)
+      PreprocessRouting.Lane(
+        index = slot,
+        color = parseHex(slotColors.getOrNull(slot) ?: "#30343A"),
+        brand = detail?.brand ?: "",
+        material = detail?.material ?: "PLA",
+        mainType = detail?.mainType ?: "",
+        subType = detail?.subType ?: "",
+        status = if (!loaded) "empty" else (detail?.status?.ifBlank { null } ?: "loaded"),
       )
     }
 
-    // Fit all used tools inside the dialog: shrink card + circle when 4-up.
-    val dialogContentW = minOf(dp(380), (resources.displayMetrics.widthPixels * 0.92f).toInt()) - dp(32)
-    val cardW = minOf(dp(88), dialogContentW / usedTools.size - dp(8))
-    val circleD = (cardW * 0.55f).toInt().coerceAtMost(dp(48))
-    usedTools.forEachIndexed { pos, tool ->
-      val hex = colours.getOrNull(tool) ?: colours.getOrNull(pos) ?: "#30343A"
-      val colour = parseHex(hex)
-      val card = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
-        gravity = Gravity.CENTER
-        setPadding(dp(10), dp(12), dp(10), dp(12))
-        background = GradientDrawable().apply {
-          cornerRadius = dp(12).toFloat()
-          // Card bathes in the model's colour, dimmed so text stays readable.
-          setColor((colour and 0x00FFFFFF) or 0x2E000000)
-          setStroke(dp(1), (colour and 0x00FFFFFF) or 0x66000000)
-        }
-      }
-      val circleBg = GradientDrawable().apply {
-        shape = GradientDrawable.OVAL
-        setColor(colour)
-        setStroke(dp(1), 0x55FFFFFF.toInt())
-      }
-      card.addView(View(this).apply {
-        background = circleBg
-        layoutParams = LinearLayout.LayoutParams(circleD, circleD)
-      })
-      card.addView(TextView(this).apply {
-        text = "T$tool"
-        textSize = 15f
-        gravity = Gravity.CENTER
-        setTextColor(HelixAppTheme.TEXT)
-        typeface = android.graphics.Typeface.DEFAULT_BOLD
-        setPadding(0, dp(6), 0, 0)
-      })
-      card.addView(TextView(this).apply {
-        text = types.getOrNull(tool)?.ifBlank { null } ?: types.getOrNull(pos)?.ifBlank { null } ?: "PLA"
-        textSize = 11f
-        maxLines = 1
-        gravity = Gravity.CENTER
-        setTextColor(HelixAppTheme.TEXT)
-      })
-      val g = grams.getOrNull(tool) ?: grams.getOrNull(pos)
-      val gramsTxt = if (g != null && g > 0) " · ${String.format("%.1f", g)}g" else ""
-      val statusView = TextView(this).apply {
-        textSize = 10f
-        gravity = Gravity.CENTER
-        setPadding(0, dp(2), 0, 0)
-      }
-      fun refreshStatus() {
-        val slot = toolSlotMap[tool]
-        val slotLoaded = loadedToolMask < 0 || (loadedToolMask and (1 shl slot)) != 0
-        val slotTxt = if (slot != tool) "→ T$slot" else if (slotLoaded) "Loaded" else "Empty"
-        statusView.text = slotTxt + gramsTxt
-        statusView.setTextColor(if (slotLoaded) HelixAppTheme.SUBTEXT else 0xFFCF6679.toInt())
-        // Circle shows what will ACTUALLY print: the chosen slot's filament
-        // colour when remapped, the model's colour on the default slot.
-        val circleColour = if (slot != tool) {
-          parseHex(FilamentSlotColors.read(this).getOrNull(slot) ?: "#30343A")
-        } else {
-          colour
-        }
-        circleBg.setColor(circleColour)
-      }
-      refreshStatus()
-      card.addView(statusView)
-      // Tap → pick which machine slot supplies this colour.
-      card.isClickable = true
-      card.setOnClickListener { showSlotPicker(card, tool) { refreshStatus() } }
-      filRow.addView(card, LinearLayout.LayoutParams(cardW, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-        setMargins(dp(4), 0, dp(4), 0)
-      })
-    }
-    root.addView(filRow)
+    val required = (0..3).filter { (requiredToolMask() and (1 shl it)) != 0 }
+      .ifEmpty { listOf(initialTool.coerceIn(0, 3)) }
 
-    // Print preferences ------------------------------------------------------
-    root.addView(sectionTitle("Print Preferences"))
-    fun prefRow(label: String, initial: Boolean, onChange: (Boolean) -> Unit) {
-      val rowView = LinearLayout(this).apply {
-        orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL
-        setPadding(0, dp(4), 0, dp(4))
-      }
-      rowView.addView(TextView(this).apply {
-        text = label
-        textSize = 13f
-        setTextColor(HelixAppTheme.TEXT)
-        layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-      })
-      rowView.addView(CheckBox(this).apply {
-        isChecked = initial
-        buttonTintList = ColorStateList.valueOf(accentColor)
-        setOnCheckedChangeListener { _, checked -> onChange(checked) }
-      })
-      root.addView(rowView)
+    val initialPrefs = mutableSetOf<PreprocessRouting.Pref>().apply {
+      if (prefAutoLevel) add(PreprocessRouting.Pref.AUTO_LEVEL)
+      if (prefFlowCal) add(PreprocessRouting.Pref.FLOW_CAL)
+      if (prefTimelapse) add(PreprocessRouting.Pref.TIMELAPSE)
     }
-    prefRow("Extrusion Flow Calibration", prefFlowCal) { prefFlowCal = it }
-    prefRow("Time-lapse Camera", prefTimelapse) { prefTimelapse = it }
-    prefRow("Auto Leveling", prefAutoLevel) { prefAutoLevel = it }
 
-    return root
+    val config = HelixPreprocessSheet.Config(
+      fileName = uploadName,
+      estTimeSeconds = LastSliceStore.estimatedTimeSeconds.toFloat(),
+      estGrams = LastSliceStore.estimatedFilamentGrams.toFloat(),
+      layers = LastSliceStore.totalLayers,
+      thumbnail = runCatching { GcodeThumbnailReader.readBitmap(gcodePath) }.getOrNull(),
+      lanes = lanes,
+      required = required,
+      perToolGrams = parsePerToolGrams(),
+      printers = printers,
+      activePrinterUrl = moonrakerUrl,
+      initialPrefs = initialPrefs,
+      sendLabel = "Hold to start",
+      probePrinter = { url, cb ->
+        fetchPrinterState(url) { state, color, workingUrl ->
+          runOnUiThread {
+            if (workingUrl.isNotBlank()) moonrakerUrl = workingUrl
+            cb(HelixPreprocessSheet.PrinterState(
+              label = state,
+              reachable = workingUrl.isNotBlank(),
+              busy = state == "Printing" || state == "Paused",
+              meshProfile = null,
+            ))
+          }
+        }
+      },
+      onPrinterPicked = { printer -> moonrakerUrl = printer.url.ifBlank { printer.tailscaleUrl } },
+      onSend = ::startPrint,
+    )
+
+    preprocessSheet = HelixPreprocessSheet(this, config).also { it.show() }
+  }
+
+  private fun startPrint(assignments: Map<Int, Int>, prefs: Set<PreprocessRouting.Pref>) {
+    for ((tool, lane) in assignments) {
+      if (tool in 0..3 && lane in 0..3) toolSlotMap[tool] = lane
+    }
+    prefAutoLevel = prefs.contains(PreprocessRouting.Pref.AUTO_LEVEL)
+    prefFlowCal = prefs.contains(PreprocessRouting.Pref.FLOW_CAL)
+    prefTimelapse = prefs.contains(PreprocessRouting.Pref.TIMELAPSE)
+    sendToPrinter(true)
   }
 
   private fun parseHex(hex: String): Int = try {
@@ -584,168 +411,78 @@ class HelixGcodePreviewActivity : Activity() {
     HelixAppTheme.CARD_ALT
   }
 
-  /** Dropdown listing the printers saved in Helix; picking one retargets the send. */
-  private fun showPrinterPicker(
-    anchor: View,
-    printers: List<HelixPrinterStore.Printer>,
-    onPicked: (HelixPrinterStore.Printer) -> Unit,
-  ) {
-    fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
-    val list = LinearLayout(this).apply {
-      orientation = LinearLayout.VERTICAL
-      background = GradientDrawable().apply {
-        cornerRadius = dp(12).toFloat()
-        setColor(HelixAppTheme.CARD)
-        setStroke(dp(1), HelixAppTheme.BORDER)
-      }
-      setPadding(dp(6), dp(6), dp(6), dp(6))
-    }
-    val popup = android.widget.PopupWindow(
-      list, dp(240), LinearLayout.LayoutParams.WRAP_CONTENT, true,
-    )
-    printers.forEach { printer ->
-      val active = printer.url.trimEnd('/') == moonrakerUrl.trimEnd('/')
-      val row = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
-        setPadding(dp(12), dp(9), dp(12), dp(9))
-        if (active) {
-          background = GradientDrawable().apply {
-            cornerRadius = dp(8).toFloat()
-            setColor((accentColor and 0x00FFFFFF) or 0x26000000)
-          }
-        }
-        isClickable = true
-        setOnClickListener {
-          onPicked(printer)
-          popup.dismiss()
-        }
-      }
-      row.addView(TextView(this).apply {
-        text = printer.name
-        textSize = 13f
-        setTextColor(if (active) accentColor else HelixAppTheme.TEXT)
-        typeface = android.graphics.Typeface.DEFAULT_BOLD
-      })
-      val statusLabel = TextView(this).apply {
-        text = "Checking…"
-        textSize = 11f
-        setTextColor(HelixAppTheme.SUBTEXT)
-      }
-      row.addView(statusLabel)
-      list.addView(row)
-      fetchPrinterState(printer.url) { state, color ->
-        runOnUiThread {
-          statusLabel.text = state
-          statusLabel.setTextColor(color)
-        }
-      }
-    }
-    popup.elevation = dp(8).toFloat()
-    popup.showAsDropDown(anchor, 0, dp(4))
-  }
+  /** Host (no scheme/path/port) for matching LAN ↔ Tailscale urls of one printer. */
+  private fun hostOf(u: String): String =
+    u.substringAfter("://").substringBefore('/').substringBefore(':').lowercase()
 
-  /** Quick Moonraker print_stats poll → "Idle" / "Printing" / "Paused" / "Offline". */
-  private fun fetchPrinterState(url: String, onResult: (String, Int) -> Unit) {
-    Thread {
-      try {
-        val client = OkHttpClient.Builder()
-          .connectTimeout(3, java.util.concurrent.TimeUnit.SECONDS)
-          .readTimeout(3, java.util.concurrent.TimeUnit.SECONDS)
-          .build()
-        val req = Request.Builder()
-          .url("${url.trimEnd('/')}/printer/objects/query?print_stats")
-          .get().build()
-        client.newCall(req).execute().use { resp ->
-          if (!resp.isSuccessful) throw IllegalStateException("HTTP ${resp.code}")
-          val body = resp.body?.string().orEmpty()
-          val state = org.json.JSONObject(body)
-            .optJSONObject("result")?.optJSONObject("status")
-            ?.optJSONObject("print_stats")?.optString("state") ?: "unknown"
-          when (state) {
-            "printing" -> onResult("Printing", accentColor)
-            "paused" -> onResult("Paused", 0xFFF5B45A.toInt())
-            "complete", "standby", "ready", "cancelled", "idle" -> onResult("Idle", 0xFF6BCB77.toInt())
-            "error" -> onResult("Error", 0xFFCF6679.toInt())
-            else -> onResult("Idle", 0xFF6BCB77.toInt())
-          }
-        }
-      } catch (_: Throwable) {
-        onResult("Offline", 0xFFCF6679.toInt())
-      }
-    }.start()
+  /**
+   * Moonraker endpoints worth trying for [primaryUrl], best-first:
+   * the given url, then the matching saved printer's alternate endpoint
+   * (LAN ↔ Tailscale), then every other saved endpoint as a last resort.
+   * Lets the dialog reach a printer the user left running when away from home.
+   */
+  private fun resolveCandidates(primaryUrl: String): List<String> {
+    val out = LinkedHashSet<String>()
+    val p = primaryUrl.trim().trimEnd('/')
+    if (p.isNotEmpty()) out.add(p)
+    val printers = HelixPrinterStore.read(this)
+    val matched = if (p.isNotEmpty()) printers.firstOrNull {
+      it.url.trimEnd('/') == p ||
+        it.tailscaleUrl.trimEnd('/') == p ||
+        (hostOf(p).isNotEmpty() && (hostOf(it.url) == hostOf(p) || hostOf(it.tailscaleUrl) == hostOf(p)))
+    } else null
+    matched?.let {
+      if (it.url.isNotBlank()) out.add(it.url.trimEnd('/'))
+      if (it.tailscaleUrl.isNotBlank()) out.add(it.tailscaleUrl.trimEnd('/'))
+    }
+    printers.forEach {
+      if (it.url.isNotBlank()) out.add(it.url.trimEnd('/'))
+      if (it.tailscaleUrl.isNotBlank()) out.add(it.tailscaleUrl.trimEnd('/'))
+    }
+    return out.toList()
   }
 
   /**
-   * Dropdown under a filament card: the machine's four slots (colour + loaded
-   * state, from the Slice tab's slot settings + printer mask). Picking one maps
-   * this print colour onto that physical slot at send time.
+   * Quick Moonraker print_stats poll with LAN→Tailscale failover. Tries each
+   * candidate; the first to answer wins and onResult receives (state, color,
+   * workingUrl). "Offline" only if every candidate is unreachable — which is
+   * the real fix for "printer shows off when the user is away from home".
    */
-  private fun showSlotPicker(anchor: View, tool: Int, onPicked: () -> Unit) {
-    fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
-    val slotColors = FilamentSlotColors.read(this)
-
-    val list = LinearLayout(this).apply {
-      orientation = LinearLayout.VERTICAL
-      background = GradientDrawable().apply {
-        cornerRadius = dp(12).toFloat()
-        setColor(HelixAppTheme.CARD)
-        setStroke(dp(1), HelixAppTheme.BORDER)
-      }
-      setPadding(dp(6), dp(6), dp(6), dp(6))
-    }
-
-    val popup = android.widget.PopupWindow(
-      list,
-      dp(170),
-      LinearLayout.LayoutParams.WRAP_CONTENT,
-      true,
-    )
-
-    for (slot in 0..3) {
-      val slotLoaded = loadedToolMask < 0 || (loadedToolMask and (1 shl slot)) != 0
-      val row = LinearLayout(this).apply {
-        orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL
-        setPadding(dp(10), dp(9), dp(10), dp(9))
-        isClickable = true
-        if (toolSlotMap[tool] == slot) {
-          background = GradientDrawable().apply {
-            cornerRadius = dp(8).toFloat()
-            setColor((accentColor and 0x00FFFFFF) or 0x26000000)
+  private fun fetchPrinterState(primaryUrl: String, onResult: (String, Int, String) -> Unit) {
+    val candidates = resolveCandidates(primaryUrl)
+    Thread {
+      val client = OkHttpClient.Builder()
+        .connectTimeout(3, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(3, java.util.concurrent.TimeUnit.SECONDS)
+        .build()
+      var resolved = false
+      for (url in candidates) {
+        if (resolved) break
+        try {
+          val req = Request.Builder()
+            .url("$url/printer/objects/query?print_stats")
+            .get().build()
+          client.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) return@use  // try next candidate
+            val body = resp.body?.string().orEmpty()
+            val state = org.json.JSONObject(body)
+              .optJSONObject("result")?.optJSONObject("status")
+              ?.optJSONObject("print_stats")?.optString("state") ?: "unknown"
+            val (label, color) = when (state) {
+              "printing" -> "Printing" to accentColor
+              "paused" -> "Paused" to 0xFFF5B45A.toInt()
+              "error" -> "Error" to 0xFFCF6679.toInt()
+              else -> "Idle" to 0xFF6BCB77.toInt()
+            }
+            resolved = true
+            onResult(label, color, url)
           }
-        }
-        setOnClickListener {
-          toolSlotMap[tool] = slot
-          onPicked()
-          popup.dismiss()
+        } catch (_: Throwable) {
+          // this candidate unreachable — continue to the next
         }
       }
-      row.addView(View(this).apply {
-        background = GradientDrawable().apply {
-          shape = GradientDrawable.OVAL
-          setColor(parseHex(slotColors.getOrNull(slot) ?: "#30343A"))
-          setStroke(dp(1), 0x55FFFFFF.toInt())
-        }
-        layoutParams = LinearLayout.LayoutParams(dp(20), dp(20))
-      })
-      row.addView(TextView(this).apply {
-        text = "T$slot"
-        textSize = 13f
-        setTextColor(HelixAppTheme.TEXT)
-        typeface = android.graphics.Typeface.DEFAULT_BOLD
-        setPadding(dp(10), 0, 0, 0)
-        layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-      })
-      row.addView(TextView(this).apply {
-        text = if (slotLoaded) "Loaded" else "Empty"
-        textSize = 11f
-        setTextColor(if (slotLoaded) HelixAppTheme.SUBTEXT else 0xFFCF6679.toInt())
-      })
-      list.addView(row)
-    }
-
-    popup.elevation = dp(8).toFloat()
-    popup.showAsDropDown(anchor, 0, dp(4))
+      if (!resolved) onResult("Offline", 0xFFCF6679.toInt(), "")
+    }.start()
   }
 
   /** Per-tool grams from the gcode footer (`; filament used [g] = a, b, c`). */
@@ -792,10 +529,14 @@ class HelixGcodePreviewActivity : Activity() {
     }
   }
 
+  private fun reportProgress(message: String, fraction: Float) {
+    setSendStatus(message)
+    preprocessSheet?.onSendProgress(message, fraction)
+  }
+
   private fun sendToPrinter(alsoPrint: Boolean) {
     if (sending) return
-    val base = moonrakerUrl.trimEnd('/')
-    if (base.isBlank()) { setSendStatus("No printer connected in Helix."); return }
+    if (moonrakerUrl.isBlank()) { setSendStatus("No printer connected in Helix."); return }
     if (!File(gcodePath).exists()) { setSendStatus("G-code file is missing."); return }
     if (alsoPrint) {
       val missing = missingLoadedTools()
@@ -809,13 +550,33 @@ class HelixGcodePreviewActivity : Activity() {
     val requestedFlowCalibration = alsoPrint && prefFlowCal
     val requestedPhysicalExtruders = physicalUsedExtruders()
     sending = true
-    setSendStatus(if (requestedTimelapse) "Preparing timelapse..." else "Uploading $uploadName...")
+    reportProgress(if (requestedTimelapse) "Preparing timelapse..." else "Uploading $uploadName...", 0.02f)
     Thread {
       try {
+        // Resolve a reachable Moonraker base (LAN → Tailscale failover) before
+        // upload — the status card may have probed LAN and failed when the user
+        // is away from home. Pick the first candidate that answers a print_stats
+        // probe; if none do, the printer really is offline.
+        val probeClient = OkHttpClient.Builder()
+          .connectTimeout(4, TimeUnit.SECONDS)
+          .readTimeout(4, TimeUnit.SECONDS)
+          .build()
+        val base = resolveCandidates(moonrakerUrl).firstOrNull { cand ->
+          try {
+            probeClient.newCall(
+              Request.Builder().url("$cand/printer/objects/query?print_stats").get().build(),
+            ).execute().use { it.isSuccessful }
+          } catch (_: Throwable) { false }
+        }
+        if (base == null) {
+          setSendStatus("No printer connected in Helix.")
+          return@Thread
+        }
+        moonrakerUrl = base
         var file = remappedGcodeFile()
         if (requestedTimelapse) {
           file = GcodeTimelapseInjector.inject(file.absolutePath, cacheDir)
-          setSendStatus("Uploading $uploadName...")
+          reportProgress("Uploading $uploadName...", 0.05f)
         }
         // Default OkHttp timeouts are 10s — a multi-MB gcode over WiFi/Tailscale
         // needs the same size-scaled window HelixSlicerModule.uploadGcode uses.
@@ -828,14 +589,20 @@ class HelixGcodePreviewActivity : Activity() {
           .build()
         val body = MultipartBody.Builder().setType(MultipartBody.FORM)
           .addFormDataPart("root", "gcodes")
-          .addFormDataPart("file", uploadName, file.asRequestBody("text/plain".toMediaType()))
+          .addFormDataPart(
+            "file",
+            uploadName,
+            ProgressRequestBody(file, "text/plain".toMediaTypeOrNull()) { frac ->
+              reportProgress("Uploading $uploadName...", 0.05f + frac * 0.80f)
+            },
+          )
           .build()
         client.newCall(Request.Builder().url("$base/server/files/upload").post(body).build())
           .execute().use { resp ->
             if (!resp.isSuccessful) throw IllegalStateException("Upload HTTP ${resp.code}")
           }
         if (alsoPrint) {
-          setSendStatus("Applying print preferences...")
+          reportProgress("Applying print preferences...", 0.9f)
           applyPrintPreferences(
             client,
             base,
@@ -844,7 +611,7 @@ class HelixGcodePreviewActivity : Activity() {
             requestedFlowCalibration,
             requestedPhysicalExtruders,
           )
-          setSendStatus("Starting $uploadName...")
+          reportProgress("Starting $uploadName...", 0.96f)
           val enc = URLEncoder.encode(uploadName, "UTF-8")
           client.newCall(
             Request.Builder().url("$base/printer/print/start?filename=$enc")
@@ -853,10 +620,14 @@ class HelixGcodePreviewActivity : Activity() {
             if (!resp.isSuccessful) throw IllegalStateException("Print start HTTP ${resp.code}")
           }
         }
-        setSendStatus(if (alsoPrint) "Sent — printing $uploadName" else "Uploaded $uploadName")
+        reportProgress(if (alsoPrint) "Sent — printing $uploadName" else "Uploaded $uploadName", 1f)
+        preprocessSheet?.dismiss()
+        preprocessSheet = null
         if (alsoPrint) returnToHomeWithPrintSuccess(uploadName)
       } catch (error: Throwable) {
-        setSendStatus("Send failed: ${error.message ?: error::class.java.simpleName}")
+        val failMsg = error.message ?: error::class.java.simpleName
+        setSendStatus("Send failed: $failMsg")
+        preprocessSheet?.onSendFailed(failMsg)
       } finally {
         sending = false
       }

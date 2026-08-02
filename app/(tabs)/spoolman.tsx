@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  Alert,
   FlatList,
   Keyboard,
   KeyboardAvoidingView,
@@ -23,6 +22,7 @@ import SpoolLabel from '../../components/SpoolLabel';
 import SpoolScanner from '../../components/SpoolScanner';
 import { t } from '../../services/i18n';
 import { colors, spacing } from '../../constants/theme';
+import { useThemedAlert } from '../../hooks/useThemedAlert';
 
 interface Vendor {
   id: number;
@@ -109,6 +109,7 @@ function filamentTitle(f: Filament): string {
 
 export default function SpoolmanScreen() {
   const { connection, activeUrl } = useMoonraker();
+  const { showAlert, alertDialog } = useThemedAlert();
   useSettings(); // re-render on language/theme change
   const [spools, setSpools] = useState<Spool[]>([]);
   const [filaments, setFilaments] = useState<Filament[]>([]);
@@ -183,7 +184,7 @@ export default function SpoolmanScreen() {
       if (changed) await new Promise((r) => setTimeout(r, 8000));
       await refresh();
     } catch (e: any) {
-      Alert.alert(t('Error'), String(e?.message ?? e));
+      showAlert({ title: t('Error'), message: String(e?.message ?? e), icon: 'alert-circle-outline' });
     } finally {
       setConfiguring(false);
     }
@@ -193,7 +194,7 @@ export default function SpoolmanScreen() {
     setScanning(false);
     const spool = spools.find((s) => s.id === id);
     if (!spool) {
-      Alert.alert(t('Error'), `${t('No spool with ID')} ${id}`);
+      showAlert({ title: t('Error'), message: `${t('No spool with ID')} ${id}`, icon: 'alert-circle-outline' });
       return;
     }
     setActive(spool);
@@ -201,20 +202,25 @@ export default function SpoolmanScreen() {
 
   const setActive = (spool: Spool | null) => {
     const label = spool ? spoolTitle(spool) : t('No spool active');
-    Alert.alert(t('Set active spool?'), label, [
-      { text: t('Cancel'), style: 'cancel' },
-      {
-        text: t('Set'),
-        onPress: async () => {
-          try {
-            const res = await api.spoolmanSetSpoolId(activeUrl, spool?.id ?? null);
-            setActiveId(res?.spool_id ?? null);
-          } catch (e: any) {
-            Alert.alert(t('Error'), String(e?.message ?? e));
-          }
+    showAlert({
+      title: t('Set active spool?'),
+      message: label,
+      actions: [
+        { text: t('Cancel'), onPress: () => {} },
+        {
+          text: t('Set'),
+          variant: 'primary',
+          onPress: async () => {
+            try {
+              const res = await api.spoolmanSetSpoolId(activeUrl, spool?.id ?? null);
+              setActiveId(res?.spool_id ?? null);
+            } catch (e: any) {
+              showAlert({ title: t('Error'), message: String(e?.message ?? e), icon: 'alert-circle-outline' });
+            }
+          },
         },
-      },
-    ]);
+      ],
+    });
   };
 
   if (connection === 'connected' && unavailable !== 'none' && !loading) {
@@ -259,6 +265,7 @@ export default function SpoolmanScreen() {
         <TouchableOpacity style={styles.retryBtn} onPress={refresh}>
           <Text style={styles.retryText}>{t('Retry')}</Text>
         </TouchableOpacity>
+        {alertDialog}
       </KeyboardAvoidingView>
     );
   }
@@ -372,6 +379,7 @@ export default function SpoolmanScreen() {
         />
       )}
       {scanning && <SpoolScanner onScanned={handleScanned} onClose={() => setScanning(false)} />}
+      {alertDialog}
     </View>
   );
 }
@@ -460,12 +468,15 @@ function FormModal({
   title,
   children,
   onClose,
+  onPrimary,
+  primaryDisabled,
 }: {
   title: string;
   children: React.ReactNode;
   onClose: () => void;
+  onPrimary: () => void;
+  primaryDisabled?: boolean;
 }) {
-  // Issue #5: bottom sheets draw edge-to-edge, so pad past the Android nav bar.
   const insets = useSafeAreaInsets();
   const scrollRef = useRef<ScrollView>(null);
   const scrollY = useRef(0);
@@ -489,19 +500,15 @@ function FormModal({
     return () => sub.remove();
   }, []);
   return (
-    <Modal visible animationType="slide" transparent onRequestClose={onClose}>
-      {/* Modal hosts its own window, so the activity's keyboard resize doesn't
-          apply — "padding" is needed on Android too (issue #5). */}
+    <Modal visible animationType="fade" onRequestClose={onClose}>
       <KeyboardAvoidingView style={styles.modalWrap} behavior="padding">
-        <View style={[styles.modalCard, { paddingBottom: spacing.lg + insets.bottom }]}>
+        <View style={[styles.modalCard, { paddingTop: insets.top }]}>
           <View style={styles.modalHeader}>
             <Text style={styles.modalTitle}>{title}</Text>
-            <TouchableOpacity onPress={onClose}>
-              <MaterialCommunityIcons name="close" size={22} color={colors.subtext} />
-            </TouchableOpacity>
           </View>
           <ScrollView
             ref={scrollRef}
+            contentContainerStyle={styles.modalBody}
             keyboardShouldPersistTaps="handled"
             onScroll={(e) => {
               scrollY.current = e.nativeEvent.contentOffset.y;
@@ -510,6 +517,21 @@ function FormModal({
           >
             {children}
           </ScrollView>
+          <View style={[styles.modalActions, { paddingBottom: 16 + insets.bottom }]}>
+            <TouchableOpacity
+              style={[styles.modalAction, styles.modalPrimary, primaryDisabled && { opacity: 0.5 }]}
+              disabled={primaryDisabled}
+              onPress={onPrimary}
+            >
+              <MaterialCommunityIcons name="check" size={22} color="#fff" />
+              <Text style={styles.modalPrimaryText}>
+                {primaryDisabled ? t('Saving...') : t('Save')}
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.modalAction, styles.modalCancel]} onPress={onClose}>
+              <Text style={styles.modalCancelText}>{t('Cancel')}</Text>
+            </TouchableOpacity>
+          </View>
         </View>
       </KeyboardAvoidingView>
     </Modal>
@@ -556,6 +578,7 @@ function SpoolFormModal({
   proxy: (method: string, path: string, body?: any) => Promise<any>;
   onClose: (changed: boolean) => void;
 }) {
+  const { showAlert, alertDialog } = useThemedAlert();
   const editing = !!spool;
   const [filamentId, setFilamentId] = useState<number | null>(spool?.filament?.id ?? null);
   const [remaining, setRemaining] = useState(
@@ -574,19 +597,16 @@ function SpoolFormModal({
     if (!isFinite(g) || g <= 0) return;
     try {
       const res = await proxy('PUT', `/v1/spool/${spool!.id}/measure`, { weight: g });
-      Alert.alert(
-        t('Saved'),
-        `${t('Remaining')}: ${Math.round(res?.remaining_weight ?? 0)} g`
-      );
+      showAlert({ title: t('Saved'), message: `${t('Remaining')}: ${Math.round(res?.remaining_weight ?? 0)} g`, icon: 'check-circle-outline' });
       onClose(true);
     } catch (e: any) {
-      Alert.alert(t('Error'), String(e?.message ?? e));
+      showAlert({ title: t('Error'), message: String(e?.message ?? e), icon: 'alert-circle-outline' });
     }
   };
 
   const save = async () => {
     if (!filamentId) {
-      Alert.alert(t('Error'), t('Pick a filament first'));
+      showAlert({ title: t('Error'), message: t('Pick a filament first'), icon: 'alert-circle-outline' });
       return;
     }
     setSaving(true);
@@ -600,7 +620,7 @@ function SpoolFormModal({
       else await proxy('POST', '/v1/spool', body);
       onClose(true);
     } catch (e: any) {
-      Alert.alert(t('Error'), String(e?.message ?? e));
+      showAlert({ title: t('Error'), message: String(e?.message ?? e), icon: 'alert-circle-outline' });
       setSaving(false);
     }
   };
@@ -610,30 +630,40 @@ function SpoolFormModal({
       await proxy('PATCH', `/v1/spool/${spool!.id}`, { archived: !spool!.archived });
       onClose(true);
     } catch (e: any) {
-      Alert.alert(t('Error'), String(e?.message ?? e));
+      showAlert({ title: t('Error'), message: String(e?.message ?? e), icon: 'alert-circle-outline' });
     }
   };
 
   const del = () => {
-    Alert.alert(t('Delete spool?'), spoolTitle(spool!), [
-      { text: t('Cancel'), style: 'cancel' },
-      {
-        text: t('Delete'),
-        style: 'destructive',
-        onPress: async () => {
-          try {
-            await proxy('DELETE', `/v1/spool/${spool!.id}`);
-            onClose(true);
-          } catch (e: any) {
-            Alert.alert(t('Error'), String(e?.message ?? e));
-          }
+    showAlert({
+      title: t('Delete spool?'),
+      message: spoolTitle(spool!),
+      actions: [
+        { text: t('Cancel'), onPress: () => {} },
+        {
+          text: t('Delete'),
+          variant: 'danger',
+          onPress: async () => {
+            try {
+              await proxy('DELETE', `/v1/spool/${spool!.id}`);
+              onClose(true);
+            } catch (e: any) {
+              showAlert({ title: t('Error'), message: String(e?.message ?? e), icon: 'alert-circle-outline' });
+            }
+          },
         },
-      },
-    ]);
+      ],
+    });
   };
 
   return (
-    <FormModal title={editing ? t('Edit spool') : t('Add spool')} onClose={() => onClose(false)}>
+    <>
+      <FormModal
+        title={editing ? t('Edit spool') : t('Add spool')}
+        onClose={() => onClose(false)}
+        onPrimary={save}
+        primaryDisabled={saving}
+      >
       {filaments.length ? (
         <Dropdown
           label={t('Filament')}
@@ -659,13 +689,6 @@ function SpoolFormModal({
       <Field label={t('Lot number')} value={lot} onChange={setLot} />
       <Field label={t('Price')} value={price} onChange={setPrice} placeholder="19.99" numeric />
 
-      <TouchableOpacity
-        style={[styles.saveBtn, { backgroundColor: colors.primary }, saving && { opacity: 0.5 }]}
-        disabled={saving}
-        onPress={save}
-      >
-        <Text style={styles.saveText}>{t('Save')}</Text>
-      </TouchableOpacity>
       {editing && (
         <>
           <Text style={styles.fieldLabel}>{t('Weigh the spool')}</Text>
@@ -708,7 +731,9 @@ function SpoolFormModal({
           </TouchableOpacity>
         </View>
       )}
-    </FormModal>
+      </FormModal>
+      {alertDialog}
+    </>
   );
 }
 
@@ -723,6 +748,7 @@ function FilamentFormModal({
   proxy: (method: string, path: string, body?: any) => Promise<any>;
   onClose: (changed: boolean) => void;
 }) {
+  const { showAlert, alertDialog } = useThemedAlert();
   const editing = !!filament;
   const [name, setName] = useState(filament?.name ?? '');
   const [material, setMaterial] = useState(filament?.material ?? 'PLA');
@@ -787,7 +813,7 @@ function FilamentFormModal({
 
   const save = async () => {
     if (!name.trim()) {
-      Alert.alert(t('Error'), t('Name is required'));
+      showAlert({ title: t('Error'), message: t('Name is required'), icon: 'alert-circle-outline' });
       return;
     }
     setSaving(true);
@@ -812,16 +838,19 @@ function FilamentFormModal({
       else await proxy('POST', '/v1/filament', body);
       onClose(true);
     } catch (e: any) {
-      Alert.alert(t('Error'), String(e?.message ?? e));
+      showAlert({ title: t('Error'), message: String(e?.message ?? e), icon: 'alert-circle-outline' });
       setSaving(false);
     }
   };
 
   return (
-    <FormModal
-      title={editing ? t('Edit filament') : t('Add filament')}
-      onClose={() => onClose(false)}
-    >
+    <>
+      <FormModal
+        title={editing ? t('Edit filament') : t('Add filament')}
+        onClose={() => onClose(false)}
+        onPrimary={save}
+        primaryDisabled={saving}
+      >
       {!editing && catalog.length > 0 && (
         <Dropdown
           label={t('Pick from catalog')}
@@ -917,14 +946,9 @@ function FilamentFormModal({
       <Field label={t('Density (g/cm³)')} value={density} onChange={setDensity} numeric />
       <Field label={t('Price')} value={price} onChange={setPrice} numeric />
 
-      <TouchableOpacity
-        style={[styles.saveBtn, { backgroundColor: colors.primary }, saving && { opacity: 0.5 }]}
-        disabled={saving}
-        onPress={save}
-      >
-        <Text style={styles.saveText}>{t('Save')}</Text>
-      </TouchableOpacity>
-    </FormModal>
+      </FormModal>
+      {alertDialog}
+    </>
   );
 }
 
@@ -1088,27 +1112,39 @@ const styles = StyleSheet.create({
   },
   modalWrap: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.6)',
-    justifyContent: 'flex-end',
+    backgroundColor: colors.bg,
   },
   modalCard: {
+    flex: 1,
     backgroundColor: colors.bg,
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
-    padding: spacing.lg,
-    maxHeight: '88%',
   },
   modalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: spacing.md,
+    paddingHorizontal: 26,
+    paddingTop: 22,
+    paddingBottom: 12,
   },
   modalTitle: {
     color: colors.text,
-    fontSize: 16,
-    fontWeight: '700',
+    fontSize: 30,
+    fontWeight: '800',
+    letterSpacing: -1,
+    textAlign: 'center',
   },
+  modalBody: { paddingHorizontal: 26, paddingBottom: 24 },
+  modalActions: { paddingHorizontal: 22, gap: 9, paddingTop: 8 },
+  modalAction: {
+    height: 62,
+    borderRadius: 999,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  modalPrimary: { backgroundColor: colors.primary },
+  modalCancel: { backgroundColor: colors.cardAlt },
+  modalPrimaryText: { color: '#fff', fontSize: 16, fontWeight: '800' },
+  modalCancelText: { color: colors.text, fontSize: 16, fontWeight: '800' },
   field: {
     marginBottom: spacing.md,
   },
@@ -1142,18 +1178,6 @@ const styles = StyleSheet.create({
   hint: {
     color: colors.subtext,
     fontSize: 12,
-  },
-  saveBtn: {
-    borderRadius: 8,
-    paddingVertical: spacing.md,
-    alignItems: 'center',
-    marginTop: spacing.sm,
-    marginBottom: spacing.sm,
-  },
-  saveText: {
-    color: '#fff',
-    fontWeight: '700',
-    fontSize: 14,
   },
   measureRow: {
     flexDirection: 'row',

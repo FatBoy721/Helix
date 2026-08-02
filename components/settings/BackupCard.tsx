@@ -1,17 +1,15 @@
 import React, { useState } from 'react';
-import { StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import ThemedDialog from '../ThemedDialog';
-import { colors, spacing } from '../../constants/theme';
+import { colors, spacing } from './cockpitTheme';
 import { useSettings } from '../../hooks/useSettings';
-import { parseSettingsBackup, shareSettingsBackup } from '../../services/settingsBackup';
+import { pickSettingsBackup, shareSettingsBackup } from '../../services/settingsBackup';
 import { t } from '../../services/i18n';
 
 export default function BackupCard({ onImported }: { onImported?: () => void }) {
   const { settings, update } = useSettings();
-  const [importOpen, setImportOpen] = useState(false);
-  const [importText, setImportText] = useState('');
-  const [importError, setImportError] = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
   const [resultDialog, setResultDialog] = useState<{ title: string; message: string } | null>(null);
 
   const exportSettings = async () => {
@@ -26,19 +24,24 @@ export default function BackupCard({ onImported }: { onImported?: () => void }) 
   };
 
   const runImport = async () => {
+    if (importing) return;
+    setImporting(true);
     try {
-      const imported = parseSettingsBackup(importText);
+      const imported = await pickSettingsBackup();
+      if (!imported) return;
       await update(imported);
       onImported?.();
-      setImportOpen(false);
-      setImportText('');
-      setImportError(null);
       setResultDialog({
         title: t('Settings restored'),
         message: t('Printers, connection and notification settings were imported. MakerWorld needs a fresh login.'),
       });
     } catch (e: any) {
-      setImportError(e?.message ?? 'Import failed.');
+      setResultDialog({
+        title: t('Import failed'),
+        message: e?.message ?? 'Could not import the backup file.',
+      });
+    } finally {
+      setImporting(false);
     }
   };
 
@@ -55,53 +58,17 @@ export default function BackupCard({ onImported }: { onImported?: () => void }) 
           <MaterialCommunityIcons name="chevron-right" size={16} color={colors.subtext} />
         </TouchableOpacity>
         <TouchableOpacity
-          style={styles.linkRow}
-          onPress={() => {
-            setImportError(null);
-            setImportText('');
-            setImportOpen(true);
-          }}
+          style={[styles.linkRow, importing && styles.linkRowDisabled]}
+          onPress={runImport}
+          disabled={importing}
         >
-          <MaterialCommunityIcons name="import" size={20} color={colors.text} />
-          <Text style={styles.linkText}>{t('Import settings')}</Text>
+          <MaterialCommunityIcons name="file-import-outline" size={20} color={colors.text} />
+          <Text style={styles.linkText}>
+            {importing ? t('Opening backup…') : t('Import settings')}
+          </Text>
           <MaterialCommunityIcons name="chevron-right" size={16} color={colors.subtext} />
         </TouchableOpacity>
       </View>
-
-      <ThemedDialog
-        visible={importOpen}
-        placement="center"
-        title={t('Import settings')}
-        icon="import"
-        onClose={() => setImportOpen(false)}
-        actions={[
-          { text: t('Cancel'), onPress: () => setImportOpen(false) },
-          {
-            text: t('Import'),
-            icon: 'check',
-            variant: 'primary',
-            onPress: runImport,
-          },
-        ]}
-      >
-        <Text style={styles.hint}>
-          {t('Open your backup file, copy everything, and paste it here.')}
-        </Text>
-        <TextInput
-          style={styles.importInput}
-          value={importText}
-          onChangeText={(v) => {
-            setImportText(v);
-            if (importError) setImportError(null);
-          }}
-          placeholder='{"kind":"helix-settings-backup", ...}'
-          placeholderTextColor={colors.subtext}
-          multiline
-          autoCapitalize="none"
-          autoCorrect={false}
-        />
-        {importError ? <Text style={styles.errorText}>{importError}</Text> : null}
-      </ThemedDialog>
 
       <ThemedDialog
         visible={!!resultDialog}
@@ -147,22 +114,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
     flex: 1,
   },
-  importInput: {
-    minHeight: 110,
-    maxHeight: 180,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.bg,
-    color: colors.text,
-    fontSize: 12,
-    padding: spacing.sm,
-    textAlignVertical: 'top',
-    marginTop: spacing.xs,
-  },
-  errorText: {
-    color: colors.warning,
-    fontSize: 12,
-    marginTop: spacing.xs,
+  linkRowDisabled: {
+    opacity: 0.55,
   },
 });

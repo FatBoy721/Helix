@@ -30,6 +30,14 @@ export type ModelPlate = {
   thumbnail: string | null;
 };
 
+/** Embedded slice stats from a plate's baked-in G-code (Bambu/Orca 3MFs). */
+export type ModelPlateStats = {
+  id: number;
+  layers: number;
+  timeSeconds: number;
+  grams: number;
+};
+
 export type ExtractedPlate = {
   filePath: string;
   fileName: string;
@@ -100,6 +108,15 @@ export type NativeGcodeUpload = {
   body: string;
 };
 
+export type NativeFilamentSlot = {
+  color: string;
+  material: string;
+  mainType: string;
+  subType: string;
+  brand: string;
+  status: string;
+};
+
 type HelixSlicerModule = {
   getStatus: () => Promise<NativeSlicerStatus>;
   getSharedLink: () => Promise<SharedMakerWorldLink>;
@@ -107,6 +124,7 @@ type HelixSlicerModule = {
   takePrintSentNotice: () => Promise<string | null>;
   pickModelFile: () => Promise<SharedModelFile>;
   getModelPlates: (path: string) => Promise<ModelPlate[]>;
+  getModelPlateStats: (path: string) => Promise<ModelPlateStats[]>;
   extractPlate: (path: string, plateId: number) => Promise<ExtractedPlate>;
   collapseModel: (path: string, targetTool: number) => Promise<string>;
   remapModel: (path: string, extruderMapJson: string) => Promise<string>;
@@ -144,7 +162,8 @@ type HelixSlicerModule = {
     usedToolMask: number
   ) => Promise<boolean>;
   setFilamentSlotColors: (colors: string[]) => Promise<boolean>;
-  setPrinters: (printers: { name: string; url: string }[]) => Promise<boolean>;
+  setFilamentSlots?: (slots: NativeFilamentSlot[]) => Promise<boolean>;
+  setPrinters: (printers: { name: string; url: string; tailscaleUrl?: string }[]) => Promise<boolean>;
   getLastSliceResult: () => Promise<NativeSliceResult | null>;
   getGcodeThumbnail: (path: string) => Promise<string | null>;
   getGcodeFilamentGrams: (path: string) => Promise<number[]>;
@@ -240,6 +259,20 @@ export async function getModelPlates(path: string): Promise<ModelPlate[]> {
   if (Platform.OS !== 'android' || !nativeModule) return [];
   try {
     return await nativeModule.getModelPlates(path.replace(/^file:\/\//, ''));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Per-plate layer/time/filament stats parsed from the G-code embedded in a
+ * Bambu/Orca 3MF — real numbers for a picked file before any in-app slicing.
+ * Empty for geometry-only 3MFs and STLs.
+ */
+export async function getModelPlateStats(path: string): Promise<ModelPlateStats[]> {
+  if (Platform.OS !== 'android' || !nativeModule) return [];
+  try {
+    return await nativeModule.getModelPlateStats(path.replace(/^file:\/\//, ''));
   } catch {
     return [];
   }
@@ -422,8 +455,27 @@ export async function setFilamentSlotColors(colors: string[]): Promise<void> {
   await nativeModule.setFilamentSlotColors(colors);
 }
 
+/**
+ * Pushes the full per-slot filament picture (colour + material/mainType/subType/
+ * brand/status) into native SharedPreferences so the print preprocess sheet can
+ * label each lane exactly as the RN slicer does. Falls back to colours-only on
+ * older native builds that predate setFilamentSlots.
+ */
+export async function setFilamentSlots(slots: NativeFilamentSlot[]): Promise<void> {
+  if (Platform.OS !== 'android' || !nativeModule) return;
+  try {
+    await nativeModule.setFilamentSlots?.(slots);
+  } catch {
+    try {
+      await nativeModule.setFilamentSlotColors?.(slots.map((s) => s.color));
+    } catch {
+      // Colour-only mirror also unavailable — native defaults stand.
+    }
+  }
+}
+
 /** Mirrors the saved printers into native prefs for the print dialog's picker. */
-export async function setNativePrinters(printers: { name: string; url: string }[]): Promise<void> {
+export async function setNativePrinters(printers: { name: string; url: string; tailscaleUrl?: string }[]): Promise<void> {
   if (Platform.OS !== 'android' || !nativeModule) return;
   try {
     await nativeModule.setPrinters(printers);
