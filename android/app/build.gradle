@@ -98,8 +98,8 @@ android {
         applicationId 'org.crabcore.u1control'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 20
-        versionName "3.0.1"
+        versionCode 21
+        versionName "3.0.2"
 
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
     }
@@ -167,6 +167,23 @@ android {
     androidResources {
         ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:!CVS:!thumbs.db:!picasa.ini:!*~'
     }
+}
+
+// Package the repository's canonical legal documents rather than maintaining
+// duplicate asset copies that can drift out of sync with release notices.
+def generatedLegalAssetsDirectory = layout.buildDirectory.dir("generated/legal-assets").get().asFile
+tasks.register("syncLegalAssets", Sync) {
+    into new File(generatedLegalAssetsDirectory, "legal")
+    from(new File(projectRoot, "LICENSE")) {
+        rename { "Helix-AGPL-3.0.txt" }
+    }
+    from new File(projectRoot, "THIRD_PARTY_NOTICES.md")
+    from new File(projectRoot, "ATTRIBUTION.md")
+    from new File(projectRoot, "licenses/HelixScreen-GPL-3.0.txt")
+}
+android.sourceSets.main.assets.srcDir generatedLegalAssetsDirectory
+tasks.named("preBuild").configure {
+    dependsOn tasks.named("syncLegalAssets")
 }
 
 // Apply static values from `gradle.properties` to the `android.packagingOptions`

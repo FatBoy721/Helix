@@ -28,6 +28,8 @@ import {
 type DialogIcon = React.ComponentProps<typeof MaterialCommunityIcons>['name'];
 
 const SUPPORT_URL = 'https://ko-fi.com/crabcore';
+const OPEN_SOURCE_NOTICES_URL =
+  'https://github.com/FatBoy721/Helix/blob/main/THIRD_PARTY_NOTICES.md';
 
 interface DialogState {
   title: string;
@@ -269,6 +271,27 @@ export default function AboutCard() {
     });
   };
 
+  const showOpenSourceLicenses = () => {
+    setDialog({
+      title: 'Open-source licenses',
+      message:
+        'Helix includes software from the Bespok3d, HelixScreen, OrcaSlicer, PrusaSlicer, and u1-slicer-for-android projects. Their copyright notices, licenses, and corresponding-source directions are preserved with the app.',
+      icon: 'license',
+      actions: [
+        { text: t('Not now'), onPress: closeDialog },
+        {
+          text: 'View notices',
+          icon: 'open-in-new',
+          variant: 'primary',
+          onPress: () => {
+            closeDialog();
+            openUrl(OPEN_SOURCE_NOTICES_URL).catch(() => {});
+          },
+        },
+      ],
+    });
+  };
+
   return (
     <>
       <View style={styles.card}>
@@ -298,6 +321,14 @@ export default function AboutCard() {
           <Text style={styles.linkText}>GitHub - Helix</Text>
           <MaterialCommunityIcons name="open-in-new" size={16} color={colors.subtext} />
         </TouchableOpacity>
+        <TouchableOpacity style={styles.linkRow} onPress={showOpenSourceLicenses}>
+          <MaterialCommunityIcons name="license" size={20} color={colors.text} />
+          <Text style={styles.linkText}>Open-source licenses</Text>
+          <MaterialCommunityIcons name="chevron-right" size={16} color={colors.subtext} />
+        </TouchableOpacity>
+        <Text style={styles.legalNote}>
+          Credits, license terms, and source directions for bundled components.
+        </Text>
         <TouchableOpacity style={styles.linkRow} onPress={() => openUrl(SUPPORT_URL).catch(() => {})}>
           <MaterialCommunityIcons name="coffee-outline" size={20} color={colors.text} />
           <Text style={styles.linkText}>{t('Support Helix')}</Text>
@@ -416,6 +447,13 @@ const styles = StyleSheet.create({
     fontSize: 11,
     lineHeight: 16,
     marginLeft: 20 + spacing.sm,
+  },
+  legalNote: {
+    color: colors.subtext,
+    fontSize: 11,
+    lineHeight: 16,
+    marginLeft: 20 + spacing.sm,
+    marginBottom: spacing.xs,
   },
   notesTitle: {
     color: colors.text,
