@@ -98,16 +98,37 @@ in `services/i18n.ts` are best-effort.
 
 ## Credits
 
-Helix is an independent project by [FatBoy721](https://github.com/FatBoy721).
+  Helix is an independent project by [FatBoy721](https://
+  github.com/FatBoy721).
 
-On-device slicing incorporates work from
-**[u1-slicer-for-android](https://github.com/taylormadearmy/u1-slicer-for-android)**
-(Taylor Madearmy) and the
-[OrcaSlicer](https://github.com/SoftFever/OrcaSlicer) /
-[PrusaSlicer](https://github.com/prusa3d/PrusaSlicer) engine (AGPL-3.0). See
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and
-[ATTRIBUTION.md](ATTRIBUTION.md).
+  On-device slicing incorporates work from
+  **[u1-slicer-for-android](https://github.com/taylormadearmy/
+  u1-slicer-for-android)**
+  (Taylor Madearmy) and the
+  [OrcaSlicer](https://github.com/SoftFever/OrcaSlicer) /
+  [PrusaSlicer](https://github.com/prusa3d/PrusaSlicer) engine
+  (AGPL-3.0).
 
+  Printer-side integration redistributes components from the
+  [Bespok3d daemon](https://github.com/Bespok3d/daemon) and
+  [Bespok3d adapters](https://github.com/Bespok3d/adapters)
+  projects (AGPL-3.0-or-later).
+
+  Helix also distributes an optional Bespok3d-packaged
+  touchscreen plugin based on
+  [HelixScreen](https://github.com/prestonbrown/helixscreen),
+  developed by
+  356C LLC and contributors (GPL-3.0-or-later).
+
+  Helix is not affiliated with or endorsed by Bespok3d, 356C
+  LLC, or the
+  HelixScreen contributors.
+
+  See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and
+  [ATTRIBUTION.md](ATTRIBUTION.md) for complete attribution,
+  licensing, source,
+  and distribution details.
+  
 ## License
 
 Helix is licensed under the
