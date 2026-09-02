@@ -6,6 +6,10 @@ over LAN or Tailscale.
 
 <p align="center"><img src="assets/icon.png" width="160" alt="Helix"></p>
 
+<p align="center">
+  <img src="https://img.shields.io/github/downloads/FatBoy721/Helix/total" alt="Total Downloads">
+</p>
+
 ## Install
 
 **Android:** grab the APK from the [latest release](https://github.com/FatBoy721/Helix/releases/latest)
