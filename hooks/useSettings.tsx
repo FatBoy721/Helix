@@ -4,6 +4,7 @@ import { setLanguage } from '../services/i18n';
 import { colors } from '../constants/theme';
 import { colors as cockpitColors } from '../components/settings/cockpitTheme';
 import { setAccent } from '../components/dashboard/shared';
+import { setNativeAiDetectionSensitivity } from '../services/nativeSlicer';
 import { DEFAULT_SETTINGS, migrateSettings } from '../services/settingsMigration';
 import type { Settings } from '../services/settingsMigration';
 
@@ -61,6 +62,10 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
         AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(migrated)).catch(() => {});
         latestRef.current = migrated;
         setSettings(migrated);
+        // Printer transport must not wait on an unrelated native preference
+        // mirror. On a cold Android launch the bridge can still be warming up,
+        // which used to delay `loaded` and therefore the initial connection.
+        void setNativeAiDetectionSensitivity(migrated.aiDetectionSensitivity).catch(() => {});
       } catch {
         // corrupt/missing settings — fall back to defaults
       } finally {
@@ -74,7 +79,10 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
     latestRef.current = next;
     applyAppearance(next);
     setSettings(next);
-    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+    await Promise.all([
+      AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next)),
+      setNativeAiDetectionSensitivity(next.aiDetectionSensitivity),
+    ]);
   }, []);
 
   const value = useMemo(() => ({ settings, loaded, update }), [settings, loaded, update]);

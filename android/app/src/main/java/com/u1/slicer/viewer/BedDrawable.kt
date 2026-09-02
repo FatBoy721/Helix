@@ -6,9 +6,11 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 /**
- * Shared bed rendering: U1 bed fill mesh, minor grid (10mm), major grid (50mm), border.
+ * Shared bed rendering: plate fill mesh, minor grid (10mm), major grid (50mm), border.
  * Instantiated by both ModelRenderer and GcodeRenderer so camera/gesture fixes
  * automatically apply to both viewers.
+ *
+ * Geometry comes from [bedProfile] rather than the U1 constants this started as.
  */
 class BedDrawable(private val context: Context) {
 
@@ -22,16 +24,59 @@ class BedDrawable(private val context: Context) {
     private var majorGridVertexCount = 0
     private var bedBorderVAO = 0
 
+    /** Geometry built into the VAOs; null until the first [setup]. */
+    private var builtProfile: BedProfile? = null
+
+    /**
+     * Buffers backing the current bed. Deleting a VAO does not delete the VBOs
+     * attached to it, so they are tracked here and freed on rebuild.
+     */
+    private val ownedVBOs = mutableListOf<Int>()
+
+    /**
+     * The bed to draw. Set from the UI thread before or after the surface
+     * exists — VAOs cannot be built off the GL thread, so a change here is only
+     * recorded, and [draw] rebuilds on the next frame when it notices the
+     * built geometry is stale.
+     */
+    @Volatile
+    var bedProfile: BedProfile = BedProfile.U1
+
     /** Call from onSurfaceCreated on the GL thread. */
     fun setup(context: Context) {
         gridShader = ShaderProgram(context, "shaders/grid.vert", "shaders/grid.frag")
-        setupBedMesh(context)
-        setupGrid()
+        rebuild(context, bedProfile)
+    }
+
+    private fun rebuild(context: Context, profile: BedProfile) {
+        releaseGeometry()
+        setupBedMesh(context, profile)
+        setupGrid(profile)
+        builtProfile = profile
+    }
+
+    /** Drops the VAOs/VBOs backing the current bed so a rebuild does not leak them. */
+    private fun releaseGeometry() {
+        val vaos = intArrayOf(bedFillVAO, gridVAO, majorGridVAO, bedBorderVAO).filter { it != 0 }
+        if (vaos.isNotEmpty()) GLES30.glDeleteVertexArrays(vaos.size, vaos.toIntArray(), 0)
+        if (ownedVBOs.isNotEmpty()) {
+            GLES30.glDeleteBuffers(ownedVBOs.size, ownedVBOs.toIntArray(), 0)
+            ownedVBOs.clear()
+        }
+        bedFillVAO = 0; bedFillVertexCount = 0
+        gridVAO = 0; gridVertexCount = 0
+        majorGridVAO = 0; majorGridVertexCount = 0
+        bedBorderVAO = 0
     }
 
     /** Call from onDrawFrame on the GL thread. */
     fun draw(camera: Camera) {
         val shader = gridShader ?: return
+
+        // Picked up here rather than in the setter: this is the GL thread.
+        val wanted = bedProfile
+        if (builtProfile != wanted) rebuild(context, wanted)
+
         shader.use()
         camera.computeMVP()
         GLES30.glUniformMatrix4fv(shader.getUniformLocation("u_MVPMatrix"), 1, false, camera.mvpMatrix, 0)
@@ -66,22 +111,25 @@ class BedDrawable(private val context: Context) {
         GLES30.glBindVertexArray(0)
     }
 
-    private fun setupBedMesh(context: Context) {
+    private fun setupBedMesh(context: Context, profile: BedProfile) {
+        val asset = profile.modelAsset ?: return
         val bytes = try {
-            context.assets.open("bed/u1_bed.stl").readBytes()
+            context.assets.open("bed/$asset").readBytes()
         } catch (_: Exception) { return }
 
         if (bytes.size < 84) return
         val buf = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
         buf.position(80)
         val triCount = buf.int
+        // Guard a truncated or ASCII STL before trusting the triangle count.
+        if (bytes.size < 84 + triCount * 50) return
 
         val verts = mutableListOf<Float>()
         repeat(triCount) {
             buf.position(buf.position() + 12) // skip normal
             repeat(3) {
-                val x = buf.float + 135f
-                val y = buf.float + 135f
+                val x = buf.float + profile.centerX
+                val y = buf.float + profile.centerY
                 buf.float // Z — flatten to 0
                 verts.add(x); verts.add(y); verts.add(0f)
             }
@@ -94,7 +142,7 @@ class BedDrawable(private val context: Context) {
         fbuf.put(verts.toFloatArray()); fbuf.flip()
 
         val vaos = IntArray(1); GLES30.glGenVertexArrays(1, vaos, 0); bedFillVAO = vaos[0]
-        val vbos = IntArray(1); GLES30.glGenBuffers(1, vbos, 0)
+        val vbos = IntArray(1); GLES30.glGenBuffers(1, vbos, 0); ownedVBOs += vbos[0]
         GLES30.glBindVertexArray(bedFillVAO)
         GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, vbos[0])
         GLES30.glBufferData(GLES30.GL_ARRAY_BUFFER, verts.size * 4, fbuf, GLES30.GL_STATIC_DRAW)
@@ -103,8 +151,8 @@ class BedDrawable(private val context: Context) {
         GLES30.glBindVertexArray(0)
     }
 
-    private fun setupGrid() {
-        val bedW = 270f; val bedH = 270f
+    private fun setupGrid(profile: BedProfile) {
+        val bedW = profile.sizeX; val bedH = profile.sizeY
 
         fun makeLineVao(step: Float): Pair<Int, Int> {
             val lines = mutableListOf<Float>()
@@ -114,7 +162,7 @@ class BedDrawable(private val context: Context) {
             val buf = ByteBuffer.allocateDirect(lines.size * 4).order(ByteOrder.nativeOrder()).asFloatBuffer()
             buf.put(lines.toFloatArray()); buf.flip()
             val vaos = IntArray(1); GLES30.glGenVertexArrays(1, vaos, 0)
-            val vbos = IntArray(1); GLES30.glGenBuffers(1, vbos, 0)
+            val vbos = IntArray(1); GLES30.glGenBuffers(1, vbos, 0); ownedVBOs += vbos[0]
             GLES30.glBindVertexArray(vaos[0])
             GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, vbos[0])
             GLES30.glBufferData(GLES30.GL_ARRAY_BUFFER, lines.size * 4, buf, GLES30.GL_STATIC_DRAW)
@@ -137,7 +185,7 @@ class BedDrawable(private val context: Context) {
         val borderBuf = ByteBuffer.allocateDirect(border.size * 4).order(ByteOrder.nativeOrder()).asFloatBuffer()
         borderBuf.put(border); borderBuf.flip()
         val bVaos = IntArray(1); GLES30.glGenVertexArrays(1, bVaos, 0); bedBorderVAO = bVaos[0]
-        val bVbos = IntArray(1); GLES30.glGenBuffers(1, bVbos, 0)
+        val bVbos = IntArray(1); GLES30.glGenBuffers(1, bVbos, 0); ownedVBOs += bVbos[0]
         GLES30.glBindVertexArray(bedBorderVAO)
         GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, bVbos[0])
         GLES30.glBufferData(GLES30.GL_ARRAY_BUFFER, border.size * 4, borderBuf, GLES30.GL_STATIC_DRAW)

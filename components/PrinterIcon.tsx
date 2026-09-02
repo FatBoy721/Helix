@@ -27,9 +27,9 @@ export function PrinterIcon({
           y2="870"
           gradientUnits="userSpaceOnUse"
         >
-          <Stop offset="0" stopColor={color ?? '#303030'} />
-          <Stop offset="0.48" stopColor={color ?? '#1D1D1D'} stopOpacity={color ? 0.78 : 1} />
-          <Stop offset="1" stopColor={color ?? '#2A2A2A'} stopOpacity={color ? 0.9 : 1} />
+          <Stop offset="0" stopColor={color ?? '#B8B8B8'} />
+          <Stop offset="0.48" stopColor={color ?? '#8C8C8C'} stopOpacity={color ? 0.78 : 1} />
+          <Stop offset="1" stopColor={color ?? '#A4A4A4'} stopOpacity={color ? 0.9 : 1} />
         </LinearGradient>
         <LinearGradient
           id="edgeGrad"
@@ -39,8 +39,8 @@ export function PrinterIcon({
           y2="766"
           gradientUnits="userSpaceOnUse"
         >
-          <Stop offset="0" stopColor="#141414" />
-          <Stop offset="1" stopColor="#090909" />
+          <Stop offset="0" stopColor="#5C5C5C" />
+          <Stop offset="1" stopColor="#464646" />
         </LinearGradient>
         <LinearGradient
           id="metalGrad"
@@ -50,9 +50,9 @@ export function PrinterIcon({
           y2="487"
           gradientUnits="userSpaceOnUse"
         >
-          <Stop offset="0" stopColor="#292929" />
-          <Stop offset="0.5" stopColor="#1F1F1F" />
-          <Stop offset="1" stopColor="#303030" />
+          <Stop offset="0" stopColor="#ACACAC" />
+          <Stop offset="0.5" stopColor="#929292" />
+          <Stop offset="1" stopColor="#C0C0C0" />
         </LinearGradient>
         <LinearGradient
           id="plateGrad"
@@ -62,8 +62,8 @@ export function PrinterIcon({
           y2="730"
           gradientUnits="userSpaceOnUse"
         >
-          <Stop offset="0" stopColor="#2B2B2B" />
-          <Stop offset="1" stopColor="#191919" />
+          <Stop offset="0" stopColor="#9C9C9C" />
+          <Stop offset="1" stopColor="#707070" />
         </LinearGradient>
         <LinearGradient
           id="panelGrad"
@@ -73,13 +73,13 @@ export function PrinterIcon({
           y2="392"
           gradientUnits="userSpaceOnUse"
         >
-          <Stop offset="0" stopColor="#4B4B4B" />
-          <Stop offset="1" stopColor="#333333" />
+          <Stop offset="0" stopColor="#C8C8C8" />
+          <Stop offset="1" stopColor="#A0A0A0" />
         </LinearGradient>
       </Defs>
 
       {/* Bowden tube / filament guide stubs */}
-      <G fill="url(#bodyGrad)" stroke="#090909" strokeWidth={1}>
+      <G fill="url(#bodyGrad)" stroke="#4E4E4E" strokeWidth={1}>
         <Path d="M433 217V137C433 136.45 433.45 136 434 136H449C449.55 136 450 136.45 450 137V217H433Z" />
         <Path d="M481 217V137C481 136.45 481.45 136 482 136H497C497.55 136 498 136.45 498 137V217H481Z" />
         <Path d="M526 217V137C526 136.45 526.45 136 527 136H542C542.55 136 543 136.45 543 137V217H526Z" />
@@ -90,24 +90,24 @@ export function PrinterIcon({
       <Path
         d="M250 217H774C802 217 827 234 837 260L869 345C870.3 348.4 871 352 871 355.7V799C871 829 847 853 817 853H814L810 864C808.4 868.4 804.2 871 799.6 871H708.4C703.8 871 699.6 868.4 698 864L694 853H329L325 864C323.4 868.4 319.2 871 314.6 871H223.4C218.8 871 214.6 868.4 213 864L209 853H207C177 853 153 829 153 799V355.7C153 352 153.7 348.4 155 345L187 260C197 234 222 217 250 217Z"
         fill="url(#bodyGrad)"
-        stroke="#080808"
+        stroke="#4E4E4E"
         strokeWidth={1.4}
       />
 
       {/* Control screen */}
-      <Rect x={677} y={334} width={131} height={58} rx={6} fill="url(#panelGrad)" stroke="#1A1A1A" strokeWidth={1.2} />
-      <Rect x={690} y={345} width={37} height={13} rx={6.5} fill="#171717" stroke="#080808" strokeWidth={1} />
-      <Rect x={690} y={367} width={70} height={12} rx={6} fill="#171717" stroke="#080808" strokeWidth={1} />
-      <Circle cx={783.5} cy={363} r={15} fill="#1A1A1A" stroke="#0A0A0A" strokeWidth={1.2} />
+      <Rect x={677} y={334} width={131} height={58} rx={6} fill="url(#panelGrad)" stroke="#4E4E4E" strokeWidth={1.2} />
+      <Rect x={690} y={345} width={37} height={13} rx={6.5} fill="#2A2A2A" stroke="#4E4E4E" strokeWidth={1} />
+      <Rect x={690} y={367} width={70} height={12} rx={6} fill="#2A2A2A" stroke="#4E4E4E" strokeWidth={1} />
+      <Circle cx={783.5} cy={363} r={15} fill="#2A2A2A" stroke="#4E4E4E" strokeWidth={1.2} />
 
       {/* Door / viewing window */}
-      <Rect x={226} y={424} width={569} height={342} rx={24} fill="url(#edgeGrad)" stroke="#060606" strokeWidth={1.5} />
+      <Rect x={226} y={424} width={569} height={342} rx={24} fill="url(#edgeGrad)" stroke="#4E4E4E" strokeWidth={1.5} />
 
       {/* X gantry rail */}
-      <Rect x={272} y={459} width={479} height={28} rx={14} fill="url(#metalGrad)" stroke="#111" strokeWidth={1.1} />
+      <Rect x={272} y={459} width={479} height={28} rx={14} fill="url(#metalGrad)" stroke="#4E4E4E" strokeWidth={1.1} />
 
       {/* Four toolheads */}
-      <G fill="#242424" stroke="#101010" strokeWidth={1.1}>
+      <G fill="#707070" stroke="#4E4E4E" strokeWidth={1.1}>
         <Path d="M304 487H382V529C382 539 374 547 364 547H355L345 569C344.3 570.6 341.9 570.6 341.2 569L331 547H322C312 547 304 539 304 529V487Z" />
         <Path d="M416 487H494V529C494 539 486 547 476 547H467L457 569C456.3 570.6 453.9 570.6 453.2 569L443 547H434C424 547 416 539 416 529V487Z" />
         <Path d="M528 487H606V529C606 539 598 547 588 547H579L569 569C568.3 570.6 565.9 570.6 565.2 569L555 547H546C536 547 528 539 528 529V487Z" />
@@ -118,7 +118,7 @@ export function PrinterIcon({
       <Path
         d="M302 647H720C726 647 731 651 732 657L776 719C780 725 776 731 769 731H253C246 731 242 725 246 719L290 657C291 651 296 647 302 647Z"
         fill="url(#plateGrad)"
-        stroke="#111"
+        stroke="#4E4E4E"
         strokeWidth={1.2}
       />
     </Svg>

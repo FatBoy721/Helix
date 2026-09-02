@@ -26,11 +26,12 @@ object GcodeToolMapper {
     RegexOption.IGNORE_CASE,
   )
 
-  // Keep adaptive probing inside the U1's safe bed-mesh area. Model bounds
+  // Keep adaptive probing inside the machine's safe bed-mesh area. Model bounds
   // can extend past X=0 even though the printer's motion range starts there.
-  private const val U1_BED_MESH_MIN = 3.0
-  private const val U1_BED_MESH_MAX = 267.0
-  private const val U1_BED_MESH_MIN_SPAN = 1.0
+  // The inset was written for the U1 as a literal 3..267 on a 270mm bed; it is
+  // now derived so a 220mm machine does not get told to probe out to 267.
+  private const val BED_MESH_INSET = 3.0
+  private const val BED_MESH_MIN_SPAN = 1.0
 
   fun applyInitialTool(path: String, initialTool: Int): Result {
     val file = File(path)
@@ -103,7 +104,12 @@ object GcodeToolMapper {
     return Result(changed, if (mask == 0) 1 shl tool else mask)
   }
 
-  fun clampU1BedMeshBounds(path: String): BedMeshResult {
+  /**
+   * Constrains BED_MESH_CALIBRATE probe bounds to the machine's bed, inset by a
+   * few mm. A gcode with no such command is left untouched and reported as a
+   * success — most machines never emit one.
+   */
+  fun clampBedMeshBounds(path: String, bedSizeX: Float, bedSizeY: Float): BedMeshResult {
     val file = File(path)
     if (!file.exists() || !file.isFile) return BedMeshResult(false, false)
 
@@ -111,7 +117,7 @@ object GcodeToolMapper {
     val safeToRewrite = runCatching {
       file.bufferedReader().useLines { lines ->
         lines.forEach { line ->
-          val result = rewriteBedMeshLine(line)
+          val result = rewriteBedMeshLine(line, bedSizeX, bedSizeY)
           if (!result.valid) return@runCatching false
           if (result.line != line) needsRewrite = true
         }
@@ -127,7 +133,7 @@ object GcodeToolMapper {
       tmp.bufferedWriter().use { out ->
         file.bufferedReader().useLines { lines ->
           lines.forEach { line ->
-            val result = rewriteBedMeshLine(line)
+            val result = rewriteBedMeshLine(line, bedSizeX, bedSizeY)
             check(result.valid)
             out.write(result.line)
             out.newLine()
@@ -148,7 +154,7 @@ object GcodeToolMapper {
     return BedMeshResult(true, true)
   }
 
-  private fun rewriteBedMeshLine(line: String): BedMeshLineResult {
+  private fun rewriteBedMeshLine(line: String, bedSizeX: Float, bedSizeY: Float): BedMeshLineResult {
     val trimmed = line.trimStart()
     if (!trimmed.startsWith("BED_MESH_CALIBRATE", ignoreCase = true)) {
       return BedMeshLineResult(line, true)
@@ -163,8 +169,8 @@ object GcodeToolMapper {
       return BedMeshLineResult(line, false)
     }
 
-    val safeX = safeAxisBounds(minX, maxX) ?: return BedMeshLineResult(line, false)
-    val safeY = safeAxisBounds(minY, maxY) ?: return BedMeshLineResult(line, false)
+    val safeX = safeAxisBounds(minX, maxX, bedSizeX) ?: return BedMeshLineResult(line, false)
+    val safeY = safeAxisBounds(minY, maxY, bedSizeY) ?: return BedMeshLineResult(line, false)
     if (safeX.first == minX && safeX.second == maxX &&
       safeY.first == minY && safeY.second == maxY
     ) {
@@ -176,12 +182,16 @@ object GcodeToolMapper {
     return BedMeshLineResult(line.replaceRange(match.range, replacement), true)
   }
 
-  private fun safeAxisBounds(rawMin: Double, rawMax: Double): Pair<Double, Double>? {
+  private fun safeAxisBounds(rawMin: Double, rawMax: Double, bedSize: Float): Pair<Double, Double>? {
     if (!rawMin.isFinite() || !rawMax.isFinite() || rawMax <= rawMin) return null
 
-    val safeRange = U1_BED_MESH_MAX - U1_BED_MESH_MIN
-    val span = (rawMax - rawMin).coerceIn(U1_BED_MESH_MIN_SPAN, safeRange)
-    val min = rawMin.coerceIn(U1_BED_MESH_MIN, U1_BED_MESH_MAX - span)
+    val axisMin = BED_MESH_INSET
+    val axisMax = bedSize.toDouble() - BED_MESH_INSET
+    if (axisMax <= axisMin) return null
+
+    val safeRange = axisMax - axisMin
+    val span = (rawMax - rawMin).coerceIn(BED_MESH_MIN_SPAN.coerceAtMost(safeRange), safeRange)
+    val min = rawMin.coerceIn(axisMin, axisMax - span)
     return min to (min + span)
   }
 

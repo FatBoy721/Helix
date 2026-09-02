@@ -8,7 +8,7 @@
 // Camera and job are separate cards, not one overlaid hero: an unobstructed
 // feed matters more than the vertical space a scrim would save.
 //
-// Every section maps to a settings.dashboard.* toggle and renders independently,
+// Every section maps to a sections.* toggle and renders independently,
 // so hiding any one of them leaves the rest intact.
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
@@ -37,17 +37,38 @@ import { alpha, COCKPIT as P, Dot } from './shared';
 import PrinterIcon from '../PrinterIcon';
 import { useSettings, type PrinterEntry } from '../../hooks/useSettings';
 import { api, printerConnectionUrl } from '../../services/moonraker';
+import { MANUAL_PRINTER_KIND } from '../../services/printerProfiles';
+import { getDashboardSections } from '../../services/dashboardSections';
+import { probeBambuStatus } from '../../services/bambuMqtt';
+import { applyBambuReport } from '../../services/bambuReport';
+import { bambuStatus } from '../../services/bambuAdapter';
+import { useMoonraker } from '../../hooks/useMoonraker';
 
 const PAGE = 16;
 const PICKER_GAP = 8;
+// Picker probes use a short timeout: an offline printer should flip to its
+// offline dot fast instead of hanging the row for the default 8s.
+const PICKER_PROBE_TIMEOUT_MS = 2500;
+const BAMBU_PICKER_PROBE_INTERVAL_MS = 15000;
 
 type PickerAnchor = { x: number; y: number; width: number; height: number };
-type PrinterRuntime = { state: 'idle' | 'busy' | 'offline'; progress: number };
+type PrinterRuntime = { state: 'idle' | 'busy' | 'offline' | 'unknown'; progress: number };
+// The picker is a Modal that unmounts whenever it closes. Keep its last
+// confirmed rows outside that short lifecycle so printer swaps do not flash
+// "Not checked" while the same background probes reconnect.
+const pickerRuntimeCache: Record<string, PrinterRuntime> = {};
 type PrinterStatusQuery = {
   print_stats?: { state?: string };
   virtual_sdcard?: { progress?: number };
   display_status?: { progress?: number };
 };
+
+function bambuHost(url: string): string {
+  return (url || '')
+    .trim()
+    .replace(/^\w+:\/\//, '')
+    .replace(/[/:].*$/, '');
+}
 
 function activePrinterRuntime(data: CockpitData): PrinterRuntime {
   if (!data.online) return { state: 'offline', progress: 0 };
@@ -61,14 +82,25 @@ function runtimeLabel(runtime: PrinterRuntime): string {
   if (runtime.state === 'busy') {
     return `${t('Busy')} · ${Math.round(runtime.progress * 100)}%`;
   }
-  return runtime.state === 'offline' ? t('Offline') : t('Idle');
+  if (runtime.state === 'offline') return t('Offline');
+  return runtime.state === 'unknown' ? t('Not checked') : t('Idle');
+}
+
+function runtimeColor(runtime: PrinterRuntime): string {
+  if (runtime.state === 'busy') return P.accent;
+  if (runtime.state === 'offline') return P.danger;
+  return runtime.state === 'unknown' ? P.dim : P.success;
 }
 
 export default function Cockpit() {
   const { width } = useWindowDimensions();
   const contentWidth = width - PAGE * 2;
   const data = useCockpitData();
+  const { connection, reconnect } = useMoonraker();
   const { settings, update } = useSettings();
+  // Layout follows the active printer, so hiding a card on one machine leaves
+  // the others alone.
+  const sections = getDashboardSections(settings);
 
   // The slicer hands off a one-shot "print sent" notice for Home to surface.
   // Nothing else consumes it, so dropping this silently loses the confirmation.
@@ -84,6 +116,8 @@ export default function Cockpit() {
   const [editingSlot, setEditingSlot] = useState<number | null>(null);
   const [pickerAnchor, setPickerAnchor] = useState<PickerAnchor | null>(null);
   const [addingPrinter, setAddingPrinter] = useState<PrinterEntry | null>(null);
+  const [configuringMaterialStation, setConfiguringMaterialStation] =
+    useState<PrinterEntry | null>(null);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [estopConfirm, setEstopConfirm] = useState(false);
   const notifications = useNotifications();
@@ -96,6 +130,8 @@ export default function Cockpit() {
         <TopBar
           data={data}
           unread={notifications.unread}
+          showReconnect={Boolean(settings.activePrinterId) && connection === 'disconnected'}
+          onReconnect={reconnect}
           onOpenPicker={setPickerAnchor}
           onOpenNotifications={() => {
             setNotificationsOpen(true);
@@ -103,17 +139,26 @@ export default function Cockpit() {
           }}
         />
         {/* Every section honors its Settings → Dashboard toggle. */}
-        {settings.dashboard.camera ? <CameraCard data={data} width={contentWidth} /> : null}
-        {settings.dashboard.progress ? <JobCard data={data} /> : null}
-        {settings.dashboard.filaments ? (
-          <ToolheadRail data={data} onEditSlot={setEditingSlot} />
+        {sections.camera ? <CameraCard data={data} width={contentWidth} /> : null}
+        {sections.progress ? <JobCard data={data} /> : null}
+        {sections.filaments ? (
+          <ToolheadRail
+            data={data}
+            onEditSlot={setEditingSlot}
+            onConfigureMaterialStation={() => {
+              const activePrinter = settings.printers.find(
+                (printer) => printer.id === settings.activePrinterId
+              );
+              if (activePrinter) setConfiguringMaterialStation(activePrinter);
+            }}
+          />
         ) : null}
-        {settings.dashboard.temps ? (
+        {sections.temps ? (
           <TempRow cardWidth={(contentWidth - 20) / 3} data={data} />
         ) : null}
-        {settings.dashboard.pandaBreath ? <PandaBreathRow data={data} /> : null}
-        {settings.dashboard.macros ? <MacroRow data={data} /> : null}
-        {settings.dashboard.gui ? (
+        {sections.pandaBreath ? <PandaBreathRow data={data} /> : null}
+        {sections.macros ? <MacroRow data={data} /> : null}
+        {sections.gui ? (
           <PrinterScreen
             data={data}
             width={contentWidth}
@@ -121,7 +166,7 @@ export default function Cockpit() {
             onInteractEnd={() => setScrollEnabled(true)}
           />
         ) : null}
-        {settings.dashboard.estop ? <EstopBar onPress={() => setEstopConfirm(true)} /> : null}
+        {sections.estop ? <EstopBar onPress={() => setEstopConfirm(true)} /> : null}
       </ScrollView>
 
       {editingSlot != null ? (
@@ -142,6 +187,7 @@ export default function Cockpit() {
               tailscaleUrl: '',
               cameraUrl: '/webcam/webrtc',
               connectionMode: 'lan',
+              kind: MANUAL_PRINTER_KIND,
             });
           }}
         />
@@ -156,6 +202,24 @@ export default function Cockpit() {
           await update({
             printers,
             activePrinterId: printer.id,
+            primaryUrl: printer.url,
+            tailscaleUrl: printer.tailscaleUrl,
+            cameraUrl: printer.cameraUrl,
+            connectionMode: printer.connectionMode,
+          });
+          return true;
+        }}
+      />
+
+      <PrinterEditorModal
+        mode="edit"
+        printer={configuringMaterialStation}
+        onClose={() => setConfiguringMaterialStation(null)}
+        onSave={async (printer) => {
+          await update({
+            printers: settings.printers.map((entry) =>
+              entry.id === printer.id ? printer : entry
+            ),
             primaryUrl: printer.url,
             tailscaleUrl: printer.tailscaleUrl,
             cameraUrl: printer.cameraUrl,
@@ -218,11 +282,15 @@ export default function Cockpit() {
 function TopBar({
   data,
   unread,
+  showReconnect,
+  onReconnect,
   onOpenPicker,
   onOpenNotifications,
 }: {
   data: CockpitData;
   unread: number;
+  showReconnect: boolean;
+  onReconnect: () => void;
   onOpenPicker: (anchor: PickerAnchor) => void;
   onOpenNotifications: () => void;
 }) {
@@ -255,6 +323,18 @@ function TopBar({
         <MaterialCommunityIcons name="chevron-down" size={20} color={P.dim} />
       </Pressable>
 
+      {showReconnect ? (
+        <Pressable
+          style={({ pressed }) => [styles.reconnectButton, pressed && { opacity: 0.7 }]}
+          onPress={onReconnect}
+          accessibilityRole="button"
+          accessibilityLabel={t('Reconnect now')}
+          hitSlop={6}
+        >
+          <MaterialCommunityIcons name="lan-connect" size={21} color={P.danger} />
+        </Pressable>
+      ) : null}
+
       <NotificationButton unread={unread} onPress={onOpenNotifications} />
     </View>
   );
@@ -276,7 +356,10 @@ function PrinterPicker({
   const { height } = useWindowDimensions();
   const printers = settings.printers ?? [];
   const activeRuntime = activePrinterRuntime(data);
-  const [runtimeByPrinter, setRuntimeByPrinter] = useState<Record<string, PrinterRuntime>>({});
+  const [runtimeByPrinter, setRuntimeByPrinter] = useState<Record<string, PrinterRuntime>>(
+    () => ({ ...pickerRuntimeCache })
+  );
+  const lastBambuProbeAt = useRef<Record<string, number>>({});
   // Android's Modal window includes the translucent status bar while
   // measureInWindow reports coordinates below it.
   const anchorY = anchor.y + insets.top;
@@ -285,39 +368,83 @@ function PrinterPicker({
     height - insets.bottom;
 
   useEffect(() => {
+    const activePrinterId = settings.activePrinterId;
+    if (activePrinterId && data.online) {
+      pickerRuntimeCache[activePrinterId] = activeRuntime;
+    }
+  }, [settings.activePrinterId, data.online, activeRuntime.state, activeRuntime.progress]);
+
+  useEffect(() => {
     let mounted = true;
     const poll = async () => {
-      const entries = await Promise.all(
+      // Update each printer as its own probe resolves. A single Promise.all
+      // here would let one offline printer (which hangs until the fetch
+      // timeout) hold back the online status of every other row.
+      await Promise.all(
         printers
           .filter((printer) => printer.id !== settings.activePrinterId)
-          .map(async (printer): Promise<[string, PrinterRuntime]> => {
+          .map(async (printer) => {
+            const setRuntime = (runtime: PrinterRuntime) => {
+              pickerRuntimeCache[printer.id] = runtime;
+              if (mounted) {
+                setRuntimeByPrinter((current) => ({ ...current, [printer.id]: runtime }));
+              }
+            };
+            if (printer.kind === 'bambu-lan') {
+              const host = bambuHost(printer.url);
+              const serial = (printer.serialNumber ?? '').trim();
+              const accessCode = (printer.checkCode ?? '').trim();
+              if (!host || !serial || !accessCode) {
+                setRuntime({ state: 'unknown', progress: 0 });
+                return;
+              }
+
+              const now = Date.now();
+              if (now - (lastBambuProbeAt.current[printer.id] ?? 0) < BAMBU_PICKER_PROBE_INTERVAL_MS) {
+                return;
+              }
+              lastBambuProbeAt.current[printer.id] = now;
+              try {
+                const report = await probeBambuStatus({ host, serial, accessCode });
+                const mapped = bambuStatus(applyBambuReport({}, report).state);
+                const rawState = mapped.print_stats?.state?.toLowerCase();
+                const rawProgress = mapped.virtual_sdcard?.progress ?? 0;
+                const progress = Math.max(0, Math.min(1, Number(rawProgress) || 0));
+                setRuntime({
+                  state: rawState === 'printing' || rawState === 'paused' ? 'busy' : 'idle',
+                  progress,
+                });
+              } catch {
+                setRuntime({ state: 'offline', progress: 0 });
+              }
+              return;
+            }
             const url = printerConnectionUrl(printer);
-            if (!url) return [printer.id, { state: 'offline', progress: 0 }];
+            if (!url) {
+              setRuntime({ state: 'offline', progress: 0 });
+              return;
+            }
             try {
-              const result = await api.queryObjects<PrinterStatusQuery>(url, [
-                'print_stats',
-                'virtual_sdcard',
-                'display_status',
-              ]);
+              const result = await api.queryObjects<PrinterStatusQuery>(
+                url,
+                ['print_stats', 'virtual_sdcard', 'display_status'],
+                PICKER_PROBE_TIMEOUT_MS
+              );
               const rawState = result.status?.print_stats?.state?.toLowerCase();
               const rawProgress =
                 result.status?.virtual_sdcard?.progress ??
                 result.status?.display_status?.progress ??
                 0;
               const progress = Math.max(0, Math.min(1, Number(rawProgress) || 0));
-              return [
-                printer.id,
-                {
-                  state: rawState === 'printing' || rawState === 'paused' ? 'busy' : 'idle',
-                  progress,
-                },
-              ];
+              setRuntime({
+                state: rawState === 'printing' || rawState === 'paused' ? 'busy' : 'idle',
+                progress,
+              });
             } catch {
-              return [printer.id, { state: 'offline', progress: 0 }];
+              setRuntime({ state: 'offline', progress: 0 });
             }
           })
       );
-      if (mounted) setRuntimeByPrinter(Object.fromEntries(entries));
     };
     void poll();
     const timer = setInterval(() => void poll(), 5000);
@@ -371,13 +498,8 @@ function PrinterPicker({
                 const active = printer.id === settings.activePrinterId;
                 const runtime = active
                   ? activeRuntime
-                  : runtimeByPrinter[printer.id] ?? { state: 'offline', progress: 0 };
-                const runtimeColor =
-                  runtime.state === 'busy'
-                    ? P.accent
-                    : runtime.state === 'offline'
-                      ? P.danger
-                      : P.success;
+                  : runtimeByPrinter[printer.id] ?? { state: 'unknown', progress: 0 };
+                const color = runtimeColor(runtime);
                 return (
                   <Pressable
                     key={printer.id}
@@ -395,13 +517,13 @@ function PrinterPicker({
                       onClose();
                     }}
                   >
-                    <Dot color={runtimeColor} size={8} />
+                    <Dot color={color} size={8} />
                     <View style={styles.rowText}>
                       <Text style={styles.rowName} numberOfLines={1}>
                         {printer.name?.trim() || t('Printer')}
                       </Text>
                     </View>
-                    <Text style={[styles.rowStatus, { color: runtimeColor }]}>
+                    <Text style={[styles.rowStatus, { color }]}>
                       {runtimeLabel(runtime)}
                     </Text>
                     {active ? (
@@ -453,6 +575,16 @@ const styles = StyleSheet.create({
   printerName: { color: P.text, fontSize: 15, fontWeight: '800' },
   statusRow: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 2 },
   statusText: { color: P.dim, fontSize: 11, fontWeight: '700' },
+  reconnectButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: alpha(P.danger, 0.1),
+    borderWidth: 1,
+    borderColor: alpha(P.danger, 0.35),
+  },
 
   pickerLayer: {
     ...StyleSheet.absoluteFillObject,

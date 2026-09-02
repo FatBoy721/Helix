@@ -16,7 +16,8 @@ Relevant paths in this repository:
 - `android/app/src/main/java/com/u1/slicer/` — JNI bridge, G-code parser, 3D viewers
 - `android/app/src/main/java/org/crabcore/u1control/slicing/` — Helix integration layer
 - `android/app/src/main/jniLibs/arm64-v8a/libprusaslicer-jni.so` — prebuilt slicing engine
-- `android/app/src/main/assets/` — Orca U1 machine/process profiles and GL shaders
+- `android/app/src/main/assets/` — Orca machine/process profiles, vendor build-plate
+  models under `bed/`, and GL shaders
 
 ## Slicing engine lineage
 
@@ -36,6 +37,20 @@ corresponding Kotlin/Java components is provided in this repository.
 MakerWorld is a third-party service operated by Bambu Lab. Helix opens MakerWorld
 pages in a WebView for user-initiated downloads; Helix does not redistribute
 MakerWorld content.
+
+## Bespok3d bootstrap packages
+
+The Android app contains the unmodified bootstrap packages distributed with the
+official Bespok3d Desktop v0.7.3 release:
+
+- `bespok3d-daemon` 0.12.24 — https://github.com/Bespok3d/daemon
+- `bespok3d-jinni-snapmaker-u1` 0.1.10 — https://github.com/Bespok3d/adapters
+
+Both projects are licensed AGPL-3.0-or-later. Their signed manifests,
+documentation, dependency metadata, and upstream copyright notices remain
+inside `android/app/src/main/assets/bespok3d/bootstrap-v0.7.3.zip`. Helix checks
+the packages against Bespok3d's pinned OpenPGP publisher key and verifies every
+manifest SHA-256 before an enrollment operation can read the payload.
 
 ## Your obligations when distributing Helix
 

@@ -273,8 +273,15 @@ object GcodeParser {
                         raw = raw * 10 + (l[i] - '0')
                         i++
                     }
-                    currentExtruder = raw.coerceIn(0, 31)  // safety cap
-                    ensureExtruderCapacity(currentExtruder)
+                    // Bambu uses T255 for unload/no-tool and T1000 for its
+                    // nozzle-load-line routine. They are machine operations,
+                    // not printable filament indices. Clamping either to 31
+                    // made every following extrusion use the last (usually
+                    // white) palette entry in the G-code preview.
+                    if (raw in 0..31) {
+                        currentExtruder = raw
+                        ensureExtruderCapacity(currentExtruder)
+                    }
                 }
             }
         }

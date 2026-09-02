@@ -8,7 +8,23 @@ import React, {
   useState,
 } from 'react';
 import { AppState } from 'react-native';
-import { isTailscaleUrl, normalizeMoonrakerUrl, WebcamInfo, wsUrl } from '../services/moonraker';
+import {
+  discoverHelixdRemoteBase,
+  helixdLanBaseUrl,
+  helixdRemoteMoonrakerUrl,
+  isTailscaleUrl,
+  normalizeBaseUrl,
+  normalizeMoonrakerUrl,
+  WebcamInfo,
+  wsUrl,
+} from '../services/moonraker';
+import {
+  PROMPT_DISMISS_GCODE,
+  reducePromptLine,
+  visiblePrompt,
+  type KlipperPrompt,
+  type PromptBuildState,
+} from '../services/klipperPrompt';
 import { notifyEvent } from '../services/notifications';
 import {
   historyFailureMessage,
@@ -26,23 +42,41 @@ export interface ConsoleLine {
   text: string;
 }
 
-interface MoonrakerContextValue {
+/**
+ * The shape every transport must present. Moonraker is one implementation;
+ * hooks/useBambu.tsx is another, for printers that do not speak Moonraker at
+ * all. Consumers only ever see this interface, which is why adding Bambu needed
+ * no changes to the dashboard.
+ */
+export interface MoonrakerContextValue {
   connection: ConnectionState;
   klippyState: string;
   activeUrl: string;
+  /** Same-route HTTP origin for camera/screen traffic when it differs from Moonraker. */
+  proxyUrl?: string;
   status: Record<string, any>;
   consoleLines: ConsoleLine[];
   macros: string[];
   objectList: string[];
   gcodeHelp: Record<string, string>;
   webcams: WebcamInfo[];
+  /**
+   * Dialog the printer is waiting on, or null. Klipper prompts block the
+   * command that raised them until a client answers, so an unrendered prompt
+   * looks exactly like a print that silently never started.
+   */
+  prompt: KlipperPrompt | null;
+  /** Runs a prompt button's G-code and closes the dialog. */
+  answerPrompt: (gcode: string) => Promise<void>;
+  /** Closes the dialog and tells the printer the prompt was dismissed. */
+  dismissPrompt: () => Promise<void>;
   sendGcode: (script: string) => Promise<boolean>;
   rpc: (method: string, params?: Record<string, any>) => Promise<any>;
   reconnect: () => void;
   clearConsole: () => void;
 }
 
-const MoonrakerContext = createContext<MoonrakerContextValue | null>(null);
+export const MoonrakerContext = createContext<MoonrakerContextValue | null>(null);
 
 // Base objects used for dashboard state. extruder1-3 cover the U1 tool heads,
 // and gcode_move supplies position data used by Fluidd-style controls.
@@ -62,6 +96,8 @@ const BASE_OBJECTS = [
   'fan',
 ];
 const MAX_CONSOLE_LINES = 500;
+/** Filament swaps are a human-speed event; this only needs to feel prompt. */
+const PRINT_TASK_CONFIG_POLL_MS = 8000;
 const WS_OPEN = 1;
 const TEMP_WARNING_DELTA_C = 15;
 const TEMP_WARNING_RESET_DELTA_C = 5;
@@ -70,6 +106,12 @@ const EXTRUDER_TARGET_DROP_MIN_DELTA_C = 5;
 const EXTRUDER_TARGET_DROP_SUPPRESS_MS = 5 * 60 * 1000;
 const HEATER_KEY_RE = /^(heater_bed|extruder\d*|heater_generic\s+.+)$/;
 const EXTRUDER_KEY_RE = /^extruder\d*$/;
+// Android Doze can silently kill the TCP socket while the app is backgrounded:
+// ws.readyState stays OPEN and onclose never fires, so the UI shows "connected"
+// but no data flows. A periodic probe detects these zombie sockets and forces a
+// reconnect when the printer stops answering.
+const HEARTBEAT_INTERVAL_MS = 10000;
+const HEARTBEAT_TIMEOUT_MS = 6000;
 let lineIdCounter = 0;
 
 function heaterLabel(key: string): string {
@@ -84,13 +126,15 @@ function isExtruderKey(key: string): boolean {
 }
 
 export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
-  const { settings, loaded } = useSettings();
+  const { settings, loaded, update } = useSettings();
 
   const [connection, setConnection] = useState<ConnectionState>('disconnected');
   const [klippyState, setKlippyState] = useState('unknown');
   const [activeUrl, setActiveUrl] = useState('');
+  const [proxyUrl, setProxyUrl] = useState('');
   const [status, setStatus] = useState<Record<string, any>>({});
   const [consoleLines, setConsoleLines] = useState<ConsoleLine[]>([]);
+  const [promptState, setPromptState] = useState<PromptBuildState | null>(null);
   const [objectList, setObjectList] = useState<string[]>([]);
   const [gcodeHelp, setGcodeHelp] = useState<Record<string, string>>({});
   const [webcams, setWebcams] = useState<WebcamInfo[]>([]);
@@ -121,6 +165,8 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
   const disconnectNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const appStateRef = useRef(AppState.currentState);
   const backgroundedAtRef = useRef<number | null>(null);
+  const heartbeatTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const freshAd5xRemoteRef = useRef<{ printerId: string; url: string } | null>(null);
 
   settingsRef.current = settings;
 
@@ -292,6 +338,9 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
   const handleGcodeResponse = useCallback(
     (msg: string) => {
       addLine(msg.startsWith('!!') ? 'error' : 'response', msg);
+      // reducePromptLine returns the same reference for non-prompt lines, so
+      // ordinary console chatter does not re-render anything.
+      setPromptState((previous) => reducePromptLine(previous, msg));
       if (msg.startsWith('!!')) lastGcodeErrorRef.current = msg.replace(/^!!\s*/, '').trim();
       // multiACE does not emit a dedicated swap-complete event, so this uses
       // broad console response matching.
@@ -346,6 +395,24 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
           })
           .catch(() => {});
 
+        // Recover a prompt the printer raised before this client connected.
+        // Klipper prompts are ordinary G-code responses, so a client that joins
+        // afterwards never sees them and the dialog would stay invisible while
+        // the printer waits. Moonraker keeps a rolling buffer; folding it
+        // replays the whole conversation, and any prompt already answered or
+        // ended reduces back to null on its own.
+        rpc('server.gcode_store', { count: 100 })
+          .then((store: { gcode_store?: { message?: string }[] }) => {
+            if (gen !== generationRef.current) return;
+            const lines = store?.gcode_store ?? [];
+            let recovered: PromptBuildState | null = null;
+            for (const entry of lines) {
+              recovered = reducePromptLine(recovered, String(entry?.message ?? ''));
+            }
+            if (recovered) setPromptState(recovered);
+          })
+          .catch(() => {});
+
         const subs: Record<string, null> = {};
         for (const name of BASE_OBJECTS) if (objects.includes(name)) subs[name] = null;
         for (const name of objects) {
@@ -389,11 +456,61 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
     [rpc, addLine]
   );
 
+  const refreshAd5xRemoteBase = useCallback(async () => {
+    const current = settingsRef.current;
+    const printer = current.printers.find((entry) => entry.id === current.activePrinterId);
+    if (printer?.kind !== 'flashforge-ad5x') return;
+
+    const discovered = await discoverHelixdRemoteBase(printer.url || current.primaryUrl);
+    if (discovered === null) return;
+
+    // The active printer may have changed while the LAN request was in flight.
+    const latest = settingsRef.current;
+    const latestPrinter = latest.printers.find((entry) => entry.id === printer.id);
+    if (latest.activePrinterId !== printer.id || latestPrinter?.kind !== 'flashforge-ad5x') return;
+
+    freshAd5xRemoteRef.current = { printerId: printer.id, url: discovered };
+    const savedPrinterUrl = normalizeBaseUrl(latestPrinter.tailscaleUrl || '');
+    const savedActiveUrl = normalizeBaseUrl(latest.tailscaleUrl || '');
+    if (savedPrinterUrl === discovered && savedActiveUrl === discovered) return;
+
+    await update({
+      tailscaleUrl: discovered,
+      printers: latest.printers.map((entry) =>
+        entry.id === printer.id ? { ...entry, tailscaleUrl: discovered } : entry
+      ),
+    });
+  }, [update]);
+
   const getUrls = useCallback((): string[] => {
     const urls: string[] = [];
-    const primary = normalizeMoonrakerUrl(settingsRef.current.primaryUrl);
-    const tailscale = normalizeMoonrakerUrl(settingsRef.current.tailscaleUrl);
-    const mode = settingsRef.current.connectionMode;
+    const current = settingsRef.current;
+    const activePrinter = current.printers.find((entry) => entry.id === current.activePrinterId);
+    const mode = current.connectionMode;
+
+    if (activePrinter?.kind === 'flashforge-ad5x') {
+      const primary = normalizeMoonrakerUrl(activePrinter.url || current.primaryUrl);
+      const fresh = freshAd5xRemoteRef.current;
+      const tailscaleProxy = fresh?.printerId === activePrinter.id
+        ? fresh.url
+        : normalizeBaseUrl(activePrinter.tailscaleUrl || current.tailscaleUrl);
+      const tailscale = helixdRemoteMoonrakerUrl(tailscaleProxy);
+
+      if (mode === 'lan') {
+        if (primary) urls.push(primary);
+        return urls;
+      }
+      if (mode === 'tailscale') {
+        if (tailscale) urls.push(tailscale);
+        return urls;
+      }
+      if (primary) urls.push(primary);
+      if (tailscale && tailscale !== primary) urls.push(tailscale);
+      return urls;
+    }
+
+    const primary = normalizeMoonrakerUrl(current.primaryUrl);
+    const tailscale = normalizeMoonrakerUrl(current.tailscaleUrl);
 
     // tailscale-only means tailscale-only!!!!!!!!!!!
     // crabcore
@@ -414,17 +531,60 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
 
   const connectRef = useRef<() => void>(() => {});
 
+  const stopHeartbeat = useCallback(() => {
+    if (heartbeatTimerRef.current) {
+      clearInterval(heartbeatTimerRef.current);
+      heartbeatTimerRef.current = null;
+    }
+  }, []);
+
+  const startHeartbeat = useCallback(() => {
+    stopHeartbeat();
+    heartbeatTimerRef.current = setInterval(() => {
+      if (!connectedRef.current) return;
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== WS_OPEN) return;
+      let answered = false;
+      const probeTimeout = setTimeout(() => {
+        if (!answered && connectedRef.current) {
+          addLine('error', '// Printer connection stalled — reconnecting');
+          connectRef.current();
+        }
+      }, HEARTBEAT_TIMEOUT_MS);
+      rpc('server.info')
+        .then(() => {
+          answered = true;
+          clearTimeout(probeTimeout);
+        })
+        .catch(() => {
+          answered = true;
+          clearTimeout(probeTimeout);
+        });
+    }, HEARTBEAT_INTERVAL_MS);
+  }, [rpc, addLine, stopHeartbeat]);
+
   const scheduleReconnect = useCallback(() => {
     failCountRef.current += 1;
+    void refreshAd5xRemoteBase();
     const urls = getUrls();
-    // Alternate LAN and Tailscale after each failed connection attempt.
-    if (urls.length > 1) {
-      urlIndexRef.current = (urlIndexRef.current + 1) % urls.length;
-    }
-    const delay = Math.min(1000 * Math.pow(2, Math.min(failCountRef.current, 3)), 8000);
+    const hasAlternate = urls.length > 1;
+    const nextIndex = hasAlternate
+      ? (urlIndexRef.current + 1) % urls.length
+      : urlIndexRef.current;
+    urlIndexRef.current = nextIndex;
+
+    // Try every configured route once before backing off. A dead LAN address
+    // in Auto mode must hand directly to Tailscale instead of adding a retry
+    // delay between candidates. Backoff starts only after the full set failed.
+    const completedCycle = !hasAlternate || nextIndex === 0;
+    const failedCycles = Math.ceil(failCountRef.current / Math.max(1, urls.length));
+    const delay = completedCycle
+      ? Math.min(1000 * Math.pow(2, Math.min(failedCycles, 3)), 8000)
+      : 0;
+    if (!completedCycle) setConnection('connecting');
     if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
     reconnectTimerRef.current = setTimeout(() => connectRef.current(), delay);
-  }, [getUrls]);
+  }, [getUrls, refreshAd5xRemoteBase]);
 
   const connect = useCallback(() => {
     const gen = ++generationRef.current;
@@ -449,11 +609,28 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
     const urls = getUrls();
     if (!urls.length) {
       connectedRef.current = false;
+      setProxyUrl('');
       setConnection('disconnected');
       return;
     }
     const url = urls[urlIndexRef.current % urls.length];
     setActiveUrl(url);
+    const current = settingsRef.current;
+    const activePrinter = current.printers.find((entry) => entry.id === current.activePrinterId);
+    if (activePrinter?.kind === 'flashforge-ad5x') {
+      const fresh = freshAd5xRemoteRef.current;
+      const remoteProxy = fresh?.printerId === activePrinter.id
+        ? fresh.url
+        : normalizeBaseUrl(activePrinter.tailscaleUrl || current.tailscaleUrl);
+      const remoteMoonraker = helixdRemoteMoonrakerUrl(remoteProxy);
+      setProxyUrl(
+        remoteMoonraker && url === remoteMoonraker
+          ? remoteProxy
+          : helixdLanBaseUrl(activePrinter.url || current.primaryUrl)
+      );
+    } else {
+      setProxyUrl(url);
+    }
     setConnection('connecting');
 
     let ws: WebSocket;
@@ -467,13 +644,23 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
 
     // React Native WebSocket has no connection timeout, so enforce one to keep
     // LAN/Tailscale failover moving when a network path hangs.
-    const connectTimeoutMs = isTailscaleUrl(url) ? 15000 : 7000;
+    // Auto gets a short LAN probe because another viable route is waiting.
+    // LAN-only keeps the longer window for printers on weak Wi-Fi.
+    const autoFailover = current.connectionMode === 'auto' && urls.length > 1;
+    const connectTimeoutMs = isTailscaleUrl(url) ? 15000 : autoFailover ? 3000 : 7000;
     if (connectTimeoutRef.current) clearTimeout(connectTimeoutRef.current);
     connectTimeoutRef.current = setTimeout(() => {
       if (gen === generationRef.current && ws.readyState !== WS_OPEN) {
+        // Closing a CONNECTING React Native socket can take Android several
+        // more seconds to emit onclose. Invalidate this generation first so
+        // its eventual callback cannot rotate the URL a second time, then
+        // schedule the alternate route ourselves immediately.
+        generationRef.current += 1;
+        connectTimeoutRef.current = null;
         try {
           ws.close();
         } catch {}
+        scheduleReconnect();
       }
     }, connectTimeoutMs);
 
@@ -489,6 +676,7 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
       setConnection('connected');
       addLine('response', `// Connected to ${url}`);
       initPrinter(gen);
+      startHeartbeat();
     };
 
     ws.onmessage = (ev) => {
@@ -563,6 +751,7 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
 
     ws.onclose = () => {
       if (gen !== generationRef.current) return;
+      stopHeartbeat();
       if (connectTimeoutRef.current) clearTimeout(connectTimeoutRef.current);
       const wasConnected = connectedRef.current;
       connectedRef.current = false;
@@ -590,7 +779,7 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
       }
       scheduleReconnect();
     };
-  }, [getUrls, scheduleReconnect, addLine, initPrinter, checkTransitions, emitTerminalNotification, flushStatus, handleGcodeResponse]);
+  }, [getUrls, scheduleReconnect, addLine, initPrinter, checkTransitions, emitTerminalNotification, flushStatus, handleGcodeResponse, startHeartbeat, stopHeartbeat]);
 
   connectRef.current = connect;
 
@@ -598,6 +787,7 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
     if (!loaded) return;
     urlIndexRef.current = 0;
     failCountRef.current = 0;
+    void refreshAd5xRemoteBase();
     connect();
 
     const sub = AppState.addEventListener('change', (state) => {
@@ -635,12 +825,53 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
       if (connectTimeoutRef.current) clearTimeout(connectTimeoutRef.current);
       if (disconnectNoticeTimerRef.current) clearTimeout(disconnectNoticeTimerRef.current);
       if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
+      if (heartbeatTimerRef.current) clearInterval(heartbeatTimerRef.current);
       try {
         wsRef.current?.close();
       } catch {}
       wsRef.current = null;
     };
-  }, [loaded, settings.primaryUrl, settings.tailscaleUrl, settings.connectionMode, connect]);
+  }, [
+    loaded,
+    settings.activePrinterId,
+    settings.primaryUrl,
+    settings.tailscaleUrl,
+    settings.connectionMode,
+    connect,
+    refreshAd5xRemoteBase,
+  ]);
+
+  // print_task_config carries the loaded filament (colour, vendor, type) but the
+  // U1 never emits notify_status_update for it — subscribing only ever yields
+  // the value read at connect time. Loading a new spool therefore left the app
+  // showing the previous filament until it was restarted, so poll it instead.
+  useEffect(() => {
+    if (connection !== 'connected') return;
+
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await rpc('printer.objects.query', {
+          objects: { print_task_config: null },
+        });
+        const next = res?.status?.print_task_config;
+        if (cancelled || !next) return;
+        statusRef.current.print_task_config = {
+          ...statusRef.current.print_task_config,
+          ...next,
+        };
+        flushStatus();
+      } catch {
+        // A dropped poll is harmless — the next one picks the change up.
+      }
+    };
+
+    const timer = setInterval(() => void poll(), PRINT_TASK_CONFIG_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [connection, rpc, flushStatus]);
 
   const sendGcode = useCallback(
     async (script: string): Promise<boolean> => {
@@ -676,23 +907,44 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
     [objectList]
   );
 
+  const prompt = useMemo(() => visiblePrompt(promptState), [promptState]);
+
+  // Close locally first: the dialog must never outlive the tap, even if the
+  // printer is slow or the socket has dropped.
+  const answerPrompt = useCallback(
+    async (gcode: string) => {
+      setPromptState(null);
+      await sendGcode(gcode).catch(() => false);
+    },
+    [sendGcode]
+  );
+
+  const dismissPrompt = useCallback(async () => {
+    setPromptState(null);
+    await sendGcode(PROMPT_DISMISS_GCODE).catch(() => false);
+  }, [sendGcode]);
+
   const value = useMemo<MoonrakerContextValue>(
     () => ({
       connection,
       klippyState,
       activeUrl,
+      proxyUrl,
       status,
       consoleLines,
       macros,
       objectList,
       gcodeHelp,
       webcams,
+      prompt,
+      answerPrompt,
+      dismissPrompt,
       sendGcode,
       rpc,
       reconnect,
       clearConsole,
     }),
-    [connection, klippyState, activeUrl, status, consoleLines, macros, objectList, gcodeHelp, webcams, sendGcode, rpc, reconnect, clearConsole]
+    [connection, klippyState, activeUrl, proxyUrl, status, consoleLines, macros, objectList, gcodeHelp, webcams, prompt, answerPrompt, dismissPrompt, sendGcode, rpc, reconnect, clearConsole]
   );
 
   return <MoonrakerContext.Provider value={value}>{children}</MoonrakerContext.Provider>;

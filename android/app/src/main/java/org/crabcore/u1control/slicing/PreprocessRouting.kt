@@ -50,11 +50,66 @@ object PreprocessRouting {
     val blocking: Boolean,
   )
 
-  enum class Pref(val label: String, val hint: String, val icon: Int) {
-    AUTO_LEVEL("Auto leveling", "Probe the bed before the first layer", HelixIcons.GRID),
-    FLOW_CAL("Flow calibration", "Calibrate extrusion on the way in", HelixIcons.TUNE),
-    TIMELAPSE("Time-lapse", "Capture a frame every layer", HelixIcons.VIDEO),
+  /**
+   * [key] matches services/printerProfiles.ts, which decides which of these a
+   * given machine actually offers — an AD5X has no flow-calibration macro and
+   * no TIMELAPSE_* macros, and printing with either injected aborts the job.
+   */
+  enum class Pref(val key: String, val label: String, val hint: String, val icon: Int) {
+    AI_MONITORING(
+      "aiMonitoring",
+      "AI Monitoring",
+      "Detects spaghetti failures and build-plate obstructions, then automatically pauses the print",
+      HelixIcons.ROBOT_OUTLINE,
+    ),
+    AUTO_LEVEL("autoLevel", "Auto leveling", "Probe the bed before the first layer", HelixIcons.GRID),
+    FLOW_CAL("flowCal", "Flow calibration", "Calibrate extrusion on the way in", HelixIcons.TUNE),
+    TIMELAPSE("timelapse", "Time-lapse", "Capture a frame every layer", HelixIcons.VIDEO),
+    IFS("ifs", "Enable IFS", "Feed colors from the material station", HelixIcons.TUNE),
   }
+
+  /**
+   * The toggles [printPrefs] permits, in enum order. AI monitoring is a U1
+   * firmware capability rather than a slicer preference, so its availability
+   * travels separately from the machine-profile key list.
+   */
+  @JvmStatic
+  fun offeredPrefs(printPrefs: List<String>, supportsAiMonitoring: Boolean = false): List<Pref> {
+    val allowed = printPrefs.toSet()
+    return Pref.values().filter { pref ->
+      if (pref == Pref.AI_MONITORING) supportsAiMonitoring
+      else printPrefs.isEmpty() || allowed.contains(pref.key)
+    }
+  }
+
+  /** U1/PAXX command applied immediately before a print starts. */
+  @JvmStatic
+  fun aiMonitoringCommand(
+    enabled: Boolean,
+    sensitivity: AiDetectionSensitivity = AiDetectionSensitivity.LOW,
+  ): String = if (enabled) {
+    "DEFECT_DETECTION_CONFIG MAIN_ENABLE=1 CLEAN_BED_ENABLE=1 " +
+      "NOODLE_ENABLE=1 SENSITIVITY=${sensitivity.wireValue}"
+  } else {
+    "DEFECT_DETECTION_CONFIG MAIN_ENABLE=0"
+  }
+
+  /**
+   * How a machine names its material feeds. "tool" — U1/generic: tools are
+   * "T0"–"T3", the physical feeds are plain "lanes". "lane" — AD5X/Bambu: the
+   * feeds themselves are the unit, shown as "Lane 1"–"Lane 4". Mirrors
+   * `LaneNaming` in services/printPreprocess.ts.
+   */
+  /** The noun for a physical feed: "lane" on the U1, "Lane" where the machine names them. */
+  fun laneWord(laneNaming: String): String = if (laneNaming == "lane") "Lane" else "lane"
+
+  /** Chip label: "T2" on the U1, the bare number "3" where the feeds are named lanes. */
+  fun toolChipLabel(fileTool: Int, laneNaming: String): String =
+    if (laneNaming == "lane") "${fileTool + 1}" else "T$fileTool"
+
+  /** Full reference: "T0" on the U1, "Lane 1" where the feeds are named lanes. */
+  fun toolLabel(fileTool: Int, laneNaming: String): String =
+    if (laneNaming == "lane") "Lane ${fileTool + 1}" else "T$fileTool"
 
   /** A lane that can feed a print. `unknown` counts — refusing on no evidence is worse. */
   private fun usable(lane: Lane?): Boolean = lane != null && !lane.isEmpty
@@ -132,7 +187,9 @@ object PreprocessRouting {
     printerName: String,
     tools: List<Tool>,
     lanes: List<Lane>,
+    laneNaming: String = "tool",
   ): List<Check> {
+    val word = laneWord(laneNaming)
     val starved = tools.filter { it.lane.isEmpty }
     val loadedCount = lanes.count { it.status == "loaded" }
     val rerouted = tools.filter { it.source == RouteSource.AUTO }
@@ -141,20 +198,21 @@ object PreprocessRouting {
       starved.isNotEmpty() -> Check(
         key = "filament",
         detail = "This file needs ${tools.size} materials and only $loadedCount " +
-          (if (loadedCount == 1) "lane has" else "lanes have") + " filament",
+          (if (loadedCount == 1) "$word has" else "${word}s have") + " filament",
         tone = Tone.FAIL,
         blocking = true,
       )
       rerouted.isNotEmpty() -> Check(
         key = "filament",
-        detail = rerouted.joinToString(", ") { "T${it.fileTool} to lane ${it.assigned + 1}" } +
-          " — your own lanes were empty",
+        detail = rerouted.joinToString(", ") {
+          "${toolLabel(it.fileTool, laneNaming)} to $word ${it.assigned + 1}"
+        } + " — your own ${word}s were empty",
         tone = Tone.PASS,
         blocking = true,
       )
       else -> Check(
         key = "filament",
-        detail = "${tools.size} of ${lanes.size} lanes feed this print",
+        detail = "${tools.size} of ${lanes.size} ${word}s feed this print",
         tone = Tone.PASS,
         blocking = true,
       )

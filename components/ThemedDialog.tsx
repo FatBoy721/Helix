@@ -10,6 +10,7 @@ import React from 'react';
 import {
   KeyboardAvoidingView,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -103,10 +104,24 @@ export default function ThemedDialog({
 
   if (focus) {
     return (
-      <Modal visible={visible} animationType="fade" onRequestClose={onClose}>
-        <View style={[danger ? styles.focus : styles.focusForm, { paddingTop: insets.top }]}>
+      <Modal
+        visible={visible}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={onClose}
+      >
+        <KeyboardAvoidingView
+          style={[danger ? styles.focus : styles.focusForm, { paddingTop: insets.top }]}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        >
           {danger ? <View pointerEvents="none" style={styles.focusTint} /> : null}
-          <ScrollView contentContainerStyle={styles.focusBody}>
+          <ScrollView
+            contentContainerStyle={styles.focusBody}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+            automaticallyAdjustKeyboardInsets={Platform.OS === 'ios' && form}
+          >
             {!form ? (
               <View
                 style={[
@@ -133,7 +148,7 @@ export default function ThemedDialog({
               <ActionButton key={action.text} action={action} big />
             ))}
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     );
   }

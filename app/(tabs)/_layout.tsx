@@ -9,6 +9,7 @@ import { t } from '../../services/i18n';
 import { getSharedModelFile, takeNativePrintSentNotice } from '../../services/nativeSlicer';
 import { setPendingModel } from '../../services/pendingModel';
 import { COCKPIT } from '../../components/dashboard/shared';
+import { setPrintIntent } from '../../services/printIntent';
 
 type IconName = React.ComponentProps<typeof MaterialCommunityIcons>['name'];
 
@@ -37,6 +38,16 @@ export default function TabLayout() {
         const filename = await takeNativePrintSentNotice();
         if (!alive) return;
         if (filename) {
+          // The native preview screen uploads and starts the print itself, so
+          // nothing staged an intent for the material prompt a zmod printer
+          // raises — and without one that prompt takes over the screen with a
+          // slot picker the user already filled in on the native sheet.
+          //
+          // Empty mapping on purpose: that sheet has already rewritten the
+          // G-code so each tool is its physical slot, so the printer's own
+          // proposal is correct and answering it verbatim is exactly what
+          // tapping its "Start print" button would do.
+          setPrintIntent({ filename, toolToSlot: {} });
           setNativePrintFilename(filename);
           router.navigate('/');
           return;

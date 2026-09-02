@@ -12,6 +12,8 @@ import com.facebook.react.ReactHost
 import com.facebook.react.common.ReleaseLevel
 import com.facebook.react.defaults.DefaultNewArchitectureEntryPoint
 import com.facebook.react.defaults.DefaultReactNativeHost
+import org.crabcore.u1control.bambu.BambuMqttPackage
+import org.crabcore.u1control.bespok3d.Bespok3dPackage
 import org.crabcore.u1control.slicing.HelixSlicerPackage
 
 import expo.modules.ApplicationLifecycleDispatcher
@@ -26,6 +28,8 @@ class MainApplication : Application(), ReactApplication {
             PackageList(this).packages.apply {
               // Packages that cannot be autolinked yet can be added manually here, for example:
               add(HelixSlicerPackage())
+              add(BambuMqttPackage())
+              add(Bespok3dPackage())
             }
 
           override fun getJSMainModuleName(): String = ".expo/.virtual-metro-entry"

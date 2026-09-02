@@ -17,6 +17,10 @@ import { usePrintHistory } from '../../hooks/usePrintHistory';
 import { t } from '../../services/i18n';
 import { useThemedAlert } from '../../hooks/useThemedAlert';
 import { useSettings } from '../../hooks/useSettings';
+import { printerProfile } from '../../services/printerProfiles';
+import { setPrintIntent } from '../../services/printIntent';
+import { ifsOffPrintGcode } from '../../services/zmodPrintPrompt';
+import { applicablePrefs } from '../../services/printPreprocess';
 import PrintPreprocessDialog, { type PrintPref } from '../../components/PrintPreprocessDialog';
 import type { FilamentSlotDisplay } from '../../components/FilamentSlotsEditor';
 import { normalizeFilamentSlotColors } from '../../constants/filamentColors';
@@ -26,6 +30,27 @@ import { injectTimelapseMacros, uploadGcodeToPrinter } from '../../services/nati
 import { routeTools } from '../../services/printPreprocess';
 
 type Mode = 'files' | 'history' | 'timelapse';
+
+/** Map a Klipper print_stats state onto the picker's label and selectability. */
+function printerStatusEntry(state: string | undefined): {
+  label: string;
+  busy: boolean;
+  selectable: boolean;
+} {
+  const value = state ?? 'unknown';
+  const busy = value === 'printing' || value === 'paused';
+  const label =
+    value === 'printing' ? 'Printing'
+    : value === 'paused' ? 'Paused'
+    : value === 'error' ? 'Error'
+    : 'Ready';
+  return { label, busy, selectable: !busy };
+}
+
+/** Short enough that a sleeping printer doesn't hold the picker on "Checking…". */
+const PRINTER_PROBE_TIMEOUT_MS = 3500;
+/** Re-check while the sheet is open so a printer waking up turns Ready on its own. */
+const PRINTER_PROBE_INTERVAL_MS = 6000;
 
 const MODES: { key: Mode; label: string }[] = [
   { key: 'files', label: 'Files' },
@@ -50,6 +75,7 @@ export default function FilesScreen() {
     flowCal: false,
     timelapse: false,
     autoLevel: false,
+    ifs: true,
   });
   const [assignments, setAssignments] = useState<Record<number, number>>({});
   const [selectedPrinterId, setSelectedPrinterId] = useState(settings.activePrinterId);
@@ -86,32 +112,69 @@ export default function FilesScreen() {
     id: printer.id,
     name: printer.name,
     url: printerConnectionUrl(printer),
+    kind: printer.kind,
+    // Files can print to a printer other than the active one, so the PAXX
+    // capability has to travel with the option, not come from global state.
+    supportsPrintPreferences: printerProfile(printer.kind).supportsPrintPreferences,
   })), [settings.printers]);
 
   useEffect(() => {
     if (!selectedFile || printerOptions.length === 0) return;
     let live = true;
-    setPrinterStatuses(Object.fromEntries(printerOptions.map((printer) => [printer.id, {
-      label: 'Checking…',
-      busy: false,
-      selectable: Boolean(printer.url),
-    }])));
-    Promise.all(printerOptions.map(async (printer) => {
-      if (!printer.url) return [printer.id, { label: 'No URL', busy: false, selectable: false }] as const;
-      try {
-        const result = await api.queryObjects<{ print_stats?: { state?: string } }>(printer.url, ['print_stats']);
-        const state = result?.status?.print_stats?.state ?? 'unknown';
-        const busy = state === 'printing' || state === 'paused';
-        const label = state === 'printing' ? 'Printing' : state === 'paused' ? 'Paused' : state === 'error' ? 'Error' : 'Ready';
-        return [printer.id, { label, busy, selectable: !busy }] as const;
-      } catch {
-        return [printer.id, { label: 'Offline', busy: false, selectable: false }] as const;
+
+    // Paint something true immediately. The active printer already has a live
+    // WebSocket, so its state is known without any HTTP round trip, and any
+    // printer probed earlier keeps its last-known label rather than flashing
+    // "Checking…" — a connected machine reading "Offline" for a few seconds
+    // looks like a fault when nothing is actually wrong.
+    setPrinterStatuses((prev) => {
+      const next = { ...prev };
+      for (const printer of printerOptions) {
+        if (printer.id === settings.activePrinterId && connected) {
+          next[printer.id] = printerStatusEntry(status.print_stats?.state);
+        } else if (!next[printer.id]) {
+          next[printer.id] = {
+            label: 'Checking…',
+            busy: false,
+            selectable: Boolean(printer.url),
+          };
+        }
       }
-    })).then((entries) => {
-      if (live) setPrinterStatuses(Object.fromEntries(entries));
+      return next;
     });
-    return () => { live = false; };
-  }, [printerOptions, selectedFile]);
+    // Each printer settles on its own. Waiting for Promise.all meant one slow
+    // or sleeping machine held every other printer on "Checking…", and a single
+    // failed probe used to pin a live printer at "Offline" until the sheet was
+    // reopened — so keep re-probing while it is open.
+    const probe = async (printer: (typeof printerOptions)[number]) => {
+      if (!printer.url) return { label: 'No URL', busy: false, selectable: false };
+      try {
+        const result = await api.queryObjects<{ print_stats?: { state?: string } }>(
+          printer.url,
+          ['print_stats'],
+          PRINTER_PROBE_TIMEOUT_MS
+        );
+        return printerStatusEntry(result?.status?.print_stats?.state);
+      } catch {
+        return { label: 'Offline', busy: false, selectable: false };
+      }
+    };
+
+    const probeAll = () => {
+      printerOptions.forEach(async (printer) => {
+        const entry = await probe(printer);
+        if (!live) return;
+        setPrinterStatuses((prev) => ({ ...prev, [printer.id]: entry }));
+      });
+    };
+
+    probeAll();
+    const timer = setInterval(probeAll, PRINTER_PROBE_INTERVAL_MS);
+    return () => {
+      live = false;
+      clearInterval(timer);
+    };
+  }, [printerOptions, selectedFile, connected, settings.activePrinterId, status.print_stats?.state]);
 
   const selectedPrinter = printerOptions.find((printer) => printer.id === selectedPrinterId) ?? printerOptions[0];
 
@@ -182,8 +245,14 @@ export default function FilesScreen() {
     });
   }, []);
 
-  const reprint = useCallback(async (prefs: Readonly<Record<PrintPref, boolean>>) => {
+  const reprint = useCallback(async (rawPrefs: Readonly<Record<PrintPref, boolean>>) => {
     if (!selectedFile || !activeUrl || !selectedPrinter?.url) return;
+    // Files can send to a printer other than the active one, and the toggles
+    // survive a swap — honour only what the target machine offers.
+    const prefs = applicablePrefs(rawPrefs, {
+      printerKind: selectedPrinter.kind,
+      multicolor: fileSlots.length > 1,
+    });
     const targetUrl = selectedPrinter.url;
     setSending(true);
     setModalError(null);
@@ -203,6 +272,10 @@ export default function FilesScreen() {
         required.map((tool) => [tool, routing[tool]?.lane ?? tool]),
       );
       const usedExtruders = [...new Set(Object.values(effectiveAssignments) as number[])].sort((a, b) => a - b);
+
+      // One toolhead: colors come from the material station, or — with IFS off —
+      // from the external side spool via zmod's per-print SET_ZCOLOR. See slicer.tsx.
+      const ifsOff = printerProfile(selectedPrinter?.kind).printPrefs.includes('ifs') && !prefs.ifs;
 
       // Busy check — refuse if the target printer is already printing/paused.
       const before = await api.queryObjects<{ print_stats?: { state?: string } }>(targetUrl, ['print_stats']);
@@ -238,36 +311,54 @@ export default function FilesScreen() {
 
       // Apply preferences (always explicit — firmware caches prior job state).
       setSendProgress(0.7);
-      await api.runGcode(
-        targetUrl,
-        `SET_MAIN_STATE MAIN_STATE=IDLE\nSET_PRINT_USED_EXTRUDERS EXTRUDERS=${usedExtruders.join(',')}\nSET_PRINT_PREFERENCES BED_LEVEL=${prefs.autoLevel ? 1 : 0} TIME_LAPSE_CAMERA=${prefs.timelapse ? 1 : 0} FLOW_CALIBRATE=${prefs.flowCal ? 1 : 0} FLOW_CALIBRATE_EXTRUDERS=0,1,2,3`,
-      );
+      // PAXX/U1 firmware only. Other machines have neither the macros nor the
+      // print_task_config object, so this block errored and then failed its own
+      // read-back — the "Printer rejected the selected print preferences" report.
+      if (selectedPrinter.supportsPrintPreferences) {
+        await api.runGcode(
+          targetUrl,
+          `SET_MAIN_STATE MAIN_STATE=IDLE\nSET_PRINT_USED_EXTRUDERS EXTRUDERS=${usedExtruders.join(',')}\nSET_PRINT_PREFERENCES BED_LEVEL=${prefs.autoLevel ? 1 : 0} TIME_LAPSE_CAMERA=${prefs.timelapse ? 1 : 0} FLOW_CALIBRATE=${prefs.flowCal ? 1 : 0} FLOW_CALIBRATE_EXTRUDERS=0,1,2,3`,
+        );
 
-      // Verify the firmware accepted the preferences; abort if not.
-      const applied = await api.queryObjects<{
-        print_task_config?: {
-          auto_bed_leveling?: boolean;
-          time_lapse_camera?: boolean;
-          flow_calibrate?: boolean;
-          flow_calib_extruders?: boolean[];
-          extruders_used?: boolean[];
-        };
-      }>(targetUrl, ['print_task_config']);
-      const taskConfig = applied?.status?.print_task_config;
-      if (
-        taskConfig?.auto_bed_leveling !== prefs.autoLevel ||
-        taskConfig?.time_lapse_camera !== prefs.timelapse ||
-        taskConfig?.flow_calibrate !== prefs.flowCal ||
-        taskConfig?.flow_calib_extruders?.length !== 4 ||
-        !taskConfig?.flow_calib_extruders?.every(Boolean) ||
-        taskConfig?.extruders_used?.length !== 4 ||
-        !taskConfig?.extruders_used?.every((used, tool) => used === usedExtruders.includes(tool))
-      ) {
-        throw new Error('Printer rejected the selected print preferences.');
+        // Verify the firmware accepted the preferences; abort if not.
+        const applied = await api.queryObjects<{
+          print_task_config?: {
+            auto_bed_leveling?: boolean;
+            time_lapse_camera?: boolean;
+            flow_calibrate?: boolean;
+            flow_calib_extruders?: boolean[];
+            extruders_used?: boolean[];
+          };
+        }>(targetUrl, ['print_task_config']);
+        const taskConfig = applied?.status?.print_task_config;
+        if (
+          taskConfig?.auto_bed_leveling !== prefs.autoLevel ||
+          taskConfig?.time_lapse_camera !== prefs.timelapse ||
+          taskConfig?.flow_calibrate !== prefs.flowCal ||
+          taskConfig?.flow_calib_extruders?.length !== 4 ||
+          !taskConfig?.flow_calib_extruders?.every(Boolean) ||
+          taskConfig?.extruders_used?.length !== 4 ||
+          !taskConfig?.extruders_used?.every((used, tool) => used === usedExtruders.includes(tool))
+        ) {
+          throw new Error('Printer rejected the selected print preferences.');
+        }
       }
 
       setSendProgress(0.92);
-      await api.startPrint(targetUrl, printPath);
+      if (ifsOff) {
+        // IFS off: SET_ZCOLOR SILENT=2 starts with no material prompt, so no
+        // intent is staged — the external side spool feeds the whole print.
+        await api.runGcode(targetUrl, ifsOffPrintGcode(printPath, prefs.autoLevel));
+      } else {
+        // Reprints keep the file's own tool numbering, so the routed assignments
+        // are the mapping a zmod material prompt needs — see printIntent.
+        setPrintIntent({
+          filename: printPath,
+          toolToSlot: effectiveAssignments,
+          autoLevel: prefs.autoLevel,
+        });
+        await api.startPrint(targetUrl, printPath);
+      }
       setSendProgress(1);
       closePrintModal();
       showAlert({ title: t('Print started'), message: printPath, icon: 'check-circle' });
@@ -341,7 +432,8 @@ export default function FilesScreen() {
         progress={sendProgress}
         errorMessage={modalError}
         onSend={reprint}
-        sendLabel="Print Again"
+        sendLabel="Hold to Print Again"
+        printerKind={selectedPrinter?.kind ?? null}
       />
     </View>
   );

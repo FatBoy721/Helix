@@ -18,6 +18,20 @@ object LastSliceStore {
   @Volatile var usedToolMask: Int = 1
   @Volatile var sliceSettingsJson: String? = null
   @Volatile var materialProfilesJson: String? = null
+  @Volatile private var bambuSendRequested: Boolean = false
+
+  /** One-shot handoff from the native preview to the RN Bambu send dialog. */
+  @Synchronized
+  fun requestBambuSend() {
+    bambuSendRequested = true
+  }
+
+  @Synchronized
+  fun takeBambuSendRequest(): Boolean {
+    val requested = bambuSendRequested
+    bambuSendRequested = false
+    return requested
+  }
 
   fun record(
     model: String,
@@ -49,5 +63,6 @@ object LastSliceStore {
     usedToolMask = 1
     sliceSettingsJson = null
     materialProfilesJson = null
+    bambuSendRequested = false
   }
 }

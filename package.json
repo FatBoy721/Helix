@@ -1,6 +1,6 @@
 {
   "name": "u1-control",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "license": "AGPL-3.0-or-later",
   "main": "expo-router/entry",
   "private": true,
@@ -27,6 +27,7 @@
     "expo-intent-launcher": "~13.0.8",
     "expo-linking": "~8.0.12",
     "expo-media-library": "~18.2.1",
+    "expo-network": "~8.0.8",
     "expo-notifications": "~0.32.17",
     "expo-router": "~6.0.24",
     "expo-screen-orientation": "~9.0.9",

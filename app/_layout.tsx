@@ -4,7 +4,8 @@ import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { DarkTheme, ThemeProvider } from '@react-navigation/native';
 import { SettingsProvider, useSettings } from '../hooks/useSettings';
-import { MoonrakerProvider } from '../hooks/useMoonraker';
+import { PrinterProvider } from '../hooks/usePrinterTransport';
+import KlipperPromptDialog from '../components/KlipperPromptDialog';
 import FirstRunSetup from '../components/FirstRunSetup';
 import {
   configureFcmForPrinter,
@@ -97,7 +98,7 @@ function AppShell() {
 
   return (
     <>
-      <MoonrakerProvider>
+      <PrinterProvider>
         <ThemeProvider value={theme}>
           <StatusBar style="light" />
           <Stack screenOptions={{ headerShown: false }}>
@@ -105,8 +106,12 @@ function AppShell() {
             <Stack.Screen name="makerworld-login" options={{ presentation: 'modal' }} />
             <Stack.Screen name="makerworld-download" options={{ presentation: 'modal' }} />
           </Stack>
+          {/* A printer can raise a prompt at any moment, including from a job
+              started elsewhere, so this lives above the whole navigator rather
+              than on any one screen. */}
+          <KlipperPromptDialog />
         </ThemeProvider>
-      </MoonrakerProvider>
+      </PrinterProvider>
       <FirstRunSetup visible={loaded && settings.printers.length === 0} />
     </>
   );

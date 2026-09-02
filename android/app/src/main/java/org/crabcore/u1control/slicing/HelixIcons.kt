@@ -33,6 +33,7 @@ object HelixIcons {
   const val PALETTE_SWATCH = 0xF08B5
   const val GRID = 0xF02C1
   const val VIDEO = 0xF0BDC
+  const val ROBOT_OUTLINE = 0xF167A
   const val HELP_CIRCLE = 0xF0625
   const val ACCESS_POINT = 0xF0002
 

@@ -1,0 +1,137 @@
+#!/bin/sh
+set -eu
+
+BESPOK3D_ROOT=${BESPOK3D:-/userdata/bespok3d}
+PLUGIN_ROOT=${BESPOK3D_PLUGINS:-$BESPOK3D_ROOT/usr/local/plugins}/helixscreen-ui
+HELIX_ROOT=$PLUGIN_ROOT/files/helixscreen
+HELIX_BINARY=$HELIX_ROOT/bin/helix-screen
+GUI_TARGET=${HELIXSCREEN_GUI_TARGET:-/usr/bin/gui}
+MOUNTS_FILE=${HELIXSCREEN_MOUNTS_FILE:-/proc/mounts}
+MOUNT_BIN=${HELIXSCREEN_MOUNT_BIN:-mount}
+UMOUNT_BIN=${HELIXSCREEN_UMOUNT_BIN:-umount}
+LMDCTL=${HELIXSCREEN_LMDCTL:-$BESPOK3D_ROOT/etc/init.d/lmdctl}
+STATE_DIR=$BESPOK3D_ROOT/var/lib/helixscreen-ui
+MODE_FILE=$STATE_DIR/screen-ui
+
+log() {
+  if command -v logger >/dev/null 2>&1; then
+    logger -p user.info -t "helixscreen-ui[$$]" -- "$*" || true
+  fi
+  printf '%s\n' "$*"
+}
+
+is_valid_binary() {
+  [ -s "$HELIX_BINARY" ] && [ -x "$HELIX_BINARY" ] &&
+    [ "$(od -An -N4 -tx1 "$HELIX_BINARY" | tr -d '[:space:]')" = 7f454c46 ]
+}
+
+is_gui_mounted() {
+  [ -r "$MOUNTS_FILE" ] && awk -v target="$GUI_TARGET" '$2 == target { found = 1 } END { exit !found }' "$MOUNTS_FILE"
+}
+
+unmount_gui() {
+  if ! is_gui_mounted; then
+    return 0
+  fi
+  "$UMOUNT_BIN" "$GUI_TARGET" || "$UMOUNT_BIN" -l "$GUI_TARGET"
+}
+
+restore_stock() {
+  if is_gui_mounted; then
+    unmount_gui
+    log "Restored the stock Snapmaker touchscreen"
+  else
+    log "Stock Snapmaker touchscreen already selected"
+  fi
+}
+
+select_helixscreen() {
+  if ! is_valid_binary; then
+    restore_stock
+    printf '%s\n' "HelixScreen binary is missing, non-executable, or not an ELF file" >&2
+    return 1
+  fi
+
+  mkdir -p "$STATE_DIR/config" "$STATE_DIR/cache"
+  if is_gui_mounted && [ "$GUI_TARGET" -ef "$HELIX_BINARY" ]; then
+    log "HelixScreen touchscreen already selected"
+    return 0
+  fi
+
+  unmount_gui
+  if ! "$MOUNT_BIN" -o ro --bind "$HELIX_BINARY" "$GUI_TARGET"; then
+    restore_stock
+    printf '%s\n' "Could not bind HelixScreen over $GUI_TARGET; stock touchscreen remains active" >&2
+    return 1
+  fi
+  log "Selected the HelixScreen touchscreen"
+}
+
+read_mode() {
+  if [ -r "$MODE_FILE" ]; then
+    mode=$(sed -n '1p' "$MODE_FILE")
+  else
+    mode=snapmaker
+  fi
+  case "$mode" in
+    snapmaker|helixscreen) printf '%s\n' "$mode" ;;
+    *) printf '%s\n' snapmaker ;;
+  esac
+}
+
+write_mode() {
+  mode=$1
+  case "$mode" in
+    snapmaker|helixscreen) ;;
+    *) printf '%s\n' "Invalid touchscreen interface: $mode" >&2; return 2 ;;
+  esac
+  mkdir -p "$STATE_DIR"
+  mode_tmp=$MODE_FILE.tmp.$$
+  trap 'rm -f "$mode_tmp"' EXIT HUP INT TERM
+  printf '%s\n' "$mode" > "$mode_tmp"
+  mv "$mode_tmp" "$MODE_FILE"
+  trap - EXIT HUP INT TERM
+}
+
+apply_mode() {
+  case "$1" in
+    snapmaker) restore_stock ;;
+    helixscreen) select_helixscreen ;;
+    *) printf '%s\n' "Invalid touchscreen interface: $1" >&2; return 2 ;;
+  esac
+}
+
+case "${1:-}" in
+  configure)
+    [ "$#" -eq 2 ] || { printf '%s\n' "Usage: $0 configure {snapmaker|helixscreen}" >&2; exit 2; }
+    previous=$(read_mode)
+    apply_mode "$2"
+    if ! write_mode "$2"; then
+      apply_mode "$previous" || true
+      exit 1
+    fi
+    ;;
+  start)
+    selected=$(read_mode)
+    apply_mode "$selected"
+    if [ "$selected" = helixscreen ]; then
+      "$LMDCTL" restart
+    fi
+    ;;
+  stop|restore-stock)
+    restore_stock
+    ;;
+  status)
+    selected=$(read_mode)
+    if is_gui_mounted && [ "$GUI_TARGET" -ef "$HELIX_BINARY" ]; then
+      active=helixscreen
+    else
+      active=snapmaker
+    fi
+    printf 'selected=%s active=%s\n' "$selected" "$active"
+    ;;
+  *)
+    printf '%s\n' "Usage: $0 {configure {snapmaker|helixscreen}|start|stop|restore-stock|status}" >&2
+    exit 2
+    ;;
+esac

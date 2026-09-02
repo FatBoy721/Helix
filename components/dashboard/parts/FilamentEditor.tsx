@@ -3,7 +3,7 @@
 // Replaces the reuse of the app's FilamentSlotsEditor, which meant a pointless
 // "now pick which slot" step after you'd already told us which slot.
 //
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Keyboard,
   Modal,
@@ -42,6 +42,14 @@ export default function FilamentEditor({ slot, onClose }: { slot: number; onClos
   const insets = useSafeAreaInsets();
   const { settings } = useSettings();
   const { status } = useMoonraker();
+  const activePrinter = settings.printers.find((printer) => printer.id === settings.activePrinterId);
+  const externalSpool = activePrinter?.kind === 'bambu-lan'
+    && status.print_task_config?.bambu_filament_source === 'external';
+  const filamentPositionLabel = externalSpool
+    ? t('External Spool')
+    : activePrinter?.kind === 'snapmaker-u1'
+      ? t('Toolhead')
+      : t('Slot');
   const [error, setError] = useState<string | null>(null);
   const { updateSlot } = useFilamentSlotWrites(
     (message) => setError(message),
@@ -51,7 +59,15 @@ export default function FilamentEditor({ slot, onClose }: { slot: number; onClos
   const brands = settings.filamentSlotBrands ?? [];
   const materials = settings.filamentSlotMaterials ?? [];
   const subtypes = settings.filamentSlotSubtypes ?? [];
-  const initialBrand = brands[slot] || 'Generic';
+  // The card is printer-first, so the editor must open with the same live
+  // colour/material instead of jumping back to a stale manual setting.
+  const resolved = resolveFilamentSlots(status, {
+    slotColors: colors,
+    slotBrands: brands,
+    slotMaterials: materials,
+    slotSubtypes: subtypes,
+  })[slot];
+  const initialBrand = resolved?.brand || brands[slot] || 'Generic';
 
   const [picker, setPicker] = useState<PickerKind | null>(null);
   const [pickerAnchor, setPickerAnchor] = useState<PickerAnchor>({
@@ -60,11 +76,13 @@ export default function FilamentEditor({ slot, onClose }: { slot: number; onClos
     width: 320,
     height: 56,
   });
-  const [colorDraft, setColorDraft] = useState(colors[slot] || '#FFFFFF');
+  const [colorDraft, setColorDraft] = useState(resolved?.color || colors[slot] || '#FFFFFF');
   const [hexDraft, setHexDraft] = useState('');
-  const [materialDraft, setMaterialDraft] = useState(materials[slot] || 'PLA');
+  const [materialDraft, setMaterialDraft] = useState(
+    resolved?.mainType || materials[slot] || 'PLA'
+  );
   const [subtypeDraft, setSubtypeDraft] = useState(
-    subtypes[slot] || DEFAULT_FILAMENT_SUBTYPE
+    resolved?.subType || subtypes[slot] || DEFAULT_FILAMENT_SUBTYPE
   );
   const [brandDraft, setBrandDraft] = useState(
     BRAND_PRESETS.includes(initialBrand) ? initialBrand : 'Other'
@@ -100,17 +118,6 @@ export default function FilamentEditor({ slot, onClose }: { slot: number; onClos
   // the gesture bar sits behind the keyboard, so padding for it wastes height.
   const sheetMaxHeight = Math.max(240, height - keyboardHeight - insets.top - 12);
   const swatchSize = Math.min(64, Math.floor((width - 52 - 30) / 4));
-
-  const resolved = useMemo(
-    () =>
-      resolveFilamentSlots(status, {
-        slotColors: colors,
-        slotBrands: brands,
-        slotMaterials: materials,
-        slotSubtypes: subtypes,
-      })[slot],
-    [brands, colors, materials, status, subtypes, slot]
-  );
 
   const applyColor = (hex: string) => {
     const normalized = normalizeFilamentHex(hex);
@@ -192,7 +199,9 @@ export default function FilamentEditor({ slot, onClose }: { slot: number; onClos
           ]}
         >
           <View style={styles.head}>
-            <Text style={styles.title}>{t('Toolhead')} {slot + 1}</Text>
+            <Text style={styles.title}>
+              {externalSpool ? filamentPositionLabel : `${filamentPositionLabel} ${slot + 1}`}
+            </Text>
             <Text style={styles.subtitle}>
               {[brandDraft === 'Other' ? customBrandDraft || t('Custom brand') : brandDraft, materialDraft]
                 .filter(Boolean)

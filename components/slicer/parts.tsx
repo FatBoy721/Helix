@@ -15,6 +15,7 @@ import { alpha, CameraMock, COCKPIT as P, Dot, type IconName } from '../dashboar
 import { t } from '../../services/i18n';
 import type { FilamentSlotDisplay } from '../FilamentSlotsEditor';
 import PrinterIcon from '../PrinterIcon';
+import { useSettings } from '../../hooks/useSettings';
 
 export type Tone = 'good' | 'bad' | 'muted' | 'warn';
 
@@ -191,10 +192,16 @@ export function StatRow({
 export function ToolRail({
   slots,
   onEdit,
+  externalSpool = false,
 }: {
   slots: FilamentSlotDisplay[];
   onEdit: (index: number) => void;
+  externalSpool?: boolean;
 }) {
+  const { settings } = useSettings();
+  const activePrinter = settings.printers.find((printer) => printer.id === settings.activePrinterId);
+  const bambu = activePrinter?.kind === 'bambu-lan';
+
   return (
     <View style={styles.railSection}>
       <Text style={styles.sectionLabel}>{t('FILAMENT')}</Text>
@@ -216,7 +223,13 @@ export function ToolRail({
                 ]}
               />
               <View style={styles.toolBody}>
-                <Text style={styles.toolId}>T{slot.index + 1}</Text>
+                <Text style={styles.toolId}>
+                  {externalSpool
+                    ? t('External Spool')
+                    : bambu
+                      ? `${t('Lane')} ${slot.index + 1}`
+                      : `T${slot.index + 1}`}
+                </Text>
                 {empty ? (
                   <Text style={[styles.toolMaterial, { color: P.dim }]}>{t('Empty')}</Text>
                 ) : (

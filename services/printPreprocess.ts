@@ -6,8 +6,32 @@
 // Blocking is reserved for genuinely unsatisfiable jobs — fewer usable lanes
 // than the file needs.
 import type { IconName } from '../components/dashboard/shared';
+import { normalizePrinterKind, PRINTER_PROFILES, type PrintPrefKey } from './printerProfiles';
 
-export type PrintPref = 'flowCal' | 'timelapse' | 'autoLevel';
+/** One definition, shared with the machine profiles that decide who gets what. */
+export type PrintPref = PrintPrefKey;
+
+/**
+ * How a machine names its material feeds in the Ticket dialog.
+ * 'tool' — U1/generic: tools are "T0"–"T3", the physical feeds are "lanes".
+ * 'lane' — AD5X/Bambu: the feeds themselves are the unit, shown as "Lane 1"–"Lane 4".
+ */
+export type LaneNaming = 'tool' | 'lane';
+
+/** The noun for a physical feed: "lane" on the U1, "Lane" where the machine names them. */
+export function laneWord(naming: LaneNaming): string {
+  return naming === 'lane' ? 'Lane' : 'lane';
+}
+
+/** Chip label: "T2" on the U1, the bare number "3" where the feeds are named lanes. */
+export function toolChipLabel(fileTool: number, naming: LaneNaming): string {
+  return naming === 'lane' ? `${fileTool + 1}` : `T${fileTool}`;
+}
+
+/** Full reference: "T0" on the U1, "Lane 1" where the feeds are named lanes. */
+export function toolLabel(fileTool: number, naming: LaneNaming): string {
+  return naming === 'lane' ? `Lane ${fileTool + 1}` : `T${fileTool}`;
+}
 
 export type PreprocessLaneStatus = 'loaded' | 'empty' | 'busy' | 'unknown';
 
@@ -125,8 +149,13 @@ export function buildPreprocessChecks(input: {
   printerName: string;
   tools: PreprocessTool[];
   lanes: PreprocessLane[];
+  naming?: LaneNaming;
 }): PreprocessCheck[] {
   const { connected, printerBusy, printerName, tools } = input;
+  const naming = input.naming ?? 'tool';
+  const word = laneWord(naming);
+  const routeText = (tool: PreprocessTool) =>
+    `${toolLabel(tool.fileTool, naming)} to ${word} ${tool.assigned + 1}`;
   const starved = tools.filter((tool) => tool.lane.status === 'empty');
   const loadedCount = input.lanes.filter((lane) => lane.status === 'loaded').length;
   const rerouted = tools.filter((tool) => tool.source === 'auto');
@@ -137,7 +166,7 @@ export function buildPreprocessChecks(input: {
           key: 'filament',
           label: 'Filament loaded',
           detail: `This file needs ${tools.length} materials and only ${loadedCount} ${
-            loadedCount === 1 ? 'lane has' : 'lanes have'
+            loadedCount === 1 ? `${word} has` : `${word}s have`
           } filament`,
           tone: 'fail',
           icon: 'palette-swatch',
@@ -149,9 +178,9 @@ export function buildPreprocessChecks(input: {
             key: 'filament',
             label: 'Filament routed',
             detail: rerouted
-              .map((tool) => `T${tool.fileTool} to lane ${tool.assigned + 1}`)
+              .map(routeText)
               .join(', ')
-              .concat(' — your own lanes were empty'),
+              .concat(` — your own ${word}s were empty`),
             tone: 'pass',
             icon: 'palette-swatch',
             blocking: true,
@@ -160,7 +189,7 @@ export function buildPreprocessChecks(input: {
         : {
             key: 'filament',
             label: 'Filament loaded',
-            detail: `${tools.length} of ${input.lanes.length} lanes feed this print`,
+            detail: `${tools.length} of ${input.lanes.length} ${word}s feed this print`,
             tone: 'pass',
             icon: 'palette-swatch',
             blocking: true,
@@ -188,15 +217,6 @@ export function buildPreprocessChecks(input: {
     },
     filament,
   ];
-}
-
-/** Clock time the print would finish — "4:12 PM" beats doing the arithmetic. */
-export function finishClock(seconds: number): string {
-  const done = new Date(Date.now() + Math.max(0, seconds) * 1000);
-  const time = done.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
-  const days = Math.floor((done.getTime() - new Date().setHours(0, 0, 0, 0)) / 86_400_000);
-  if (days <= 0) return time;
-  return days === 1 ? `${time} tomorrow` : `${time} +${days}d`;
 }
 
 export function laneLabel(lane: PreprocessLane): string {
@@ -233,4 +253,49 @@ export const PREF_COPY: {
     hint: 'Capture a frame every layer',
     icon: 'video-outline',
   },
+  {
+    key: 'ifs',
+    label: 'Enable IFS',
+    hint: 'Feed colors from the material station',
+    icon: 'swap-horizontal',
+  },
 ];
+
+/**
+ * Which toggles the Ticket dialog offers for a given machine.
+ *
+ * The AD5X gets bed levelling and its material station, and nothing else:
+ * flow calibration is a PAXX macro it does not have, and it ships no
+ * TIMELAPSE_* macros either — offering a time-lapse there produces G-code the
+ * printer aborts on with "Unknown command".
+ *
+ * Levelling reaches the two machines by completely different routes: the U1
+ * takes it in SET_PRINT_PREFERENCES, while the AD5X takes it as LEVELING= on
+ * the PRINT_ZCOLOR macro that answers its material prompt.
+ */
+export function prefCopyFor(input: {
+  printerKind?: string | null;
+  multicolor: boolean;
+}): typeof PREF_COPY {
+  const kind = normalizePrinterKind(input.printerKind);
+  const offered = new Set(PRINTER_PROFILES[kind].printPrefs);
+  return PREF_COPY.filter(({ key }) => offered.has(key)).map((pref) =>
+    kind === 'bambu-lan' && pref.key === 'autoLevel'
+      ? {
+          ...pref,
+          label: 'Bed & vibration calibration',
+          hint: 'Probe the bed and tune vibration before the first layer',
+        }
+      : pref,
+  );
+}
+
+export function applicablePrefs(
+  prefs: Readonly<Record<PrintPref, boolean>>,
+  input: { printerKind?: string | null; multicolor: boolean },
+): Record<PrintPref, boolean> {
+  const offered = new Set(prefCopyFor(input).map(({ key }) => key));
+  const out = {} as Record<PrintPref, boolean>;
+  for (const { key } of PREF_COPY) out[key] = offered.has(key) ? prefs[key] === true : false;
+  return out;
+}

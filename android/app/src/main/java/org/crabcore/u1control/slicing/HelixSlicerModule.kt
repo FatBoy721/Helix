@@ -21,6 +21,7 @@ import com.facebook.react.bridge.ReadableMap
 import com.facebook.react.modules.core.DeviceEventManagerModule
 import com.google.firebase.messaging.FirebaseMessaging
 import com.u1.slicer.NativeLibrary
+import com.u1.slicer.viewer.MachineProfile
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
@@ -179,6 +180,24 @@ class HelixSlicerModule(
     intent.putExtra(EXTRA_PRINT_SENT_CONSUMED, true)
     activity.intent = intent
     promise.resolve(filename)
+  }
+
+  /** Consumes the native preview's one-shot request to open Bambu's send sheet. */
+  @ReactMethod
+  fun takeBambuSendRequest(promise: Promise) {
+    promise.resolve(LastSliceStore.takeBambuSendRequest())
+  }
+
+  /** Mirrors the saved RN setting into native prefs for the Android print path. */
+  @ReactMethod
+  fun setAiDetectionSensitivity(value: String, promise: Promise) {
+    try {
+      val sensitivity = AiDetectionSensitivity.fromWireValue(value)
+      PreprocessPreferenceStore.setAiDetectionSensitivity(reactApplicationContext, sensitivity)
+      promise.resolve(true)
+    } catch (error: IllegalArgumentException) {
+      promise.reject("E_AI_SENSITIVITY", error.message, error)
+    }
   }
 
   /** Opens the system file picker for .3mf / .stl and imports into app storage. */
@@ -502,6 +521,7 @@ class HelixSlicerModule(
     loadedToolMask: Int,
     autoArrange: Boolean,
     materialProfilesJson: String?,
+    bedProfileJson: String?,
     promise: Promise,
   ) {
     val activity = getCurrentActivity()
@@ -531,6 +551,9 @@ class HelixSlicerModule(
         putExtra(HelixModelPreviewActivity.EXTRA_TITLE, title ?: file.name)
         if (!materialProfilesJson.isNullOrBlank()) {
           putExtra(HelixModelPreviewActivity.EXTRA_MATERIAL_PROFILES, materialProfilesJson)
+        }
+        if (!bedProfileJson.isNullOrBlank()) {
+          putExtra(HelixModelPreviewActivity.EXTRA_BED_PROFILE, bedProfileJson)
         }
         // User-declared filament colours (Slice Lab "Your filaments" row).
         if (slotColors != null && slotColors.size() > 0) {
@@ -781,6 +804,7 @@ class HelixSlicerModule(
     initialTool: Int,
     loadedToolMask: Int,
     usedToolMask: Int,
+    bedProfileJson: String?,
     promise: Promise,
   ) {
     val activity = getCurrentActivity()
@@ -804,6 +828,9 @@ class HelixSlicerModule(
         putExtra(HelixGcodePreviewActivity.EXTRA_INITIAL_TOOL, initialTool.coerceIn(0, 3))
         putExtra(HelixGcodePreviewActivity.EXTRA_LOADED_TOOL_MASK, loadedToolMask)
         putExtra(HelixGcodePreviewActivity.EXTRA_USED_TOOL_MASK, usedToolMask)
+        if (!bedProfileJson.isNullOrBlank()) {
+          putExtra(HelixGcodePreviewActivity.EXTRA_BED_PROFILE, bedProfileJson)
+        }
         LastSliceStore.modelPath?.let { putExtra(HelixGcodePreviewActivity.EXTRA_MODEL_PATH, it) }
       }
       activity.startActivity(intent)
@@ -866,6 +893,11 @@ class HelixSlicerModule(
         }
         val materialProfilesJson = o?.takeIf { it.hasKey("materialProfiles") }?.getString("materialProfiles")
         val forceExtruderCount = o?.takeIf { it.hasKey("forceExtruderCount") }?.getInt("forceExtruderCount")
+        // Background re-slice: without this the runner defaults to the U1 and a
+        // re-slice would silently differ from the prepare-screen slice.
+        val machine = MachineProfile.fromJson(
+          o?.takeIf { it.hasKey("machineProfile") }?.getString("machineProfile")
+        )
         val outcome = HelixSliceRunner.run(
           reactApplicationContext,
           lib,
@@ -875,6 +907,7 @@ class HelixSlicerModule(
           sliceSettings = sliceSettings,
           materialProfilesJson = materialProfilesJson,
           forceExtruderCount = forceExtruderCount,
+          machine = machine,
         ) {
           o?.let { opts ->
             if (opts.hasKey("layerHeight")) layerHeight = opts.getDouble("layerHeight").toFloat()

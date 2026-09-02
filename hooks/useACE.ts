@@ -15,41 +15,15 @@ export const ACE_MACROS = {
   switchAce: (ace: number) => `ACE_SWITCH TARGET=${ace} AUTOLOAD=1`,
 };
 
-export type LaneStatus = 'loaded' | 'empty' | 'busy' | 'drying' | 'unknown';
+// The lane/unit model moved to services/aceModel.ts so the FlashForge mapping
+// can be tested without React. Re-exported here so existing importers are
+// unaffected.
+export type { AceLane, AceUnit, HeadSource, LaneStatus } from '../services/aceModel';
+import type { AceLane, AceUnit, HeadSource, LaneStatus } from '../services/aceModel';
+import { useMaterialStation } from './useMaterialStation';
 
-export interface AceLane {
-  index: number;
-  status: LaneStatus;
-  brand?: string;
-  material?: string;
-  sku?: string;
-  colorHex?: string;
-}
-
-export interface AceUnit {
-  index: number; // 1-based
-  aceIndex: number; // 0-based multiACE device index (macro argument)
-  connected: boolean;
-  active: boolean;
-  protocol?: string;
-  temp?: number;
-  humidity?: number;
-  dryer: {
-    active: boolean;
-    targetTemp?: number;
-    remainingMin?: number;
-  };
-  lanes: AceLane[];
-}
-
-// head_source entry from multiACE: which ACE/slot currently feeds a head.
-export interface HeadSource {
-  aceIndex: number;
-  slot: number;
-  material?: string;
-  colorHex?: string;
-  brand?: string;
-}
+/** The AD5X is single-head, so there is nothing to attribute to a toolhead. */
+const NO_HEAD_SOURCES: (HeadSource | null)[] = [null, null, null, null];
 
 function parseColor(c: any): string | undefined {
   if (Array.isArray(c) && c.length >= 3) {
@@ -183,6 +157,26 @@ export function useACE() {
 
   const aceMacros = useMemo(() => macros.filter((m) => /ace/i.test(m)), [macros]);
 
+  // A FlashForge material station fills the same lane UI, but its state comes
+  // from the printer's own REST API rather than Klipper. The two never coexist:
+  // a machine has multiACE or an IFS, so whichever reports hardware wins.
+  const materialStation = useMaterialStation();
+  if (materialStation.detected) {
+    return {
+      units: materialStation.units,
+      aceMacros,
+      sendGcode,
+      hardwareDetected: true,
+      deviceCount: materialStation.units.length,
+      mode: 'material-station',
+      activeAceIndex: 0,
+      swapInProgress: false,
+      headSources: NO_HEAD_SOURCES,
+      materialStationError: materialStation.error,
+      refreshMaterialStation: materialStation.refresh,
+    };
+  }
+
   return {
     units,
     aceMacros,
@@ -193,5 +187,7 @@ export function useACE() {
     activeAceIndex,
     swapInProgress,
     headSources,
+    materialStationError: materialStation.error,
+    refreshMaterialStation: materialStation.refresh,
   };
 }

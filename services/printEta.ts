@@ -18,7 +18,7 @@ export interface CapturedM73Estimate extends M73Estimate {
 export interface PrintEtaResult {
   slicerRemainingSeconds: number | null;
   liveRemainingSeconds: number | null;
-  source: 'm73' | 'fallback' | 'none';
+  source: 'printer' | 'm73' | 'fallback' | 'slicer' | 'none';
 }
 
 function finiteNonNegative(value: unknown): number | null {
@@ -82,10 +82,25 @@ export function calculatePrintEtas(input: {
   slicerTotalSeconds: number | null;
   m73: CapturedM73Estimate | null;
   fallbackProgress: number;
+  /** Printer-calculated countdown, when the transport reports one directly. */
+  printerRemainingSeconds?: number | null;
 }): PrintEtaResult {
   const printDuration = finiteNonNegative(input.printDuration) ?? 0;
   const slicerTotal = finiteNonNegative(input.slicerTotalSeconds);
   const fallbackProgress = clamp(finiteNonNegative(input.fallbackProgress) ?? 0, 0, 1);
+  const printerRemaining = finiteNonNegative(input.printerRemainingSeconds);
+
+  // Bambu calculates this onboard and publishes it continuously. It remains
+  // useful during heating and the first layers, where progress extrapolation
+  // is intentionally suppressed as too unstable.
+  if (printerRemaining != null) {
+    return {
+      slicerRemainingSeconds: printerRemaining,
+      liveRemainingSeconds: printerRemaining,
+      source: 'printer',
+    };
+  }
+
   const capturedRemaining = finiteNonNegative(input.m73?.remainingSeconds);
   const captureDuration = finiteNonNegative(input.m73?.printDurationAtCapture) ?? printDuration;
   const elapsedSinceCapture = Math.max(0, printDuration - captureDuration);
@@ -136,9 +151,37 @@ export function calculatePrintEtas(input: {
 
   return {
     slicerRemainingSeconds: slicerRemaining,
-    liveRemainingSeconds: null,
-    source: m73Remaining != null ? 'm73' : 'none',
+    // Before enough real progress exists to calculate printer pace, the
+    // slicer's countdown is still much more useful than displaying "--".
+    liveRemainingSeconds: slicerRemaining,
+    source: m73Remaining != null ? 'm73' : slicerRemaining != null ? 'slicer' : 'none',
   };
+}
+
+/** Local midnight starting the day [date] falls in. */
+function startOfDay(date: Date): number {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+}
+
+/**
+ * Clock time a print finishes, carrying the day when that is not today.
+ *
+ * A multi-day print showing a bare "5:00 PM" is worse than useless — it reads
+ * as five hours away when it may be five days. Rounding the midnight-to-midnight
+ * gap rather than dividing elapsed milliseconds keeps the day count right across
+ * daylight-saving changes, where a calendar day is 23 or 25 hours long.
+ */
+export function finishClock(seconds: number): string {
+  const done = new Date(Date.now() + Math.max(0, seconds) * 1000);
+  const time = done.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  const days = Math.round((startOfDay(done) - startOfDay(new Date())) / 86_400_000);
+
+  if (days <= 0) return time;
+  if (days === 1) return `${time} tomorrow`;
+  // Within the week a weekday name reads faster than counting days forward;
+  // past that it stops being unambiguous and a date is clearer.
+  if (days < 7) return `${time} ${done.toLocaleDateString(undefined, { weekday: 'short' })}`;
+  return `${time} ${done.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;
 }
 
 export function smoothRemainingEstimate(

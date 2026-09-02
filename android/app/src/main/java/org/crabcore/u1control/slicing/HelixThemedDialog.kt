@@ -146,22 +146,27 @@ object HelixThemedDialog {
         LinearLayout(activity).apply {
           orientation = LinearLayout.HORIZONTAL
           setPadding(0, dp(16), 0, 0)
-          addView(
-            actionButton(secondaryLabel, HelixAppTheme.CARD_ALT, HelixAppTheme.BORDER, HelixAppTheme.TEXT) {
-              onSecondary()
-              dismiss()
-            },
-            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-              marginEnd = dp(8)
-            },
-          )
+          // A read-only sheet has nothing to cancel; a blank label drops the
+          // button rather than rendering an empty one.
+          val hasSecondary = secondaryLabel.isNotBlank()
+          if (hasSecondary) {
+            addView(
+              actionButton(secondaryLabel, HelixAppTheme.CARD_ALT, HelixAppTheme.BORDER, HelixAppTheme.TEXT) {
+                onSecondary()
+                dismiss()
+              },
+              LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = dp(8)
+              },
+            )
+          }
           addView(
             actionButton(primaryLabel, accent, null, Color.WHITE) {
               onPrimary()
               dismiss()
             },
             LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-              marginStart = dp(8)
+              if (hasSecondary) marginStart = dp(8)
             },
           )
         },

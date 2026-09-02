@@ -9,7 +9,7 @@
 // loaded ones does not block a printable job. Blocking is reserved for genuinely
 // unsatisfiable cases — fewer usable lanes than the file needs, printer busy, or
 // offline.
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Animated,
@@ -31,16 +31,20 @@ import { COCKPIT as P, alpha, ThumbMock, type IconName } from './dashboard/share
 import { PrinterIcon } from './PrinterIcon';
 import { Chevron, Collapsible } from './ui';
 import {
-  PREF_COPY,
   buildPreprocessChecks,
   buildPreprocessTools,
-  finishClock,
   laneDetail,
   laneLabel,
+  laneWord,
+  prefCopyFor,
+  toolChipLabel,
+  toolLabel,
+  type LaneNaming,
   type PrintPref,
   type PreprocessLane,
   type PreprocessTool,
 } from '../services/printPreprocess';
+import { finishClock } from '../services/printEta';
 
 export type { PrintPref };
 
@@ -73,6 +77,9 @@ type Props = {
   perToolGrams: number[];
   prefs: Record<PrintPref, boolean>;
   onTogglePref: (pref: PrintPref) => void;
+  /** U1 firmware AI detector; absent for printers that do not expose it. */
+  aiMonitoring?: boolean;
+  onToggleAiMonitoring?: () => void;
   sending: boolean;
   progress: number;
   statusMessage?: string | null;
@@ -84,6 +91,10 @@ type Props = {
   /** Active bed_mesh profile name, or null. */
   meshProfile?: string | null;
   layers?: number;
+  /** Drives pref filtering (no flow calibration on AD5X) and lane naming. */
+  printerKind?: string | null;
+  /** Bambu's virtual tray when the printer has no physical AMS attached. */
+  externalSpool?: boolean;
 };
 
 const HOLD_MS = 700;
@@ -118,6 +129,8 @@ export default function PrintPreprocessDialog({
   perToolGrams,
   prefs,
   onTogglePref,
+  aiMonitoring,
+  onToggleAiMonitoring,
   sending,
   progress,
   statusMessage,
@@ -127,16 +140,32 @@ export default function PrintPreprocessDialog({
   connected = true,
   meshProfile = null,
   layers = 0,
+  printerKind = null,
+  externalSpool = false,
 }: Props) {
+  // AD5X and Bambu owners know the feeds as numbered lanes; the U1 names its
+  // tools T0–T3 and the feeds stay plain "lanes".
+  const naming: LaneNaming =
+    printerKind === 'flashforge-ad5x' || printerKind === 'bambu-lan' ? 'lane' : 'tool';
+  const word = laneWord(naming);
   const insets = useSafeAreaInsets();
   const [openFold, setOpenFold] = useState<'routing' | 'options' | null>(null);
   const [picking, setPicking] = useState<number | null>(null);
   const [printerOpen, setPrinterOpen] = useState(false);
   const hold = useRef(new Animated.Value(0)).current;
   const [holding, setHolding] = useState(false);
+  // Mirrors the hold animation into a number so the label can count up with the
+  // fill. The bar itself is driven by the Animated value, not by this state.
+  const [holdPct, setHoldPct] = useState(0);
+
+  useEffect(() => {
+    const id = hold.addListener(({ value }) => setHoldPct(Math.round(value * 100)));
+    return () => hold.removeListener(id);
+  }, [hold]);
 
   const lanes = useMemo(() => {
     const pool = availableSlots.length > 0 ? availableSlots : slots;
+    if (externalSpool) return pool.slice(0, 1).map(asLane);
     // Pad to four lanes so routeTools can address T0–T3 by index.
     const byIndex = new Map(pool.map((slot) => [slot.index, asLane(slot)]));
     return Array.from({ length: 4 }, (_, index) => {
@@ -149,7 +178,7 @@ export default function PrintPreprocessDialog({
         status: 'empty' as const,
       };
     });
-  }, [availableSlots, slots, requiredColors]);
+  }, [availableSlots, externalSpool, slots, requiredColors]);
 
   const required = useMemo(
     () => slots.map((slot) => slot.index).sort((a, b) => a - b),
@@ -172,16 +201,32 @@ export default function PrintPreprocessDialog({
         printerName: selectedPrinter?.name ?? 'Printer',
         tools,
         lanes,
+        naming,
       }),
-    [connected, printerBusy, selectedPrinter?.name, tools, lanes],
+    [connected, printerBusy, selectedPrinter?.name, tools, lanes, naming],
   );
+
+  // Prefs the active printer can actually honor (no flow calibration on the
+  // AD5X) plus IFS only when the file is multi-color.
+  const prefCopy = useMemo(
+    () => prefCopyFor({ printerKind, multicolor: tools.length > 1 }),
+    [printerKind, tools.length],
+  );
+  const showAiMonitoring =
+    printerKind === 'snapmaker-u1' &&
+    typeof aiMonitoring === 'boolean' &&
+    Boolean(onToggleAiMonitoring);
+  const preferenceSummary = [
+    ...(showAiMonitoring && aiMonitoring ? ['AI Monitoring'] : []),
+    ...prefCopy.filter(({ key }) => prefs[key]).map(({ label }) => label),
+  ].join(', ');
 
   const failing = checks.filter((check) => check.tone === 'fail' && check.blocking);
   const blocked = failing.length > 0;
   const blockReason = failing[0]?.detail ?? null;
   const notes = checks.filter((check) => check.tone === 'warn' || check.tone === 'fail');
   const rerouted = tools.filter((tool) => tool.source === 'auto');
-  const canRemap = Boolean(onAssignSlot) && lanes.length > 0;
+  const canRemap = !externalSpool && Boolean(onAssignSlot) && lanes.length > 0;
   const routingOpen = openFold === 'routing' || blocked;
   const pct = Math.round(Math.max(0, Math.min(1, progress)) * 100);
   const displayGrams =
@@ -206,10 +251,15 @@ export default function PrintPreprocessDialog({
   dismissMain.current = requestClose;
   const dismissTop = useRef(closeTopLayer);
   dismissTop.current = closeTopLayer;
+  // Hold-to-send lives inside the sheet, and a finger almost always drifts more
+  // than 12px across a 700ms hold. Without this guard the sheet claimed the
+  // gesture mid-hold, cancelling the press, so the print could never be sent.
+  const holdingRef = useRef(false);
   const dismissOnDrag = (onDismiss: () => void) =>
     PanResponder.create({
       onStartShouldSetPanResponder: () => false,
-      onMoveShouldSetPanResponder: (_e, g) => g.dy > 12 && g.dy > Math.abs(g.dx),
+      onMoveShouldSetPanResponder: (_e, g) =>
+        !holdingRef.current && g.dy > 12 && g.dy > Math.abs(g.dx),
       onPanResponderRelease: (_e, g) => {
         if (g.dy > 70 || g.vy > 0.6) onDismiss();
       },
@@ -219,9 +269,11 @@ export default function PrintPreprocessDialog({
 
   const beginHold = () => {
     if (blocked || sending) return;
+    holdingRef.current = true;
     setHolding(true);
     Animated.timing(hold, { toValue: 1, duration: HOLD_MS, useNativeDriver: false }).start(
       ({ finished }) => {
+        holdingRef.current = false;
         setHolding(false);
         hold.setValue(0);
         if (finished) {
@@ -237,6 +289,7 @@ export default function PrintPreprocessDialog({
   };
 
   const cancelHold = () => {
+    holdingRef.current = false;
     hold.stopAnimation(() => {
       Animated.timing(hold, { toValue: 0, duration: 150, useNativeDriver: false }).start();
     });
@@ -327,9 +380,11 @@ export default function PrintPreprocessDialog({
               <View style={styles.clean}>
                 <MaterialCommunityIcons name="check-circle" size={15} color={P.success} />
                 <Text style={styles.cleanText}>
-                  {rerouted.length > 0
-                    ? `Routed around empty lanes — ${rerouted
-                        .map((tool) => `T${tool.fileTool} on lane ${tool.assigned + 1}`)
+                  {externalSpool
+                    ? 'External Spool ready, printer idle'
+                    : rerouted.length > 0
+                    ? `Routed around empty ${word}s — ${rerouted
+                        .map((tool) => `${toolLabel(tool.fileTool, naming)} on ${word} ${tool.assigned + 1}`)
                         .join(', ')}`
                     : 'Lanes loaded, printer idle'}
                 </Text>
@@ -345,11 +400,19 @@ export default function PrintPreprocessDialog({
             >
               <View style={styles.foldLanes}>
                 {tools.map((tool) => (
-                  <LaneChip key={tool.fileTool} tool={tool} size={26} />
+                  <LaneChip
+                    key={tool.fileTool}
+                    tool={tool}
+                    size={26}
+                    naming={naming}
+                    externalSpool={externalSpool}
+                  />
                 ))}
               </View>
               <Text style={styles.foldLabel}>
-                {tools.length} {tools.length === 1 ? 'lane' : 'lanes'}
+                {externalSpool
+                  ? 'External Spool'
+                  : `${tools.length} ${tools.length === 1 ? word : `${word}s`}`}
               </Text>
               <WeightBar tools={tools} />
               <Chevron open={routingOpen} color={P.dim} />
@@ -364,19 +427,25 @@ export default function PrintPreprocessDialog({
                     disabled={!canRemap}
                     style={styles.laneRow}
                   >
-                    <LaneChip tool={tool} size={34} />
+                    <LaneChip
+                      tool={tool}
+                      size={34}
+                      naming={naming}
+                      externalSpool={externalSpool}
+                    />
                     <View style={styles.laneText}>
                       <Text style={styles.laneTitle}>
                         {laneLabel(tool.lane)}
                         {tool.source !== 'identity' ? (
                           <Text style={styles.remapNote}>
                             {'  '}
-                            {tool.source === 'manual' ? '→' : 'auto →'} lane {tool.assigned + 1}
+                            {tool.source === 'manual' ? '→' : 'auto →'} {word} {tool.assigned + 1}
                           </Text>
                         ) : null}
                       </Text>
                       <Text style={styles.laneSub}>
-                        lane {tool.assigned + 1} · {laneDetail(tool.lane)}
+                        {externalSpool ? 'External Spool' : `${word} ${tool.assigned + 1}`} ·{' '}
+                        {laneDetail(tool.lane)}
                       </Text>
                     </View>
                     {tool.grams > 0 ? (
@@ -396,16 +465,38 @@ export default function PrintPreprocessDialog({
             >
               <MaterialCommunityIcons name="tune-variant" size={17} color={P.dim} />
               <Text style={[styles.foldLabel, styles.foldGrow]}>
-                {PREF_COPY.filter(({ key }) => prefs[key])
-                  .map(({ label }) => label)
-                  .join(', ') || 'Print preferences'}
+                {preferenceSummary || 'Print preferences'}
               </Text>
               <Chevron open={openFold === 'options'} color={P.dim} />
             </Pressable>
 
             <Collapsible open={openFold === 'options'}>
               <View style={styles.foldBody}>
-                {PREF_COPY.map(({ key, label, hint, icon }) => {
+                {showAiMonitoring ? (
+                  <Pressable onPress={onToggleAiMonitoring} style={styles.prefRow}>
+                    <MaterialCommunityIcons
+                      name="robot-outline"
+                      size={18}
+                      color={aiMonitoring ? P.accent : P.dim}
+                    />
+                    <View style={styles.laneText}>
+                      <Text style={styles.laneTitle}>AI Monitoring</Text>
+                      <Text style={styles.laneSub}>
+                        Detects spaghetti failures and build-plate obstructions, then automatically
+                        pauses the print
+                      </Text>
+                    </View>
+                    <View
+                      style={[
+                        styles.track,
+                        aiMonitoring && { backgroundColor: P.accent, borderColor: P.accent },
+                      ]}
+                    >
+                      <View style={[styles.knob, aiMonitoring && styles.knobOn]} />
+                    </View>
+                  </Pressable>
+                ) : null}
+                {prefCopy.map(({ key, label, hint, icon }) => {
                   const on = prefs[key];
                   return (
                     <Pressable key={key} onPress={() => onTogglePref(key)} style={styles.prefRow}>
@@ -448,12 +539,19 @@ export default function PrintPreprocessDialog({
               onPressIn={beginHold}
               onPressOut={cancelHold}
               disabled={sending}
-              style={[styles.holdBtn, sending && styles.holdOff]}
+              // Colours are applied inline rather than left to the StyleSheet:
+              // setAccent() mutates the palette after this module is evaluated,
+              // so anything captured by StyleSheet.create can be a stale accent.
+              style={[styles.holdBtn, { backgroundColor: P.accentFill }, sending && styles.holdOff]}
             >
-              <Animated.View style={[styles.holdFill, { width: holdWidth }]} />
+              <View style={styles.holdFillClip} pointerEvents="none">
+                <Animated.View
+                  style={[styles.holdFill, { width: holdWidth, backgroundColor: alpha(P.onAccent, 0.22) }]}
+                />
+              </View>
               <MaterialCommunityIcons name="printer-3d-nozzle" size={19} color={P.onAccent} />
-              <Text style={styles.holdText}>
-                {holding ? 'Keep holding…' : sendLabel}
+              <Text style={[styles.holdText, { color: P.onAccent }]} numberOfLines={1}>
+                {holding ? `Keep holding… ${holdPct}%` : sendLabel || 'Hold to start'}
               </Text>
             </Pressable>
           )}
@@ -479,7 +577,9 @@ export default function PrintPreprocessDialog({
             <ScrollView contentContainerStyle={styles.pickerContent}>
               {picking != null ? (
                 <>
-                  <Text style={styles.pickerTitle}>Lane for T{picking}</Text>
+                  <Text style={styles.pickerTitle}>
+                    {naming === 'lane' ? `Spool for Lane ${picking + 1}` : `Lane for T${picking}`}
+                  </Text>
                   <Text style={styles.pickerHint}>
                     Choose the physical spool that feeds this tool.
                   </Text>
@@ -632,7 +732,17 @@ function WeightBar({ tools }: { tools: PreprocessTool[] }) {
   );
 }
 
-function LaneChip({ tool, size = 38 }: { tool: PreprocessTool; size?: number }) {
+function LaneChip({
+  tool,
+  size = 38,
+  naming = 'tool',
+  externalSpool = false,
+}: {
+  tool: PreprocessTool;
+  size?: number;
+  naming?: LaneNaming;
+  externalSpool?: boolean;
+}) {
   const empty = tool.lane.status === 'empty';
   const ring = empty
     ? alpha(P.danger, 0.8)
@@ -646,7 +756,9 @@ function LaneChip({ tool, size = 38 }: { tool: PreprocessTool; size?: number }) 
         { width: size, height: size, borderRadius: size / 2, borderColor: ring },
       ]}
     >
-      <Text style={[styles.laneChipText, { fontSize: size * 0.34 }]}>T{tool.fileTool}</Text>
+      <Text style={[styles.laneChipText, { fontSize: size * 0.34 }]}>
+        {externalSpool ? 'EXT' : toolChipLabel(tool.fileTool, naming)}
+      </Text>
       {empty ? (
         <View style={styles.laneChipWarn}>
           <MaterialCommunityIcons name="alert" size={9} color={P.bg} />
@@ -799,6 +911,10 @@ const styles = StyleSheet.create({
   },
   knobOn: { alignSelf: 'flex-end', backgroundColor: P.onAccent },
 
+  // No overflow:'hidden' here. Paired with borderRadius:999 on Android it
+  // clipped the icon and label out of existence, leaving a blank pill — the
+  // identical fixBar below renders fine and differs only by that one property.
+  // The progress fill gets its own clipping wrapper instead.
   holdBtn: {
     height: 56,
     borderRadius: 999,
@@ -807,6 +923,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 9,
+  },
+  holdFillClip: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 999,
     overflow: 'hidden',
   },
   holdOff: { opacity: 0.5 },

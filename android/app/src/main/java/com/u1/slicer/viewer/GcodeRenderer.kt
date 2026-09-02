@@ -35,6 +35,18 @@ class GcodeRenderer(private val context: Context) : GLSurfaceView.Renderer {
     private var toolpathShader: ShaderProgram? = null
     private val bed = BedDrawable(context)
 
+    /**
+     * Build volume of the printer this gcode is headed for. Safe to set from the
+     * UI thread at any point — BedDrawable rebuilds its geometry on the next
+     * frame, and the camera picks it up at the next reset.
+     */
+    @Volatile
+    var bedProfile: BedProfile = BedProfile.U1
+        set(value) {
+            field = value
+            bed.bedProfile = value
+        }
+
     // Segment template: 24 vertex IDs for 8 triangles (created once)
     private var templateVAO = 0
     private var templateVBO = 0
@@ -175,8 +187,8 @@ class GcodeRenderer(private val context: Context) : GLSurfaceView.Renderer {
         if (preserveRestoredCameraOnSurfaceInit) {
             preserveRestoredCameraOnSurfaceInit = false
         } else {
-            camera.setTarget(135.0, 135.0, 0.0)
-            camera.distance = 500.0
+            camera.setTarget(bedProfile.centerX.toDouble(), bedProfile.centerY.toDouble(), 0.0)
+            camera.distance = bedProfile.defaultCameraDistance
             camera.elevation = 62.0
             camera.azimuth = -90.0
         }
@@ -273,8 +285,8 @@ class GcodeRenderer(private val context: Context) : GLSurfaceView.Renderer {
             }
         }
         if (minX == Float.MAX_VALUE) {
-            camera.setTarget(135.0, 135.0, 0.0)
-            camera.distance = 500.0
+            camera.setTarget(bedProfile.centerX.toDouble(), bedProfile.centerY.toDouble(), 0.0)
+            camera.distance = bedProfile.defaultCameraDistance
         } else {
             val pad = 20f
             camera.setTarget(((minX + maxX) / 2f).toDouble(), ((minY + maxY) / 2f).toDouble(), 0.0)

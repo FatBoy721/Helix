@@ -1,0 +1,92 @@
+{
+  "name": "helixscreen-ui",
+  "title": "HelixScreen Touchscreen",
+  "version": "0.1.0",
+  "sw_version": "HelixScreen v0.99.112",
+  "description": "Adds HelixScreen as an optional touchscreen interface for the Snapmaker U1. The stock Snapmaker screen remains the default and can be restored from the plugin settings or by uninstalling the plugin. Screen changes restart the display service and are blocked while a print is active.",
+  "tagline": "Choose HelixScreen or the stock Snapmaker touchscreen.",
+  "category": "screen",
+  "channel": "experiment",
+  "printer_specific": true,
+  "source": "https://github.com/FatBoy721/Helix/tree/play-store-prep/tools/bespok3d/helixscreen-ui",
+  "homepage": "https://github.com/prestonbrown/helixscreen",
+  "license": "https://www.gnu.org/licenses/gpl-3.0.html",
+  "publisher": "PLACEHOLDER",
+  "author": "Helix",
+  "attributions": "HelixScreen v0.99.112 is Copyright (C) 2025-2026 356C LLC and contributors, licensed GPL-3.0-or-later. This package builds pinned upstream commit 59e2b0b3ffde67666b89db80845057fa1b0b9a5b and adds only Bespok3d-specific runtime path defaults and reversible stock-screen selection.",
+  "min_daemon_version": "0.12.24",
+  "min_jinni_version": "0.1.10",
+  "provides": [
+    {
+      "service": "touchscreen-ui",
+      "exclusive": true
+    }
+  ],
+  "require": [],
+  "conflicts": [],
+  "requires": {
+    "capabilities": [
+      "snapmaker-u1"
+    ],
+    "variables": []
+  },
+  "config": [
+    {
+      "key": "SCREEN_UI",
+      "label": "Touchscreen interface",
+      "type": "select",
+      "options": [
+        "snapmaker",
+        "helixscreen"
+      ],
+      "default": "snapmaker",
+      "hint": "Snapmaker keeps the factory screen. HelixScreen replaces it after the display service restarts. Changing this is unavailable during a print.",
+      "required": true,
+      "userEditable": true,
+      "scope": "printer"
+    }
+  ],
+  "permissions": [
+    "display-replacement",
+    "persistent-data",
+    "restart"
+  ],
+  "bake": [
+    {
+      "class": "docker-c",
+      "dockerfile": "Dockerfile",
+      "context": ".",
+      "platform": "linux/amd64",
+      "out": "/out",
+      "members": [
+        {
+          "path": "helixscreen",
+          "dest": "files/helixscreen",
+          "mode": "0755"
+        }
+      ]
+    }
+  ],
+  "install": {
+    "data": [
+      "helixscreen-ui"
+    ],
+    "dirs": [],
+    "templates": [],
+    "symlinks": [
+      {
+        "from": "files/bin/helixscreen-ui-switch",
+        "to": "$BESPOK3D/etc/init.d/autostart/s90helixscreen-ui"
+      }
+    ],
+    "start": [
+      "$BESPOK3D_PLUGINS/helixscreen-ui/files/bin/helixscreen-ui-switch configure $SCREEN_UI"
+    ],
+    "restart": [
+      "lmd"
+    ]
+  },
+  "stop": [
+    "$BESPOK3D_PLUGINS/helixscreen-ui/files/bin/helixscreen-ui-switch restore-stock"
+  ]
+}

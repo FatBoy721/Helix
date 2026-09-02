@@ -3,9 +3,10 @@
 // Previously also carried a canned mock path so states the printer can't be put
 // into on demand (finished / error) could be previewed. That's gone — the
 // sections are wired now, so everything reads live.
-import { useDashboardModel, type DashboardActions, type DashboardPandaBreath } from '../../../hooks/useDashboardModel';
+import { useDashboardModel, type DashboardActions, type DashboardBambu, type DashboardPandaBreath } from '../../../hooks/useDashboardModel';
 import type { IconName, PrinterState } from '../shared';
 import { t } from '../../../services/i18n';
+import type { FlashForgeError } from '../../../services/flashforgeApi';
 
 export interface CockpitTool {
   id: number;
@@ -19,6 +20,8 @@ export interface CockpitTool {
   target: number;
   active: boolean;
   empty: boolean;
+  bambuTrayIndex: number | null;
+  bambuChangeTemp: number;
 }
 
 export interface CockpitTemp {
@@ -50,6 +53,7 @@ export interface CockpitData {
   errorMessage: string;
   job: CockpitJob | null;
   tools: CockpitTool[];
+  materialStationError: FlashForgeError | null;
   temps: CockpitTemp[];
   macros: { label: string; icon: IconName; name: string }[];
   camera: { url: string; snapshotUrl?: string } | null;
@@ -57,6 +61,7 @@ export interface CockpitData {
   lightOn: boolean;
   toggleLight?: () => void;
   pandaBreath: DashboardPandaBreath;
+  bambu: DashboardBambu | null;
 }
 
 const TEMP_ICONS: Record<string, IconName> = {
@@ -127,7 +132,10 @@ export function useCockpitData(): CockpitData {
       target: t.target,
       active: t.active,
       empty: t.loaded === 'empty',
+      bambuTrayIndex: t.bambuTrayIndex,
+      bambuChangeTemp: t.bambuChangeTemp,
     })),
+    materialStationError: model.materialStationError,
     temps: model.temps.map((t) => ({
       key: t.key,
       label: t.label,
@@ -146,5 +154,6 @@ export function useCockpitData(): CockpitData {
     lightOn: model.lightOn,
     toggleLight: model.toggleLight,
     pandaBreath: model.pandaBreath,
+    bambu: model.bambu,
   };
 }

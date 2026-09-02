@@ -25,6 +25,8 @@ import com.u1.slicer.data.WipeTowerDepthEstimator
 import com.u1.slicer.model.CopyArrangeCalculator
 import com.u1.slicer.viewer.MeshData
 import com.u1.slicer.viewer.ModelRenderer
+import com.u1.slicer.viewer.BedProfile
+import com.u1.slicer.viewer.MachineProfile
 import com.u1.slicer.viewer.ModelViewerView
 import com.u1.slicer.viewer.StlParser
 import org.json.JSONObject
@@ -54,6 +56,27 @@ class HelixModelPreviewActivity : Activity() {
   private var native: NativeLibrary? = null
   private var modelPath: String = ""
   private var interactive = false
+  /**
+   * Build volume of the printer this model is headed for, resolved by the RN
+   * layer from the active printer. Read in onCreate so it is set on the renderer
+   * before the GL surface exists.
+   */
+  private var bedProfile: BedProfile = BedProfile.U1
+  /** Bed + slice profile of the target machine, from the same intent extra. */
+  private var machineProfile: MachineProfile = MachineProfile.U1
+  /**
+   * The raw payload, kept so it can be handed on verbatim to the G-code preview
+   * this screen opens after slicing. Without it that screen re-defaults to the
+   * U1 and the plate visibly changes machine mid-flow.
+   */
+  private var machineProfileJson: String? = null
+
+  // Placement bounds. These were a single BED_SIZE=270 constant, which let you
+  // drag a model straight off a 220mm AD5X plate. CopyArrangeCalculator's
+  // auto-arrange still takes one dimension, which is fine while every bed we
+  // support is square — revisit if a rectangular bed (H2D) lands.
+  private val bedSizeX: Float get() = bedProfile.sizeX
+  private val bedSizeY: Float get() = bedProfile.sizeY
   // Theme accent from the RN app (defaults to Helix blue) — used for the Slice
   // button + tile icon tint so the native screen follows the user's theme.
   private var accentColor: Int = 0xFF2196F3.toInt()
@@ -115,6 +138,16 @@ class HelixModelPreviewActivity : Activity() {
   private var towerX = 0f
   private var towerY = 0f
   private var towerDepth = 20f
+  // Footprint width must match what the slice actually uses, or the tower the
+  // user positions here is not the tower that gets printed.
+  private var towerWidth = Project3mfSettings.DEFAULT_PRIME_TOWER_WIDTH_MM
+  private var towerWidthSourcePath: String? = null
+
+  // The opened project's own settings, and the printer profile to read them
+  // against. Both are absent for an STL, and the defaults are absent for any
+  // printer whose bundled profile carries no print settings.
+  private var projectSettings = Project3mfSettings.NONE
+  private var profileDefaults = Project3mfSettings.NONE
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
@@ -127,10 +160,19 @@ class HelixModelPreviewActivity : Activity() {
     loadedToolMask = intent.getIntExtra(EXTRA_LOADED_TOOL_MASK, -1)
     autoArrangeOnLoad = intent.getBooleanExtra(EXTRA_AUTO_ARRANGE, false)
     materialProfilesJson = intent.getStringExtra(EXTRA_MATERIAL_PROFILES)
+    machineProfileJson = intent.getStringExtra(EXTRA_BED_PROFILE)
+    machineProfile = MachineProfile.fromJson(machineProfileJson)
+    bedProfile = machineProfile.bed
     val title = intent.getStringExtra(EXTRA_TITLE)
       ?.takeIf { it.isNotBlank() }
       ?: File(modelPath).name.ifBlank { "3D Preview" }
     displayTitle = title
+
+    // What the project itself asks for, read before the toolbar is built so the
+    // settings tiles open showing the file's values rather than Helix's.
+    projectSettings = Project3mfSettings.read(modelPath)
+    profileDefaults = Project3mfSettings.readProfileAsset(this, machineProfile.sliceProfileAsset)
+    sliceSettings = HelixSliceSettings.seededFrom(projectSettings)
 
     val rootView = buildLayout(title)
     setContentView(rootView)
@@ -309,6 +351,8 @@ class HelixModelPreviewActivity : Activity() {
     addTool(buildInfillTile())
     addTool(buildIroningTile())
     addTool(buildBrimTile())
+    // Only a project file has settings to report on.
+    if (projectSettings.isPresent) addTool(buildProjectSettingsTile())
     refreshDeleteTile()
     refreshUndoRedoTiles()
 
@@ -427,7 +471,7 @@ class HelixModelPreviewActivity : Activity() {
           val liveBoxes = lib.getObjectBoundingBoxes()
           val incoming = lib.nativeGetObjectWorldAABBMins()
           if (liveBoxes.isNotEmpty()) {
-            val result = CopyArrangeCalculator.autoArrange(liveBoxes, null, incoming, BED_SIZE)
+            val result = CopyArrangeCalculator.autoArrange(liveBoxes, null, incoming, bedSizeX)
             lib.setObjectPositions(result.positions)
             PrepareSession.setPositions(result.positions)
           }
@@ -527,7 +571,7 @@ class HelixModelPreviewActivity : Activity() {
     // the grid follows the object's current footprint).
     if (count == 1 && copyCount > 1 && newBoxes.size >= 2) {
       positions = CopyArrangeCalculator.calculate(
-        newBoxes[0], newBoxes[1], copyCount, BED_SIZE, BED_SIZE,
+        newBoxes[0], newBoxes[1], copyCount, bedSizeX, bedSizeY,
       )
       PrepareSession.setCopies(copyCount, positions)
     }
@@ -560,14 +604,15 @@ class HelixModelPreviewActivity : Activity() {
       renderer.wipeTower = null
       return
     }
+    refreshTowerWidth()
     towerDepth = WipeTowerDepthEstimator.estimateDepth(m.sizeZ)
     val dragged = PrepareSession.towerPosition
     if (dragged != null) {
-      towerX = dragged.first.coerceIn(0f, BED_SIZE - TOWER_WIDTH)
-      towerY = dragged.second.coerceIn(0f, BED_SIZE - towerDepth)
+      towerX = dragged.first.coerceIn(0f, bedSizeX - towerWidth)
+      towerY = dragged.second.coerceIn(0f, bedSizeY - towerDepth)
     } else {
       val (tx, ty) = CopyArrangeCalculator.computeWipeTowerPositionForObjects(
-        positions, boxes, TOWER_WIDTH, towerDepth, BED_SIZE, BED_SIZE,
+        positions, boxes, towerWidth, towerDepth, bedSizeX, bedSizeY,
       )
       towerX = tx
       towerY = ty
@@ -578,8 +623,16 @@ class HelixModelPreviewActivity : Activity() {
     val bandColors = towerBandColors(m)
     val towerHeight = (m.sizeZ * 0.35f).coerceIn(12f, 40f)
     renderer.wipeTower = ModelRenderer.WipeTowerInfo(
-      towerX, towerY, TOWER_WIDTH, towerDepth, bandColors, towerHeight,
+      towerX, towerY, towerWidth, towerDepth, bandColors, towerHeight,
     )
+  }
+
+  /** The project's own `prime_tower_width`, re-read whenever the model file changes. */
+  private fun refreshTowerWidth() {
+    if (towerWidthSourcePath == modelPath) return
+    towerWidthSourcePath = modelPath
+    towerWidth = Project3mfSettings.read(modelPath).primeTowerWidth
+      ?: Project3mfSettings.DEFAULT_PRIME_TOWER_WIDTH_MM
   }
 
   private fun needsPrimeTower(mesh: MeshData): Boolean {
@@ -614,7 +667,7 @@ class HelixModelPreviewActivity : Activity() {
       row.visibility = View.GONE
       return
     }
-    val maxCopies = CopyArrangeCalculator.maxCopies(boxes[0], boxes[1], BED_SIZE, BED_SIZE)
+    val maxCopies = CopyArrangeCalculator.maxCopies(boxes[0], boxes[1], bedSizeX, bedSizeY)
     copiesSeek?.max = (maxCopies - 1).coerceAtLeast(0)
     copiesSeek?.progress = copyCount - 1
     // Dead slider with no explanation reads as broken — say why it won't move.
@@ -636,7 +689,7 @@ class HelixModelPreviewActivity : Activity() {
     copiesLabel?.text = "Copies: $copyCount"
     val view = viewer ?: return
     positions = if (copyCount > 1) {
-      CopyArrangeCalculator.calculate(boxes[0], boxes[1], copyCount, BED_SIZE, BED_SIZE)
+      CopyArrangeCalculator.calculate(boxes[0], boxes[1], copyCount, bedSizeX, bedSizeY)
     } else {
       basePositions.copyOf()
     }
@@ -655,6 +708,10 @@ class HelixModelPreviewActivity : Activity() {
         FrameLayout.LayoutParams.MATCH_PARENT,
         FrameLayout.LayoutParams.MATCH_PARENT,
       )
+      // Before the view is attached, so the bed mesh, grid and camera are built
+      // for the right machine on the very first frame — ModelRenderer reads this
+      // in onSurfaceCreated and does not rebuild afterwards.
+      it.renderer.bedProfile = bedProfile
     }
     viewer = view
 
@@ -679,16 +736,16 @@ class HelixModelPreviewActivity : Activity() {
         val bi = if (objectCount == 1) 0 else index
         val sizeX = boxes.getOrElse(bi * 3) { 0f }
         val sizeY = boxes.getOrElse(bi * 3 + 1) { 0f }
-        positions[index * 2] = (positions[index * 2] + dx).coerceIn(0f, BED_SIZE - sizeX)
-        positions[index * 2 + 1] = (positions[index * 2 + 1] + dy).coerceIn(0f, BED_SIZE - sizeY)
+        positions[index * 2] = (positions[index * 2] + dx).coerceIn(0f, bedSizeX - sizeX)
+        positions[index * 2 + 1] = (positions[index * 2 + 1] + dy).coerceIn(0f, bedSizeY - sizeY)
         view.renderer.instancePositions = positions.copyOf()
       } else if (index == instanceCount && towerShown) {
         // Wipe tower drag (hitTest reports index == instance count for the tower).
-        towerX = (towerX + dx).coerceIn(0f, BED_SIZE - TOWER_WIDTH)
-        towerY = (towerY + dy).coerceIn(0f, BED_SIZE - towerDepth)
+        towerX = (towerX + dx).coerceIn(0f, bedSizeX - towerWidth)
+        towerY = (towerY + dy).coerceIn(0f, bedSizeY - towerDepth)
         view.renderer.wipeTower =
           ModelRenderer.WipeTowerInfo(
-            towerX, towerY, TOWER_WIDTH, towerDepth,
+            towerX, towerY, towerWidth, towerDepth,
             mesh?.let { towerBandColors(it) } ?: emptyList(),
             ((mesh?.sizeZ ?: 30f) * 0.35f).coerceIn(12f, 40f),
           )
@@ -896,7 +953,94 @@ class HelixModelPreviewActivity : Activity() {
     HelixInfillSettingsUi.show(this, accentColor, sliceSettings) { updated ->
       sliceSettings.infillDensity = updated.infillDensity
       sliceSettings.infillPattern = updated.infillPattern
+      sliceSettings.chosen = updated.chosen
       refreshSettingsTiles()
+    }
+  }
+
+  /**
+   * Lists what the opened project specifies, marking the values that differ
+   * from the printer profile's own.
+   *
+   * Without this the prepare screen showed only the four settings it can edit,
+   * so a file that changed its layer height, wall count or speeds looked
+   * identical to one that had not.
+   */
+  private fun buildProjectSettingsTile(): View = buildSettingsTile(
+    R.drawable.ic_tool_settings,
+    "Project",
+    isOn = { projectSettings.summarize(profileDefaults).any { it.differs } },
+  ) {
+    showProjectSettingsSheet()
+  }
+
+  private fun showProjectSettingsSheet() {
+    val rows = projectSettings.summarize(profileDefaults)
+    val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+
+    if (rows.isEmpty()) {
+      content.addView(
+        TextView(this).apply {
+          text = "This file carries no project settings, so the printer profile's own " +
+            "values are used throughout."
+          textSize = 13f
+          setTextColor(HelixAppTheme.SUBTEXT)
+        },
+      )
+    } else {
+      val changed = rows.count { it.differs }
+      content.addView(
+        TextView(this).apply {
+          text = when {
+            profileDefaults.isPresent && changed > 0 ->
+              "$changed setting${if (changed == 1) "" else "s"} differ from the printer profile."
+            profileDefaults.isPresent ->
+              "Everything here matches the printer profile."
+            // No bundled defaults to compare against; say so rather than
+            // implying the project changed nothing.
+            else -> "What this project asks for. Helix has no stored defaults " +
+              "for this printer to compare against."
+          }
+          textSize = 12f
+          setTextColor(HelixAppTheme.SUBTEXT)
+          setPadding(0, 0, 0, dp(10))
+        },
+      )
+      rows.forEach { row -> content.addView(projectSettingRow(row)) }
+    }
+
+    HelixThemedDialog.showFloatingCenter(
+      activity = this,
+      accent = accentColor,
+      title = "Project settings",
+      iconRes = R.drawable.ic_tool_settings,
+      content = content,
+      secondaryLabel = "",
+      primaryLabel = "Close",
+      onPrimary = {},
+    )
+  }
+
+  private fun projectSettingRow(row: ProjectSettingRow): View {
+    val label = TextView(this).apply {
+      text = row.label
+      textSize = 13f
+      setTextColor(HelixAppTheme.SUBTEXT)
+      layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+    }
+    val value = TextView(this).apply {
+      // The profile's value is worth showing only where it disagrees.
+      text = if (row.differs) "${row.value}  (was ${row.default})" else row.value
+      textSize = 13f
+      gravity = Gravity.END
+      setTextColor(if (row.differs) accentColor else Color.rgb(232, 237, 243))
+    }
+    return LinearLayout(this).apply {
+      orientation = LinearLayout.HORIZONTAL
+      gravity = Gravity.CENTER_VERTICAL
+      setPadding(0, dp(5), 0, dp(5))
+      addView(label)
+      addView(value)
     }
   }
 
@@ -911,6 +1055,7 @@ class HelixModelPreviewActivity : Activity() {
       sliceSettings.ironingFlow = updated.ironingFlow
       sliceSettings.ironingSpacing = updated.ironingSpacing
       sliceSettings.ironingSpeed = updated.ironingSpeed
+      sliceSettings.chosen = updated.chosen
       refreshSettingsTiles()
     }
   }
@@ -970,6 +1115,7 @@ class HelixModelPreviewActivity : Activity() {
 
   private fun openBrimSettings() {
     HelixBrimSettingsUi.show(this, accentColor, sliceSettings.brimWidthMm) { width ->
+      sliceSettings = sliceSettings.choosing(SliceSettingGroup.BRIM)
       sliceSettings.brimWidthMm = width
       refreshBrimTile()
     }
@@ -1140,7 +1286,7 @@ class HelixModelPreviewActivity : Activity() {
               val liveBoxes = lib.getObjectBoundingBoxes()
               val incoming = lib.nativeGetObjectWorldAABBMins()
               if (liveBoxes.isNotEmpty()) {
-                val result = CopyArrangeCalculator.autoArrange(liveBoxes, null, incoming, BED_SIZE)
+                val result = CopyArrangeCalculator.autoArrange(liveBoxes, null, incoming, bedSizeX)
                 lib.setObjectPositions(result.positions)
                 PrepareSession.setPositions(result.positions)
               }
@@ -1212,7 +1358,7 @@ class HelixModelPreviewActivity : Activity() {
       val existing = if (positions.isNotEmpty()) positions
         else runCatching { lib.nativeGetObjectWorldAABBMins() }.getOrDefault(FloatArray(0))
       if (newBoxes.size >= 3 && existing.isNotEmpty()) {
-        val placed = CopyArrangeCalculator.placeAdditionalObject(existing, newBoxes, BED_SIZE)
+        val placed = CopyArrangeCalculator.placeAdditionalObject(existing, newBoxes, bedSizeX)
         lib.setObjectPositions(placed)
         PrepareSession.setPositions(placed)
       }
@@ -1343,6 +1489,8 @@ class HelixModelPreviewActivity : Activity() {
           initialTool = initialTool,
           sliceSettings = sliceSettings,
           materialProfilesJson = materialProfilesJson,
+          usedExtrudersHint = mesh?.usedExtruderSlots(),
+          machine = machineProfile,
         )
         val result = outcome.result
         runOnUiThread {
@@ -1368,6 +1516,9 @@ class HelixModelPreviewActivity : Activity() {
                     putExtra(HelixGcodePreviewActivity.EXTRA_LOADED_TOOL_MASK, loadedToolMask)
                     putExtra(HelixGcodePreviewActivity.EXTRA_USED_TOOL_MASK, outcome.usedToolMask)
                     putExtra(HelixGcodePreviewActivity.EXTRA_MODEL_PATH, modelPath)
+                    machineProfileJson?.let {
+                      putExtra(HelixGcodePreviewActivity.EXTRA_BED_PROFILE, it)
+                    }
                   },
                 )
               }
@@ -1438,14 +1589,14 @@ class HelixModelPreviewActivity : Activity() {
     // an object under the printed tower.
     val reserved = if (towerShown) floatArrayOf(
       towerX - 5f, towerY - 5f,
-      towerX + TOWER_WIDTH + 5f, towerY + towerDepth + 5f,
+      towerX + towerWidth + 5f, towerY + towerDepth + 5f,
     ) else null
     runEdit { lib ->
       val liveBoxes = runCatching { lib.getObjectBoundingBoxes() }.getOrDefault(FloatArray(0))
       val incoming = if (positions.isNotEmpty()) positions
         else runCatching { lib.nativeGetObjectWorldAABBMins() }.getOrDefault(FloatArray(0))
       if (liveBoxes.isEmpty()) return@runEdit false
-      val result = CopyArrangeCalculator.autoArrange(liveBoxes, reserved, incoming, BED_SIZE)
+      val result = CopyArrangeCalculator.autoArrange(liveBoxes, reserved, incoming, bedSizeX)
       lib.setObjectPositions(result.positions)
       PrepareSession.setPositions(result.positions)
       if (result.overflowCount > 0) {
@@ -1573,10 +1724,6 @@ class HelixModelPreviewActivity : Activity() {
     const val EXTRA_LOADED_TOOL_MASK = "loadedToolMask"
     const val EXTRA_AUTO_ARRANGE = "autoArrange"
     const val EXTRA_MATERIAL_PROFILES = "materialProfiles"
-    private const val BED_SIZE = 270f
-
-    // Orca default prime_tower_width (the lab SliceConfig's 60mm default is the
-    // engine-side fallback; the preview mirrors what profiles actually use).
-    private const val TOWER_WIDTH = 35f
+    const val EXTRA_BED_PROFILE = "bedProfile"
   }
 }
