@@ -30,5 +30,28 @@ replace the AGPL license terms that apply to the slicer components and engine.
 - [Snapmaker Orca / OrcaSlicer](https://github.com/SoftFever/OrcaSlicer) — core slicing engine (AGPL-3.0)
 - [PrusaSlicer](https://github.com/prusa3d/PrusaSlicer) — upstream slicer (AGPL-3.0)
 
+## Bespok3d
+
+Helix redistributes the Bespok3d daemon and Snapmaker U1 jinni bootstrap
+packages under AGPL-3.0-or-later.
+
+Copyright (C) 2026 unlucio and the Bespok3d contributors. Bespok3d is a project
+of the Bespok3d Organisation, which is not a legal entity; copyright is held by
+its individual authors. Helix is not affiliated with or endorsed by Bespok3d.
+
+- [Bespok3d daemon](https://github.com/Bespok3d/daemon)
+- [Bespok3d adapters](https://github.com/Bespok3d/adapters)
+
+## HelixScreen
+
+Helix redistributes a build of
+[HelixScreen](https://github.com/prestonbrown/helixscreen) v0.99.112 under
+GPL-3.0-or-later.
+
+Copyright (C) 2025-2026 356C LLC and contributors. Helix is not affiliated with
+or endorsed by 356C LLC or the HelixScreen contributors. The exact upstream
+source and Helix's build modifications are documented in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
 See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for file paths and
 distribution notes.

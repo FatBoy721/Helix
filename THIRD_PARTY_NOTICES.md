@@ -52,6 +52,31 @@ inside `android/app/src/main/assets/bespok3d/bootstrap-v0.7.3.zip`. Helix checks
 the packages against Bespok3d's pinned OpenPGP publisher key and verifies every
 manifest SHA-256 before an enrollment operation can read the payload.
 
+Copyright (C) 2026 unlucio and the Bespok3d contributors. Bespok3d is a
+project of the Bespok3d Organisation, which is not a legal entity; copyright
+is held by its individual authors. Helix is not affiliated with or endorsed by
+Bespok3d.
+
+## HelixScreen
+
+Helix bundles `helixscreen-ui-0.1.0.b3`, which contains a build of
+[HelixScreen](https://github.com/prestonbrown/helixscreen) v0.99.112:
+
+- Copyright (C) 2025-2026 356C LLC and contributors
+- License: GPL-3.0-or-later
+- Exact upstream source: https://github.com/prestonbrown/helixscreen/tree/59e2b0b3ffde67666b89db80845057fa1b0b9a5b
+- Helix build and packaging instructions: `tools/bespok3d/helixscreen-ui/`
+
+Helix's package adds deployment metadata, a launcher, and the Docker build used
+to compile the pinned upstream source for the Snapmaker U1. Those modifications
+are available in this repository. Helix is not affiliated with or endorsed by
+356C LLC or the HelixScreen contributors.
+
+The full HelixScreen GPL text is in
+`licenses/HelixScreen-GPL-3.0.txt`. Release builds package this notice, that
+license, Helix's AGPL license, and `ATTRIBUTION.md` under the APK's `legal/`
+assets directory.
+
 ## Your obligations when distributing Helix
 
 If you distribute a build that includes the native slicer (release APK, CI
@@ -64,4 +89,6 @@ artifact, etc.):
 3. Preserve copyright and license notices in source files you received under
    AGPL.
 
-For the full license text, see [LICENSE](LICENSE).
+For Helix's full AGPL license text, see [LICENSE](LICENSE). For HelixScreen's
+full GPL license text, see
+[licenses/HelixScreen-GPL-3.0.txt](licenses/HelixScreen-GPL-3.0.txt).
