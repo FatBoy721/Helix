@@ -63,6 +63,13 @@ class HelixPreprocessSheet(
     val printers: List<HelixPrinterStore.Printer>,
     val activePrinterUrl: String,
     val initialPrefs: Set<Pref>,
+    /** Toggles this machine can honour; see PreprocessRouting.offeredPrefs. */
+    val offeredPrefs: List<Pref> = Pref.values().toList(),
+    /**
+     * How the machine names its feeds — "lane" for AD5X/Bambu, "tool" for the
+     * U1. From MachineProfile.laneNaming; see PreprocessRouting.laneWord.
+     */
+    val laneNaming: String = "tool",
     val sendLabel: String = "Hold to start",
     /** Reports reachability, busy state and bed mesh for a printer, on the UI thread. */
     val probePrinter: (String, (PrinterState) -> Unit) -> Unit,
@@ -205,6 +212,9 @@ class HelixPreprocessSheet(
   private val required: List<Int> =
     config.required.distinct().sorted().ifEmpty { listOf(0) }
 
+  /** The machine's word for a feed — "lane" on the U1, "Lane" on AD5X/Bambu. */
+  private val word = PreprocessRouting.laneWord(config.laneNaming)
+
   private fun tools(): List<Tool> =
     PreprocessRouting.buildTools(required, displayLanes, manual, config.perToolGrams)
 
@@ -214,6 +224,7 @@ class HelixPreprocessSheet(
     printerName = printerName(printerUrl),
     tools = tools,
     lanes = displayLanes,
+    laneNaming = config.laneNaming,
   )
 
   /** Saved printer matching [url] — exact first, then by host, since LAN and
@@ -539,8 +550,10 @@ class HelixPreprocessSheet(
 
   private fun cleanRow(rerouted: List<Tool>): View {
     val message = if (rerouted.isNotEmpty()) {
-      "Routed around empty lanes — " +
-        rerouted.joinToString(", ") { "T${it.fileTool} on lane ${it.assigned + 1}" }
+      "Routed around empty ${word}s — " +
+        rerouted.joinToString(", ") {
+          "${PreprocessRouting.toolLabel(it.fileTool, config.laneNaming)} on $word ${it.assigned + 1}"
+        }
     } else {
       "Lanes loaded, printer idle"
     }
@@ -566,7 +579,7 @@ class HelixPreprocessSheet(
     tools.forEach { chips.addSpaced(laneChip(it, 26), 4) }
     head.addSpaced(chips, 0)
     head.addSpaced(
-      text("${tools.size} ${if (tools.size == 1) "lane" else "lanes"}", 12.5f, P.TEXT, bold = true),
+      text("${tools.size} ${if (tools.size == 1) word else "${word}s"}", 12.5f, P.TEXT, bold = true),
       10,
     )
     head.addSpaced(weightBar(tools), 10, LinearLayout.LayoutParams(0, dp(6), 1f))
@@ -618,14 +631,14 @@ class HelixPreprocessSheet(
       line.addSpaced(laneChip(tool, 34), 0)
 
       val heading = PreprocessRouting.laneLabel(tool.lane) + when (tool.source) {
-        RouteSource.MANUAL -> "  → lane ${tool.assigned + 1}"
-        RouteSource.AUTO -> "  auto → lane ${tool.assigned + 1}"
+        RouteSource.MANUAL -> "  → $word ${tool.assigned + 1}"
+        RouteSource.AUTO -> "  auto → $word ${tool.assigned + 1}"
         RouteSource.IDENTITY -> ""
       }
       val labels = column()
       labels.addSpaced(text(heading, 14f, P.TEXT, bold = true), 0)
       labels.addSpaced(
-        text("lane ${tool.assigned + 1} · ${PreprocessRouting.laneDetail(tool.lane)}", 11.5f, P.DIM),
+        text("$word ${tool.assigned + 1} · ${PreprocessRouting.laneDetail(tool.lane)}", 11.5f, P.DIM),
         2,
       )
       line.addSpaced(labels, 12, weighted())
@@ -639,7 +652,7 @@ class HelixPreprocessSheet(
   }
 
   private fun optionsHead(): View {
-    val summary = Pref.values().filter { prefs.contains(it) }
+    val summary = config.offeredPrefs.filter { prefs.contains(it) }
       .joinToString(", ") { it.label }
       .ifBlank { "Print preferences" }
     val open = openFold == Fold.OPTIONS
@@ -660,7 +673,7 @@ class HelixPreprocessSheet(
 
   private fun optionsBody(): View {
     val list = column().apply { setPadding(0, dp(4), 0, 0) }
-    Pref.values().forEach { pref ->
+    config.offeredPrefs.forEach { pref ->
       val on = prefs.contains(pref)
       val line = row().apply {
         setPadding(dp(4), dp(9), dp(4), dp(9))
@@ -709,7 +722,12 @@ class HelixPreprocessSheet(
       layoutParams = LinearLayout.LayoutParams(dp(sizeDp), dp(sizeDp))
     }
     chip.addView(
-      text("T${tool.fileTool}", sizeDp * 0.34f, P.TEXT, bold = true).apply {
+      text(
+        PreprocessRouting.toolChipLabel(tool.fileTool, config.laneNaming),
+        sizeDp * 0.34f,
+        P.TEXT,
+        bold = true,
+      ).apply {
         gravity = Gravity.CENTER
       },
       FrameLayout.LayoutParams(
@@ -1004,7 +1022,10 @@ class HelixPreprocessSheet(
 
   private fun openLaneLayer(fileTool: Int) {
     val assigned = tools().firstOrNull { it.fileTool == fileTool }?.assigned ?: fileTool
-    openLayer("Lane for T$fileTool", "Choose the physical spool that feeds this tool.") { content ->
+    // "Lane 1" would not fit the picker in a tool-wording sentence, so the two
+    // namings phrase the title differently — mirror PrintPreprocessDialog.tsx.
+    val title = if (config.laneNaming == "lane") "Spool for Lane ${fileTool + 1}" else "Lane for T$fileTool"
+    openLayer(title, "Choose the physical spool that feeds this tool.") { content ->
       displayLanes.forEach { lane ->
         val badge = FrameLayout(activity).apply {
           background = oval(P.BG, if (lane.isEmpty) P.alpha(P.DANGER, 0.6f) else lane.color, 2f)

@@ -22,3 +22,7 @@ android/app/google-services.json
 tools/
 .omc/
 functions/lib/
+
+# goldie: generated store assets (captures + config are tracked)
+goldie/out/
+goldie/goldie.design.json

@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Image, Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { AppState, Image, Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { useFocusEffect } from 'expo-router';
 import { WebView, type WebViewMessageEvent } from 'react-native-webview';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -29,8 +30,83 @@ interface Props {
   radius?: number;
 }
 
+const SNAPSHOT_POLL_MS = 250;
+
+// Bambu (and any feed with a snapshot endpoint) renders natively: the app
+// polls the snapshot URL with plain RN Image instead of decoding MJPEG or a
+// WebRTC page inside a WebView — the WebView renders blank on some devices.
+function NativeSnapshotFeed({
+  url,
+  paused,
+  resetKey,
+}: {
+  url: string;
+  paused: boolean;
+  resetKey: string;
+}) {
+  const [frameNonce, setFrameNonce] = useState(() => Date.now());
+  const [failed, setFailed] = useState(false);
+  // The visible Image only ever points at an already-decoded frame: each poll
+  // loads into a hidden preloader first, and the visible URI hard-swaps once
+  // that load finishes (Bambu Handy style — frame by frame, no fade).
+  // Swapping mid-decode is what made the feed flash.
+  const [displayedUri, setDisplayedUri] = useState<string | null>(null);
+  const frameUri = cacheBustUrl(url, frameNonce);
+
+  const advanceFrame = useCallback(() => {
+    // Never restart at ?n=1 after a refresh/remount. React Native's image cache
+    // retains those URLs, which made one fresh frame flash before an old frame
+    // from the first camera session replaced it.
+    setFrameNonce((previous) => Math.max(Date.now(), previous + 1));
+  }, []);
+
+  useEffect(() => {
+    advanceFrame();
+    setFailed(false);
+    setDisplayedUri(null);
+  }, [advanceFrame, resetKey]);
+
+  useEffect(() => {
+    if (paused) return;
+    const timer = setInterval(advanceFrame, SNAPSHOT_POLL_MS);
+    return () => clearInterval(timer);
+  }, [advanceFrame, paused, resetKey]);
+
+  return (
+    <View style={styles.webview}>
+      {displayedUri && (
+        <Image source={{ uri: displayedUri }} style={styles.snapshotImage} resizeMode="contain" />
+      )}
+      <Image
+        source={{ uri: frameUri }}
+        style={styles.preloaderImage}
+        resizeMode="contain"
+        onLoad={() => {
+          setFailed(false);
+          setDisplayedUri(frameUri);
+        }}
+        onError={() => setFailed(true)}
+      />
+      {failed && <Text style={styles.reconnecting}>reconnecting…</Text>}
+    </View>
+  );
+}
+
 const WEBRTC_FIRST_FRAME_MESSAGE = 'helix:webrtc:first-frame';
-const WEBRTC_PREVIEW_TIMEOUT_MS = 10_000;
+const LIVE_PREVIEW_TIMEOUT_MS = 4_000;
+
+function resolveMjpegBridgeUrl(url: string): string | undefined {
+  try {
+    const parsed = new URL(url);
+    if (!/\/webcam\/webrtc\/?$/i.test(parsed.pathname)) return undefined;
+    parsed.pathname = '/webcam/stream.mjpg';
+    parsed.search = '';
+    parsed.hash = '';
+    return parsed.toString();
+  } catch {
+    return undefined;
+  }
+}
 
 const WEBRTC_FIRST_FRAME_SCRIPT = `
 (function () {
@@ -112,6 +188,10 @@ var statusEl = document.getElementById('s');
 var lastFrame = 0;
 var controller = null;
 var prevUrl = null;
+var stopped = false;
+var readySent = false;
+var snapshotTimer = null;
+var watchdogTimer = null;
 
 function setStatus(t) {
   statusEl.textContent = t;
@@ -125,6 +205,10 @@ function bust(u) {
 function showFrame(bytes) {
   lastFrame = Date.now();
   setStatus('');
+  if (!readySent && window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+    readySent = true;
+    window.ReactNativeWebView.postMessage(${JSON.stringify(WEBRTC_FIRST_FRAME_MESSAGE)});
+  }
   var blob = new Blob([bytes], { type: 'image/jpeg' });
   var u = URL.createObjectURL(blob);
   img.onload = function () {
@@ -142,7 +226,11 @@ function findMarker(b, second, from) {
 }
 
 async function streamLoop() {
-  for (;;) {
+  while (!stopped) {
+    if (document.hidden) {
+      await new Promise(function (r) { setTimeout(r, 500); });
+      continue;
+    }
     controller = new AbortController();
     try {
       var res = await fetch(bust(SRC), { cache: 'no-store', signal: controller.signal });
@@ -175,7 +263,8 @@ async function streamLoop() {
         if (latest) showFrame(latest);
       }
     } catch (e) {}
-    setStatus('reconnecting\\u2026');
+    if (stopped) return;
+    setStatus(document.hidden ? '' : 'reconnecting\\u2026');
     await new Promise(function (r) { setTimeout(r, 800); });
   }
 }
@@ -183,23 +272,37 @@ async function streamLoop() {
 function snapshotLoop() {
   img.onload = function () { lastFrame = Date.now(); setStatus(''); };
   img.onerror = function () { setStatus('reconnecting\\u2026'); };
-  setInterval(function () { img.src = bust(SRC); }, 700);
+  snapshotTimer = setInterval(function () { img.src = bust(SRC); }, 700);
   img.src = bust(SRC);
 }
 
 // Watchdog: no frame for 6s -> kill the fetch, loop reconnects.
-setInterval(function () {
+watchdogTimer = setInterval(function () {
   if (!SNAPSHOT && lastFrame && Date.now() - lastFrame > 6000 && controller) {
     try { controller.abort(); } catch (e) {}
   }
 }, 2000);
 
-// Coming back from background: force a fresh connection immediately.
+function stopPlayer() {
+  stopped = true;
+  if (snapshotTimer) clearInterval(snapshotTimer);
+  if (watchdogTimer) clearInterval(watchdogTimer);
+  if (controller) {
+    try { controller.abort(); } catch (e) {}
+  }
+  if (prevUrl) URL.revokeObjectURL(prevUrl);
+}
+
+// Hidden WebViews must not leave a costly MJPEG client running on the printer.
 document.addEventListener('visibilitychange', function () {
-  if (!document.hidden && !SNAPSHOT && Date.now() - lastFrame > 3000 && controller) {
+  if (document.hidden && controller) {
+    try { controller.abort(); } catch (e) {}
+  } else if (!SNAPSHOT && Date.now() - lastFrame > 3000 && controller) {
     try { controller.abort(); } catch (e) {}
   }
 });
+window.addEventListener('pagehide', stopPlayer);
+window.addEventListener('beforeunload', stopPlayer);
 
 if (SNAPSHOT) snapshotLoop(); else streamLoop();
 </script>
@@ -378,9 +481,26 @@ export default function CameraFeed({
   const [showStats, setShowStats] = useState(false);
   const [savingSnapshot, setSavingSnapshot] = useState(false);
   const [readyPlayerKey, setReadyPlayerKey] = useState<string | null>(null);
-  const [dismissedPreviewKey, setDismissedPreviewKey] = useState<string | null>(null);
+  const [snapshotFallbackKey, setSnapshotFallbackKey] = useState<string | null>(null);
+  const [screenFocused, setScreenFocused] = useState(true);
+  const [appActive, setAppActive] = useState(AppState.currentState === 'active');
   const webViewRef = useRef<WebView>(null);
   const { showAlert, alertDialog } = useThemedAlert();
+  const streamPaused = paused || !screenFocused || !appActive;
+
+  useFocusEffect(
+    useCallback(() => {
+      setScreenFocused(true);
+      return () => setScreenFocused(false);
+    }, []),
+  );
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (state) => {
+      setAppActive(state === 'active');
+    });
+    return () => subscription.remove();
+  }, []);
 
   // /webcam/webrtc and /screen/ serve their own player pages.
   const isRemoteScreen = /\/screen\/?($|\?)/i.test(url);
@@ -393,18 +513,29 @@ export default function CameraFeed({
     return m ? m[0] : undefined;
   }, [url]);
 
-  const html = useMemo(() => buildPlayerHtml(url, isSnapshot), [url, isSnapshot]);
+  // Android WebView cannot reliably establish the U1's WebRTC page because
+  // its sandbox may deny network-interface enumeration during ICE. The U1
+  // serves the same camera as continuous MJPEG, which our bounded parser can
+  // display smoothly without WebRTC permissions.
+  const mjpegBridgeUrl = useMemo(
+    () => (isWebrtcPage ? resolveMjpegBridgeUrl(url) : undefined),
+    [isWebrtcPage, url],
+  );
+  const html = useMemo(
+    () => buildPlayerHtml(mjpegBridgeUrl ?? url, isSnapshot),
+    [isSnapshot, mjpegBridgeUrl, url],
+  );
   const screenHtml = useMemo(() => buildScreenPlayerHtml(url), [url]);
   const webViewSource = useMemo(
     () =>
-      isWebrtcPage
+      isWebrtcPage && !mjpegBridgeUrl
         ? { uri: url }
         : { html: isRemoteScreen ? screenHtml : html, baseUrl: origin },
-    [html, isRemoteScreen, isWebrtcPage, origin, screenHtml, url],
+    [html, isRemoteScreen, isWebrtcPage, mjpegBridgeUrl, origin, screenHtml, url],
   );
   const screenPauseBootstrap = useMemo(
-    () => `window.__helixScreenPaused = ${paused ? 'true' : 'false'}; true;`,
-    [paused],
+    () => `window.__helixScreenPaused = ${streamPaused ? 'true' : 'false'}; true;`,
+    [streamPaused],
   );
   const playerKey = `${url}-${nonce}-${fullscreen ? 'fs' : 'card'}`;
   const previewUri = useMemo(
@@ -412,23 +543,25 @@ export default function CameraFeed({
     [snapshotUrl, playerKey],
   );
   const liveFrameReady = readyPlayerKey === playerKey;
+  const useSnapshotFallback =
+    isWebrtcPage && !!snapshotUrl && !liveFrameReady && snapshotFallbackKey === playerKey;
   const showSnapshotPreview =
     isWebrtcPage &&
     !!previewUri &&
     !liveFrameReady &&
-    dismissedPreviewKey !== playerKey;
+    !useSnapshotFallback;
 
   useEffect(() => {
     if (!showSnapshotPreview) return;
     const timeout = setTimeout(() => {
-      setDismissedPreviewKey(playerKey);
-    }, WEBRTC_PREVIEW_TIMEOUT_MS);
+      setSnapshotFallbackKey(playerKey);
+    }, LIVE_PREVIEW_TIMEOUT_MS);
     return () => clearTimeout(timeout);
   }, [playerKey, showSnapshotPreview]);
 
   const syncRemoteScreenPause = useCallback(() => {
     if (!isRemoteScreen) return;
-    const nextPaused = paused ? 'true' : 'false';
+    const nextPaused = streamPaused ? 'true' : 'false';
     webViewRef.current?.injectJavaScript(`
       window.__helixScreenPaused = ${nextPaused};
       if (typeof window.helixSetScreenPaused === 'function') {
@@ -436,7 +569,7 @@ export default function CameraFeed({
       }
       true;
     `);
-  }, [isRemoteScreen, paused]);
+  }, [isRemoteScreen, streamPaused]);
 
   useEffect(() => {
     syncRemoteScreenPause();
@@ -520,40 +653,58 @@ export default function CameraFeed({
     );
   }
 
+  // Snapshot-only feeds skip WebView entirely. U1 WebRTC URLs are bridged to
+  // continuous MJPEG; the advertised snapshot remains the bounded last resort
+  // if neither that bridge nor a direct WebRTC page produces a frame.
   const feed = (
     <View style={styles.feedContainer}>
-      <WebView
-        ref={webViewRef}
-        key={playerKey}
-        source={webViewSource}
-        style={styles.webview}
-        originWhitelist={['*']}
-        scrollEnabled={false}
-        nestedScrollEnabled
-        overScrollMode="never"
-        javaScriptEnabled
-        mixedContentMode="always"
-        mediaPlaybackRequiresUserAction={false}
-        allowsInlineMediaPlayback
-        injectedJavaScript={isWebrtcPage ? WEBRTC_FIRST_FRAME_SCRIPT : undefined}
-        injectedJavaScriptBeforeContentLoaded={
-          isRemoteScreen ? screenPauseBootstrap : undefined
-        }
-        onMessage={isWebrtcPage ? handleWebViewMessage : undefined}
-        onLoadEnd={isRemoteScreen ? syncRemoteScreenPause : undefined}
-      />
-      {showSnapshotPreview && previewUri && (
+      {snapshotUrl &&
+      ((!isRemoteScreen && !isWebrtcPage && isSnapshot) || useSnapshotFallback) ? (
+        <NativeSnapshotFeed url={snapshotUrl} paused={streamPaused} resetKey={playerKey} />
+      ) : (
+      <>
+      {isRemoteScreen || !streamPaused ? (
+        <WebView
+          ref={webViewRef}
+          key={playerKey}
+          source={webViewSource}
+          style={styles.webview}
+          originWhitelist={['*']}
+          scrollEnabled={false}
+          nestedScrollEnabled
+          overScrollMode="never"
+          javaScriptEnabled
+          mixedContentMode="always"
+          mediaPlaybackRequiresUserAction={false}
+          allowsInlineMediaPlayback
+          injectedJavaScript={
+            isWebrtcPage && !mjpegBridgeUrl ? WEBRTC_FIRST_FRAME_SCRIPT : undefined
+          }
+          injectedJavaScriptBeforeContentLoaded={
+            isRemoteScreen ? screenPauseBootstrap : undefined
+          }
+          onMessage={isWebrtcPage ? handleWebViewMessage : undefined}
+          onLoadEnd={isRemoteScreen ? syncRemoteScreenPause : undefined}
+        />
+      ) : (
+        <View style={[styles.webview, styles.center]}>
+          <Text style={styles.placeholder}>Camera paused</Text>
+        </View>
+      )}
+      {!streamPaused && showSnapshotPreview && previewUri && (
         <View pointerEvents="none" style={styles.snapshotPreview}>
           <Image
             source={{ uri: previewUri }}
             style={styles.snapshotPreviewImage}
             resizeMode="contain"
-            onError={() => setDismissedPreviewKey(playerKey)}
+            onError={() => setSnapshotFallbackKey(playerKey)}
           />
           <View style={styles.liveStartingBadge}>
             <Text style={styles.liveStartingText}>Starting live camera…</Text>
           </View>
         </View>
+      )}
+      </>
       )}
     </View>
   );
@@ -667,6 +818,29 @@ const styles = StyleSheet.create({
   },
   feedContainer: {
     flex: 1,
+  },
+  snapshotImage: {
+    width: '100%',
+    height: '100%',
+  },
+  snapshotImageOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    width: '100%',
+    height: '100%',
+  },
+  // Hidden but mounted so the frame decodes before it is shown.
+  preloaderImage: {
+    position: 'absolute',
+    width: 1,
+    height: 1,
+    opacity: 0,
+  },
+  reconnecting: {
+    position: 'absolute',
+    alignSelf: 'center',
+    top: '45%',
+    color: colors.subtext,
+    fontSize: 13,
   },
   snapshotPreview: {
     ...StyleSheet.absoluteFillObject,

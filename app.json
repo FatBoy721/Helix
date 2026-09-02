@@ -2,7 +2,7 @@
   "expo": {
     "name": "Helix",
     "slug": "u1-control",
-    "version": "3.0.0",
+    "version": "3.0.1",
     "orientation": "portrait",
     "scheme": "u1control",
     "userInterfaceStyle": "dark",
@@ -24,7 +24,7 @@
     },
     "android": {
       "package": "org.crabcore.u1control",
-      "versionCode": 19,
+      "versionCode": 20,
       "softwareKeyboardLayoutMode": "resize",
       "permissions": [
         "android.permission.POST_NOTIFICATIONS"

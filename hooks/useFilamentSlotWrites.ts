@@ -10,6 +10,11 @@ import { useCallback, useMemo } from 'react';
 import { useMoonraker } from './useMoonraker';
 import { useSettings } from './useSettings';
 import { api, printerConnectionUrl } from '../services/moonraker';
+import { setBambuFilament } from '../services/bambuMqtt';
+import {
+  bambuFilamentWriteLocation,
+  resolveBambuFilamentEditIdentity,
+} from '../services/bambuReport';
 import { setFilamentSlotColors } from '../services/nativeSlicer';
 import { normalizeFilamentSlotColors } from '../constants/filamentColors';
 
@@ -38,6 +43,56 @@ export function useFilamentSlotWrites(onError?: (message: string) => void): Fila
 
   const activePrinter = settings.printers.find((p) => p.id === settings.activePrinterId);
   const baseUrl = activeUrl || (activePrinter ? printerConnectionUrl(activePrinter) : '');
+  const isBambu = activePrinter?.kind === 'bambu-lan';
+
+  // Bambu has no Moonraker REST — the same edit goes out as an
+  // ams_filament_setting publish. Occupancy and preset identity are separate:
+  // manually configured generic spools can be present with no reported ID.
+  // The external holder has no idle occupancy sensor, but Bambu explicitly
+  // permits editing its virtual tray at 255/254/0.
+  const pushBambu = useCallback(
+    async (effective: EffectiveSlots, changedIndex?: number) => {
+      const cfg = (status.print_task_config ?? {}) as Record<string, any>;
+      const source = cfg.bambu_filament_source === 'external' ? 'external' : 'ams';
+      const channels = source === 'external'
+        ? [changedIndex ?? 0]
+        : changedIndex == null
+          ? effective.colors.map((_, index) => index)
+          : [changedIndex];
+      try {
+        await Promise.all(
+          channels.map((channel) => {
+            const material = effective.materials[channel] || 'PLA';
+            const identity = resolveBambuFilamentEditIdentity(
+              source === 'external' || cfg.filament_exist?.[channel] === true,
+              cfg.filament_info_idx?.[channel],
+              material
+            );
+            if (!identity.ok && identity.reason === 'empty') {
+              throw new Error('That AMS slot is empty — load a spool before editing it.');
+            }
+            if (!identity.ok) {
+              throw new Error(`Bambu Studio has no generic ${material} preset for this filament edit.`);
+            }
+            const location = bambuFilamentWriteLocation(source, channel);
+            return setBambuFilament({
+              ...location,
+              filamentId: identity.filamentId,
+              type: material,
+              colorRgba: `${effective.colors[channel].replace('#', '').slice(0, 6).toUpperCase()}FF`,
+              nozzleTempMin: cfg.nozzle_temp_min?.[channel] || 190,
+              nozzleTempMax: cfg.nozzle_temp_max?.[channel] || 240,
+            });
+          })
+        );
+        return true;
+      } catch (error) {
+        onError?.(error instanceof Error ? error.message : 'Helix saved the value locally.');
+        return false;
+      }
+    },
+    [onError, status]
+  );
 
   const current = useMemo<EffectiveSlots>(
     () => ({
@@ -56,6 +111,7 @@ export function useFilamentSlotWrites(onError?: (message: string) => void): Fila
 
   const push = useCallback(
     async (effective: EffectiveSlots, changedIndex?: number) => {
+      if (isBambu) return pushBambu(effective, changedIndex);
       if (!baseUrl) return true;
       // A single changed slot re-broadcasts only that channel; broadcasting all
       // four would churn the other slots' RFID caches for no reason.
@@ -82,7 +138,7 @@ export function useFilamentSlotWrites(onError?: (message: string) => void): Fila
         return false;
       }
     },
-    [baseUrl, onError, status]
+    [baseUrl, isBambu, onError, pushBambu, status]
   );
 
   const updateColors = useCallback(

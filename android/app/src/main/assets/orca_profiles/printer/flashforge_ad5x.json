@@ -1,0 +1,21 @@
+{
+    "_comment": "Extracted from OrcaSlicer resources/profiles/Flashforge (AGPL-3.0) by resolving the inherits chain of 'Flashforge AD5X 0.4 nozzle'. Helix reads the machine G-code and compatibility flags from here; see HelixSliceRunner.readMachineProfile.",
+    "name": "FlashForge AD5X (0.4 nozzle)",
+    "printer_model": "Flashforge AD5X",
+    "printer_technology": "FFF",
+    "gcode_flavor": "klipper",
+    "helix_translate_marlin_machine_limits": true,
+    "helix_strip_m486": true,
+    "printable_area": [
+        "0x0",
+        "220x0",
+        "220x220",
+        "0x220"
+    ],
+    "printable_height": "220",
+    "nozzle_diameter": [
+        "0.4"
+    ],
+    "machine_start_gcode": "M190 S[bed_temperature_initial_layer_single]\nM104 S[nozzle_temperature_initial_layer]\nG90\nM83\nG1 Z2 F6000\nG1 X50 Y220 Z0.25 F4800\nG1 X70 E3 F900\nG1 X200 E10 F1800\nG0 Y219.6\nG1 X130 E5 F1800\nG92 E0",
+    "machine_end_gcode": "G1 E-3 F3600\nG0 X50 Y50 F30000\nM104 S0 ; turn off temperature"
+}

@@ -1,6 +1,8 @@
+import { normalizeDashboardByPrinter } from './dashboardSections';
 import { normalizeMacroDisplayByPrinter } from './macroDisplay';
 import type { MacroDisplaySettings } from './macroDisplay';
-import { normalizeMoonrakerUrl } from './moonraker';
+import { normalizeMoonrakerUrl, type AiDetectionSensitivity } from './moonraker';
+import { isPrinterKind, type PrinterKind } from './printerProfiles';
 import { normalizeTemperatureUnit } from './temperature';
 import type { TemperatureUnit } from './temperature';
 import {
@@ -16,6 +18,15 @@ export interface PrinterEntry {
   tailscaleUrl: string;
   cameraUrl: string;
   connectionMode: ConnectionMode;
+  /** Which machine this is, driving toolhead count, camera and material UI. */
+  kind: PrinterKind;
+  /**
+   * FlashForge REST credentials, needed only to read the AD5X material station
+   * (Moonraker cannot see it). Absent on every other machine. The check code is
+   * the printer's "Printer ID" and grants full control — treat it as a secret.
+   */
+  serialNumber?: string;
+  checkCode?: string;
 }
 
 export interface DashboardSections {
@@ -43,7 +54,10 @@ export interface Settings {
   connectionMode: ConnectionMode;
   printers: PrinterEntry[];
   activePrinterId: string;
+  /** Template for printers with no saved layout of their own. */
   dashboard: DashboardSections;
+  /** Home layout per printer id — personalisation does not leak between machines. */
+  dashboardByPrinter: Record<string, DashboardSections>;
   /** Show a confirmation dialog before firing the emergency stop. */
   estopConfirm: boolean;
   macroDisplayByPrinter: Record<string, MacroDisplaySettings>;
@@ -64,6 +78,8 @@ export interface Settings {
   accentColor: string;
   language: string;
   temperatureUnit: TemperatureUnit;
+  /** Detection aggressiveness shared by spaghetti and build-plate monitoring. */
+  aiDetectionSensitivity: AiDetectionSensitivity;
   /** Hex colours for the four physical filament slots (T0–T3), used by paint/preview. */
   filamentSlotColors: string[];
   /** Manual fallback material labels for the four physical filament slots. */
@@ -76,8 +92,10 @@ export interface Settings {
   seenNotificationIds: string[];
 }
 
-export const STORAGE_VERSION = 11;
+export const STORAGE_VERSION = 13;
 export const LEGACY_DEFAULT_PRIMARY_URL = 'http://192.168.1.17:7125';
+/** Helix only supported the U1 before printer kinds existed. */
+const LEGACY_PRINTER_KIND: PrinterKind = 'snapmaker-u1';
 
 export const DEFAULT_SETTINGS: Settings = {
   settingsVersion: STORAGE_VERSION,
@@ -101,6 +119,7 @@ export const DEFAULT_SETTINGS: Settings = {
     macros: false,
   },
   estopConfirm: true,
+  dashboardByPrinter: {},
   macroDisplayByPrinter: {},
   notificationMode: 'fcm',
   ntfyServer: 'https://ntfy.sh',
@@ -119,6 +138,7 @@ export const DEFAULT_SETTINGS: Settings = {
   accentColor: '#2196f3',
   language: 'en',
   temperatureUnit: 'c',
+  aiDetectionSensitivity: 'low',
   filamentSlotColors: [...DEFAULT_FILAMENT_SLOT_COLORS],
   filamentSlotMaterials: ['PLA', 'PLA', 'PLA', 'PLA'],
   filamentSlotSubtypes: [DEFAULT_FILAMENT_SUBTYPE, DEFAULT_FILAMENT_SUBTYPE, DEFAULT_FILAMENT_SUBTYPE, DEFAULT_FILAMENT_SUBTYPE],
@@ -198,14 +218,26 @@ function normalizePrinter(raw: unknown, index: number): PrinterEntry {
     ? (raw as Partial<PrinterEntry>)
     : {};
 
-  return {
+  const entry: PrinterEntry = {
     id: stringValue(p.id) || `p${index + 1}`,
     name: stringValue(p.name) || `Snapmaker ${index + 1}`,
     url: normalizeMoonrakerUrl(stringValue(p.url) || ''),
     tailscaleUrl: normalizeMoonrakerUrl(stringValue(p.tailscaleUrl) || ''),
     cameraUrl: stringValue(p.cameraUrl) || DEFAULT_SETTINGS.cameraUrl,
     connectionMode: normalizeConnectionMode(p.connectionMode),
+    // Entries saved before v12 predate multi-machine support, so an absent
+    // kind can only mean the U1 — do not fall back to the generic profile.
+    kind: isPrinterKind(p.kind) ? p.kind : LEGACY_PRINTER_KIND,
   };
+
+  // Only carried when actually set, so printers with no FlashForge API keep a
+  // clean entry rather than gaining two permanently empty fields.
+  const serialNumber = stringValue(p.serialNumber);
+  const checkCode = stringValue(p.checkCode);
+  if (serialNumber) entry.serialNumber = serialNumber;
+  if (checkCode) entry.checkCode = checkCode;
+
+  return entry;
 }
 
 export function migrateSettings(raw: Partial<Settings>): Settings {
@@ -229,6 +261,10 @@ export function migrateSettings(raw: Partial<Settings>): Settings {
     cameraUrl: stringValue(parsed.cameraUrl) || DEFAULT_SETTINGS.cameraUrl,
     connectionMode: parsedConnectionMode,
     dashboard: normalizeDashboard(parsed.dashboard),
+    dashboardByPrinter: normalizeDashboardByPrinter(
+      parsed.dashboardByPrinter,
+      normalizeDashboard(parsed.dashboard)
+    ),
     estopConfirm: booleanValue(parsed.estopConfirm, DEFAULT_SETTINGS.estopConfirm),
     macroDisplayByPrinter: normalizeMacroDisplayByPrinter(parsed.macroDisplayByPrinter),
     notificationMode: notificationMode(parsed.notificationMode, parsed.ntfyTopic),
@@ -269,6 +305,7 @@ export function migrateSettings(raw: Partial<Settings>): Settings {
     accentColor: stringValue(parsed.accentColor) || DEFAULT_SETTINGS.accentColor,
     language: stringValue(parsed.language) || DEFAULT_SETTINGS.language,
     temperatureUnit: normalizeTemperatureUnit(parsed.temperatureUnit),
+    aiDetectionSensitivity: parsed.aiDetectionSensitivity === 'high' ? 'high' : 'low',
     filamentSlotColors: normalizeFilamentSlotColors(parsed.filamentSlotColors),
     filamentSlotMaterials: normalizeFilamentSlotMaterials(parsed.filamentSlotMaterials),
     filamentSlotSubtypes: normalizeFilamentSlotSubtypes(parsed.filamentSlotSubtypes),
@@ -279,7 +316,11 @@ export function migrateSettings(raw: Partial<Settings>): Settings {
     printers: Array.isArray(parsed.printers)
       ? parsed.printers
           .map((p, index) => normalizePrinter(p, index))
-          .filter((p) => p.url || p.tailscaleUrl)
+          // AD5X editor intentionally omits the URL fields, so a FlashForge
+          // entry can legitimately have no LAN/Tailscale URL yet (the address
+          // arrives via discovery). Keep those; only drop URL-less U1/generic
+          // entries, which the editor never lets you save without a URL anyway.
+          .filter((p) => p.url || p.tailscaleUrl || p.kind === 'flashforge-ad5x')
       : [],
   };
 
@@ -293,6 +334,7 @@ export function migrateSettings(raw: Partial<Settings>): Settings {
           tailscaleUrl: merged.tailscaleUrl,
           cameraUrl: merged.cameraUrl,
           connectionMode: merged.connectionMode,
+          kind: LEGACY_PRINTER_KIND,
         },
       ];
       merged.activePrinterId = 'p1';

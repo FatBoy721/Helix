@@ -8,6 +8,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMoonraker } from './useMoonraker';
 import { useSettings } from './useSettings';
+import { useMaterialStation } from './useMaterialStation';
+import type { FlashForgeError } from '../services/flashforgeApi';
 import { findMachineChamberTemperatureSource } from '../services/chamberTemperature';
 import {
   api,
@@ -18,14 +20,37 @@ import {
   resolveSnapshotUrl,
   thumbnailUrl,
 } from '../services/moonraker';
-import { calculatePrintEtas } from '../services/printEta';
+import {
+  calculatePrintEtas,
+  fetchLatestM73,
+  finishClock,
+  type CapturedM73Estimate,
+} from '../services/printEta';
 import { formatDuration } from '../components/PrintProgress';
 import { filterMacrosForDisplay, getMacroDisplay } from '../services/macroDisplay';
 import {
+  materialStationSlots,
   resolveFilamentSlots,
   type FilamentSlotStatus,
+  unavailableMaterialStationSlots,
 } from '../services/filamentSlots';
 import { t } from '../services/i18n';
+import {
+  changeBambuFilament,
+  bambuObjectsForJob,
+  clearBambuErrors,
+  setBambuSpeed,
+  skipBambuObjects as sendBambuSkipObjects,
+  type BambuPrintableObject,
+  type BambuSpeedPreset,
+} from '../services/bambuMqtt';
+import type { BambuHmsFault } from '../services/bambuAdapter';
+import {
+  buildBambuFanCommand,
+  buildBambuTemperatureCommand,
+  type BambuFan,
+  type BambuHeater,
+} from '../services/bambuControls';
 
 export type DashboardState = 'offline' | 'idle' | 'printing' | 'finished' | 'error';
 
@@ -43,6 +68,18 @@ export interface DashboardTool {
   loaded: FilamentSlotStatus;
   /** Whether the values came from the printer or fell back to saved settings. */
   source: 'printer' | 'manual';
+  /** Bambu's global AMS tray id (254 for the external spool). */
+  bambuTrayIndex: number | null;
+  /** Safe load/unload temperature derived from the tray's filament profile. */
+  bambuChangeTemp: number;
+}
+
+export interface DashboardBambu {
+  speedPreset: BambuSpeedPreset | null;
+  amsHealth: { unit: number; humidity?: number; temperature?: number }[];
+  fans: Partial<Record<BambuFan, number>>;
+  hmsFaults: BambuHmsFault[];
+  printObjects: (BambuPrintableObject & { skipped: boolean })[];
 }
 
 export interface DashboardTemp {
@@ -77,6 +114,12 @@ export interface DashboardActions {
   emergencyStop: () => void;
   /** Runs a Klipper macro by name. */
   runMacro: (name: string) => void;
+  setBambuSpeed: (preset: BambuSpeedPreset) => Promise<void>;
+  changeBambuFilament: (trayIndex: number | null, nozzleTemperature: number) => Promise<void>;
+  setBambuTemperature: (heater: BambuHeater, target: number) => Promise<void>;
+  setBambuFan: (fan: BambuFan, percent: number) => Promise<void>;
+  clearBambuErrors: () => Promise<void>;
+  skipBambuObjects: (objectIds: number[]) => Promise<void>;
   /** Panda Breath chamber heater / dryer. The model owns command construction
    *  because the combined `stop` and the START-vs-RUN dry dispatch depend on
    *  feature-detected state (`gcodeHelp`) the component can't see. */
@@ -113,6 +156,8 @@ export interface DashboardModel {
   errorMessage: string;
   job: DashboardJob | null;
   tools: DashboardTool[];
+  /** Why an AD5X IFS could not be read; null after a successful poll. */
+  materialStationError: FlashForgeError | null;
   temps: DashboardTemp[];
   macros: string[];
   camera: { url: string; snapshotUrl?: string } | null;
@@ -121,6 +166,7 @@ export interface DashboardModel {
   lightOn: boolean;
   toggleLight: (() => void) | undefined;
   pandaBreath: DashboardPandaBreath;
+  bambu: DashboardBambu | null;
   actions: DashboardActions;
 }
 
@@ -129,17 +175,25 @@ const EXTRUDERS = ['extruder', 'extruder1', 'extruder2', 'extruder3'];
 // the sparkline degenerating into a flat line at steady state.
 const HISTORY_LENGTH = 40;
 const SAMPLE_MS = 2000;
+// Scan at coarse file-position boundaries so status frames do not turn into
+// several HTTP range requests per second. Each scan already reads 128 KiB.
+const M73_SCAN_STRIDE_BYTES = 64 * 1024;
 
 function num(value: unknown): number {
   const n = Number(value);
   return Number.isFinite(n) ? n : 0;
 }
 
-/** Clock time when the print is expected to finish. */
+/**
+ * Clock time when the print is expected to finish.
+ *
+ * Shares [finishClock] with the pre-print dialog so a job that ends tomorrow
+ * says so in both places — this used to print a bare time, which on a two-day
+ * print read as if it finished this afternoon.
+ */
 function etaClock(remainingSeconds: number | null): string {
   if (remainingSeconds == null) return '--';
-  const done = new Date(Date.now() + remainingSeconds * 1000);
-  return done.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  return finishClock(remainingSeconds);
 }
 
 // ---------------------------------------------------------------- panda breath
@@ -207,8 +261,18 @@ function pandaModeLabel(
 }
 
 export function useDashboardModel(): DashboardModel {
-  const { status, connection, klippyState, activeUrl, macros, webcams, sendGcode, rpc, gcodeHelp } =
-    useMoonraker();
+  const {
+    status,
+    connection,
+    klippyState,
+    activeUrl,
+    proxyUrl,
+    macros,
+    webcams,
+    sendGcode,
+    rpc,
+    gcodeHelp,
+  } = useMoonraker();
   const { settings } = useSettings();
 
   const ps = status.print_stats ?? {};
@@ -291,7 +355,36 @@ export function useDashboardModel(): DashboardModel {
   }, [chamberSource, history, status]);
 
   // ---------------------------------------------------------------- tools
+  const materialStation = useMaterialStation();
+
   const tools = useMemo<DashboardTool[]>(() => {
+    const activePrinterKind = settings.printers.find(
+      (printer) => printer.id === settings.activePrinterId
+    )?.kind;
+    // A material station owns its own slot data. print_task_config below is a
+    // Snapmaker object the FlashForge does not have, so without this the AD5X's
+    // toolhead cards showed the U1's manually configured filament colours.
+    if (activePrinterKind === 'flashforge-ad5x') {
+      const heater = status.extruder ?? {};
+      const slots = materialStationSlots(materialStation.units)
+        ?? unavailableMaterialStationSlots();
+      return slots.map((slot) => ({
+        id: slot.index,
+        color: slot.color,
+        brand: slot.brand ?? t('Generic'),
+        material: slot.material,
+        mainType: slot.mainType,
+        // Every slot feeds the one hotend, so they share its temperature.
+        temp: Math.round(num(heater.temperature)),
+        target: Math.round(num(heater.target)),
+        active: slot.status === 'loaded',
+        loaded: slot.status,
+        source: 'printer' as const,
+        bambuTrayIndex: null,
+        bambuChangeTemp: 220,
+      }));
+    }
+
     // Same resolution the existing Filaments card uses: printer-reported values
     // from print_task_config, falling back to the slot config the user picked.
     const slots = resolveFilamentSlots(status, {
@@ -300,11 +393,26 @@ export function useDashboardModel(): DashboardModel {
       slotMaterials: settings.filamentSlotMaterials ?? [],
       slotSubtypes: settings.filamentSlotSubtypes ?? [],
     });
+    const visibleSlots = status.print_task_config?.bambu_filament_source === 'external'
+      ? slots.slice(0, 1)
+      : slots;
+    const isBambuSlots = status.print_task_config?.bambu_filament_source != null;
     const activeExtruder: string = status.toolhead?.extruder ?? 'extruder';
+    const rawBambuActiveTray = status.bambu?.active_tray;
+    const bambuActiveTray = rawBambuActiveTray == null ? null : Number(rawBambuActiveTray);
+    const bambuTrayIndexes = status.print_task_config?.bambu_tray_index ?? [];
+    const bambuTempMin = status.print_task_config?.nozzle_temp_min ?? [];
+    const bambuTempMax = status.print_task_config?.nozzle_temp_max ?? [];
 
-    return EXTRUDERS.map((name, i) => {
+    return visibleSlots.map((slot, i) => {
+      const name = EXTRUDERS[i] ?? 'extruder';
       const heater = status[name] ?? {};
-      const slot = slots[i];
+      const trayIndex = Number(bambuTrayIndexes[i]);
+      const minTemp = Number(bambuTempMin[i]);
+      const maxTemp = Number(bambuTempMax[i]);
+      const profileTemp = minTemp > 0 && maxTemp >= minTemp
+        ? Math.round((minTemp + maxTemp) / 2)
+        : 220;
       return {
         id: i,
         color: slot.color,
@@ -313,9 +421,13 @@ export function useDashboardModel(): DashboardModel {
         mainType: slot.mainType,
         temp: Math.round(num(heater.temperature)),
         target: Math.round(num(heater.target)),
-        active: name === activeExtruder,
+        active: isBambuSlots
+          ? bambuActiveTray != null && Number.isFinite(bambuActiveTray) && trayIndex === bambuActiveTray
+          : name === activeExtruder,
         loaded: slot.status,
         source: slot.source ?? 'manual',
+        bambuTrayIndex: Number.isFinite(trayIndex) ? trayIndex : null,
+        bambuChangeTemp: profileTemp,
       };
     });
   }, [
@@ -323,12 +435,17 @@ export function useDashboardModel(): DashboardModel {
     settings.filamentSlotColors,
     settings.filamentSlotMaterials,
     settings.filamentSlotSubtypes,
+    settings.activePrinterId,
+    settings.printers,
     status,
+    materialStation,
   ]);
 
   // ---------------------------------------------------------------- job
   const [slicerEstimate, setSlicerEstimate] = useState<number | null>(null);
+  const [m73Estimate, setM73Estimate] = useState<CapturedM73Estimate | null>(null);
   const [thumbUri, setThumbUri] = useState<string | null>(null);
+  const printDurationRef = useRef(0);
 
   useEffect(() => {
     let live = true;
@@ -362,16 +479,60 @@ export function useDashboardModel(): DashboardModel {
   const printing = rawState === 'printing';
   const paused = rawState === 'paused';
   const activeJob = printing || paused;
+  const printDuration = num(ps.print_duration);
+  printDurationRef.current = printDuration;
+  const reportedRemaining = Number(ps.info?.remaining_time);
+  const printerRemainingSeconds =
+    ps.info?.remaining_time !== '' &&
+    ps.info?.remaining_time != null &&
+    Number.isFinite(reportedRemaining) &&
+    reportedRemaining >= 0
+      ? reportedRemaining
+      : null;
+  const filePosition = Math.max(0, num(vsd.file_position));
+  const m73ScanPosition =
+    Math.floor(filePosition / M73_SCAN_STRIDE_BYTES) * M73_SCAN_STRIDE_BYTES;
+
+  useEffect(() => {
+    setM73Estimate(null);
+  }, [filename]);
+
+  useEffect(() => {
+    // Bambu already supplied a better onboard countdown and exposes no
+    // Moonraker file endpoint. U1 and AD5X both serve their active G-code.
+    if (
+      !activeJob ||
+      printerRemainingSeconds != null ||
+      !activeUrl ||
+      !filename ||
+      m73ScanPosition <= 0
+    ) {
+      return;
+    }
+
+    const controller = new AbortController();
+    fetchLatestM73(activeUrl, filename, m73ScanPosition, controller.signal)
+      .then((estimate) => {
+        if (!estimate) return;
+        setM73Estimate({
+          ...estimate,
+          printDurationAtCapture: printDurationRef.current,
+        });
+      })
+      .catch(() => {});
+    return () => controller.abort();
+  }, [activeJob, activeUrl, filename, m73ScanPosition, printerRemainingSeconds]);
 
   const etas = useMemo(
     () =>
       calculatePrintEtas({
-        printDuration: num(ps.print_duration),
+        printDuration,
         slicerTotalSeconds: slicerEstimate,
-        m73: null,
+        m73: m73Estimate,
         fallbackProgress: progress,
+        printerRemainingSeconds,
       }),
-    [progress, ps.print_duration, slicerEstimate]
+    [m73Estimate, printDuration, printerRemainingSeconds, progress, slicerEstimate]
   );
 
   // A finished job should only take over the dashboard if THIS session watched
@@ -448,6 +609,19 @@ export function useDashboardModel(): DashboardModel {
         if (tailscale && tailscale !== primary) api.emergencyStop(tailscale).catch(() => {});
       },
       runMacro: (name: string) => sendGcode(name),
+      setBambuSpeed,
+      changeBambuFilament: (trayIndex, nozzleTemperature) =>
+        changeBambuFilament(trayIndex, nozzleTemperature),
+      setBambuTemperature: async (heater, target) => {
+        const accepted = await sendGcode(buildBambuTemperatureCommand(heater, target));
+        if (!accepted) throw new Error('The printer rejected the temperature command.');
+      },
+      setBambuFan: async (fan, percent) => {
+        const accepted = await sendGcode(buildBambuFanCommand(fan, percent));
+        if (!accepted) throw new Error('The printer rejected the fan command.');
+      },
+      clearBambuErrors,
+      skipBambuObjects: sendBambuSkipObjects,
       panda: {
         setTarget: (temp: number) => sendGcode(`M141 S${clampPandaTemp(temp)}`),
         setAuto: (temp: number, enabled: boolean) =>
@@ -490,11 +664,14 @@ export function useDashboardModel(): DashboardModel {
   );
 
   const job = useMemo<DashboardJob | null>(() => {
-    if (!filename) return null;
+    // Local Bambu LAN jobs can leave both subtask_name and gcode_file empty.
+    // The live layer/progress/countdown are still valid and must not disappear
+    // merely because the printer supplied no human-readable job name.
+    if (!filename && !activeJob) return null;
     const layer = ps.info?.current_layer ?? null;
     const layers = ps.info?.total_layer ?? null;
     return {
-      name: filename.split('/').pop() ?? filename,
+      name: filename ? (filename.split('/').pop() ?? filename) : t('Print in progress'),
       progress,
       layer: typeof layer === 'number' ? layer : null,
       layers: typeof layers === 'number' && layers > 0 ? layers : null,
@@ -503,20 +680,35 @@ export function useDashboardModel(): DashboardModel {
       eta: etaClock(etas.liveRemainingSeconds),
       thumbUri,
     };
-  }, [etas.liveRemainingSeconds, filename, progress, ps.info, thumbUri]);
+  }, [activeJob, etas.liveRemainingSeconds, filename, progress, ps.info, thumbUri]);
 
   // ---------------------------------------------------------------- camera
   const activePrinter = settings.printers.find((p) => p.id === settings.activePrinterId);
-  const baseUrl = activeUrl || (activePrinter ? printerConnectionUrl(activePrinter) : '');
+  const baseUrl = proxyUrl || activeUrl || (activePrinter ? printerConnectionUrl(activePrinter) : '');
   const camera = useMemo(() => {
-    const url = resolveCameraUrl(settings.cameraUrl, baseUrl);
+    const advertised = webcams.find((w) => !isGuiWebcam(w));
+    // Bambu's camera URL is created per session. The AD5X advertises its live
+    // ustreamer endpoints through Moonraker and may change them independently
+    // of app settings. Both transports therefore take the advertised record as
+    // authoritative; saved paths remain a fallback for U1/generic Klipper.
+    const preferAdvertised =
+      activePrinter?.kind === 'bambu-lan' || activePrinter?.kind === 'flashforge-ad5x';
+    const configured = preferAdvertised ? '' : resolveCameraUrl(settings.cameraUrl, baseUrl);
+    const url =
+      (advertised && preferAdvertised
+        ? resolveCameraUrl(advertised.stream_url, baseUrl)
+        : configured) ||
+      (advertised ? resolveCameraUrl(advertised.stream_url, baseUrl) : '');
     if (!url) return null;
-    const match = webcams.find((w) => resolveCameraUrl(w.stream_url, baseUrl) === url);
+
+    const match = configured
+      ? webcams.find((w) => resolveCameraUrl(w.stream_url, baseUrl) === url)
+      : advertised;
     return {
       url,
-      snapshotUrl: resolveSnapshotUrl(match?.snapshot_url, settings.cameraUrl, baseUrl),
+      snapshotUrl: resolveSnapshotUrl(match?.snapshot_url, configured || url, baseUrl),
     };
-  }, [baseUrl, settings.cameraUrl, webcams]);
+  }, [activePrinter?.kind, baseUrl, settings.cameraUrl, webcams]);
 
   const guiScreen = useMemo(() => {
     const match = webcams.find(isGuiWebcam);
@@ -530,20 +722,33 @@ export function useDashboardModel(): DashboardModel {
   }, [baseUrl, webcams]);
 
   // ---------------------------------------------------------------- light
-  // Mirrors the LED handling in app/(tabs)/index.tsx: find the first led-like
-  // object, treat any non-zero channel as "on".
+  // The chamber LED frequently does not push a notify_status_update for
+  // color_data after SET_LED, so driving `lightOn` purely off reported state
+  // leaves it stuck at the connect-time value — the second press then re-sends
+  // the same value and nothing happens. Flip an optimistic override on press so
+  // the next toggle always sends the opposite value, and drop the override once
+  // (if) the printer ever reports the matching state.
   const ledKey = useMemo(
     () => Object.keys(status).find((k) => /^(led|neopixel|dotstar)\s/.test(k)),
     [status]
   );
   const ledColors: number[][] = status[ledKey ?? '']?.color_data ?? [];
-  const lightOn = ledColors.some((c) => Array.isArray(c) && c.some((v) => num(v) > 0));
+  const reportedLedOn = ledColors.some((c) => Array.isArray(c) && c.some((v) => num(v) > 0));
+  const [ledOverride, setLedOverride] = useState<{ key: string; on: boolean } | null>(null);
+  const activeLedOverride = ledOverride && ledOverride.key === ledKey ? ledOverride : null;
+  const lightOn = activeLedOverride ? activeLedOverride.on : reportedLedOn;
+  useEffect(() => {
+    const pending = ledOverride;
+    if (!pending || pending.key !== ledKey || !ledColors.length) return;
+    if (reportedLedOn === pending.on) setLedOverride(null);
+  }, [ledColors.length, ledKey, ledOverride, reportedLedOn]);
   const toggleLight = useMemo(() => {
     if (!ledKey) return undefined;
     return () => {
       const name = ledKey.replace(/^(led|neopixel|dotstar)\s+/, '');
       const hasWhite = ledColors.some((c) => Array.isArray(c) && c.length > 3);
       const v = lightOn ? 0 : 1;
+      setLedOverride({ key: ledKey, on: !lightOn });
       sendGcode(
         hasWhite
           ? `SET_LED LED=${name} RED=0 GREEN=0 BLUE=0 WHITE=${v} SYNC=0`
@@ -565,6 +770,52 @@ export function useDashboardModel(): DashboardModel {
     [macros, settings.activePrinterId, settings.macroDisplayByPrinter]
   );
 
+  const bambu = useMemo<DashboardBambu | null>(() => {
+    if (activePrinter?.kind !== 'bambu-lan') return null;
+    const rawPreset = Number(status.bambu?.speed_preset);
+    const speedPreset = [1, 2, 3, 4].includes(rawPreset)
+      ? rawPreset as BambuSpeedPreset
+      : null;
+    const rawHealth = Array.isArray(status.bambu?.ams_health) ? status.bambu.ams_health : [];
+    const rawFans = status.bambu?.fans ?? {};
+    const rawFaults = Array.isArray(status.bambu?.hms_faults) ? status.bambu.hms_faults : [];
+    const rawSkippedIds = Array.isArray(status.bambu?.skipped_object_ids)
+      ? status.bambu.skipped_object_ids
+      : [];
+    const skippedIds = new Set(
+      rawSkippedIds
+        .map((value: unknown) => Number(value))
+        .filter((value: number) => Number.isSafeInteger(value) && value >= 0)
+    );
+    const fanValue = (value: unknown): number | undefined => {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? Math.max(0, Math.min(100, Math.round(parsed))) : undefined;
+    };
+    return {
+      speedPreset,
+      amsHealth: rawHealth.map((entry: any, position: number) => ({
+        unit: Number.isFinite(Number(entry?.unit)) ? Number(entry.unit) : position,
+        humidity: Number.isFinite(Number(entry?.humidity)) ? Number(entry.humidity) : undefined,
+        temperature: Number.isFinite(Number(entry?.temperature)) ? Number(entry.temperature) : undefined,
+      })),
+      fans: {
+        part: fanValue(rawFans.part),
+        aux: fanValue(rawFans.aux),
+        chamber: fanValue(rawFans.chamber),
+      },
+      hmsFaults: rawFaults.filter(
+        (fault: any): fault is BambuHmsFault =>
+          typeof fault?.code === 'string' &&
+          typeof fault?.summary === 'string' &&
+          typeof fault?.helpUrl === 'string'
+      ),
+      printObjects: bambuObjectsForJob(filename).map((object) => ({
+        ...object,
+        skipped: skippedIds.has(object.identifyId),
+      })),
+    };
+  }, [activePrinter?.kind, filename, status.bambu]);
+
   return {
     printerName: activePrinter?.name || t('Printer'),
     online: connected,
@@ -584,6 +835,7 @@ export function useDashboardModel(): DashboardModel {
       '',
     job: activeJob || observedFinished ? job : null,
     tools,
+    materialStationError: materialStation.error,
     temps,
     macros: visibleMacros,
     camera,
@@ -591,6 +843,7 @@ export function useDashboardModel(): DashboardModel {
     lightOn,
     toggleLight,
     pandaBreath,
+    bambu,
     actions,
   };
 }

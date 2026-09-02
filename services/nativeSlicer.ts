@@ -1,5 +1,7 @@
 import { DeviceEventEmitter, NativeModules, Platform } from 'react-native';
 import type { NativeMaterialProfile } from './filamentProfiles';
+import type { AiDetectionSensitivity } from './moonraker';
+import type { MachineProfile } from './printerProfiles';
 
 export type NativeSlicerStatus = {
   platform: string;
@@ -67,6 +69,10 @@ export type SliceOptions = {
   // Per-colour remap: forces configureMultiTool to size the extruder array to
   // cover every mapped slot, even when the file declares fewer filaments.
   forceExtruderCount?: number;
+  // Target machine (bed size + Orca printer profile), JSON-encoded. Without it
+  // a background re-slice falls back to the U1 and can emit another printer's
+  // start G-code — see MachineProfile.fromJson.
+  machineProfile?: string;
 };
 
 export type NativeSliceResult = {
@@ -122,6 +128,7 @@ type HelixSlicerModule = {
   getSharedLink: () => Promise<SharedMakerWorldLink>;
   getSharedModelFile: () => Promise<SharedModelFile | null>;
   takePrintSentNotice: () => Promise<string | null>;
+  takeBambuSendRequest: () => Promise<boolean>;
   pickModelFile: () => Promise<SharedModelFile>;
   getModelPlates: (path: string) => Promise<ModelPlate[]>;
   getModelPlateStats: (path: string) => Promise<ModelPlateStats[]>;
@@ -151,6 +158,7 @@ type HelixSlicerModule = {
     loadedToolMask: number,
     autoArrange: boolean,
     materialProfilesJson: string | null,
+    bedProfileJson: string | null,
   ) => Promise<boolean>;
   openGcodePreview: (
     path: string,
@@ -159,11 +167,13 @@ type HelixSlicerModule = {
     moonrakerUrl: string | null,
     initialTool: number,
     loadedToolMask: number,
-    usedToolMask: number
+    usedToolMask: number,
+    bedProfileJson: string | null,
   ) => Promise<boolean>;
   setFilamentSlotColors: (colors: string[]) => Promise<boolean>;
   setFilamentSlots?: (slots: NativeFilamentSlot[]) => Promise<boolean>;
   setPrinters: (printers: { name: string; url: string; tailscaleUrl?: string }[]) => Promise<boolean>;
+  setAiDetectionSensitivity?: (value: AiDetectionSensitivity) => Promise<boolean>;
   getLastSliceResult: () => Promise<NativeSliceResult | null>;
   getGcodeThumbnail: (path: string) => Promise<string | null>;
   getGcodeFilamentGrams: (path: string) => Promise<number[]>;
@@ -241,6 +251,12 @@ export async function getSharedModelFile(): Promise<SharedModelFile | null> {
 export async function takeNativePrintSentNotice(): Promise<string | null> {
   if (Platform.OS !== 'android' || !nativeModule) return null;
   return nativeModule.takePrintSentNotice();
+}
+
+/** One-shot native-preview handoff into the real Bambu FTPS/MQTT send flow. */
+export async function takeBambuSendRequest(): Promise<boolean> {
+  if (Platform.OS !== 'android' || !nativeModule?.takeBambuSendRequest) return false;
+  return nativeModule.takeBambuSendRequest();
 }
 
 /** Opens the system file picker for .3mf / .stl and imports into app storage. */
@@ -431,6 +447,7 @@ export async function openNativeModelPreview(
   loadedToolMask = -1,
   autoArrange = false,
   materialProfiles?: NativeMaterialProfile[],
+  machine?: MachineProfile | null,
 ): Promise<void> {
   if (Platform.OS !== 'android' || !nativeModule) {
     throw new Error('Native 3D preview is Android-only in this lab build.');
@@ -446,6 +463,7 @@ export async function openNativeModelPreview(
     loadedToolMask,
     autoArrange,
     materialProfiles ? JSON.stringify(materialProfiles) : null,
+    machine ? JSON.stringify(machine) : null,
   );
 }
 
@@ -481,6 +499,18 @@ export async function setNativePrinters(printers: { name: string; url: string; t
     await nativeModule.setPrinters(printers);
   } catch {
     // Older native build without setPrinters — dialog just hides the picker.
+  }
+}
+
+/** Keeps Android's native preview/print path aligned with the saved RN setting. */
+export async function setNativeAiDetectionSensitivity(
+  value: AiDetectionSensitivity
+): Promise<void> {
+  if (Platform.OS !== 'android' || !nativeModule) return;
+  try {
+    await nativeModule.setAiDetectionSensitivity?.(value);
+  } catch {
+    // Older installed builds have no bridge yet; the native default remains Low.
   }
 }
 
@@ -537,7 +567,8 @@ export async function openNativeGcodePreview(
   moonrakerUrl?: string | null,
   initialTool = 0,
   loadedToolMask = -1,
-  usedToolMask = -1
+  usedToolMask = -1,
+  machine?: MachineProfile | null,
 ): Promise<void> {
   if (Platform.OS !== 'android' || !nativeModule) {
     throw new Error('Native G-code preview is Android-only in this lab build.');
@@ -550,6 +581,7 @@ export async function openNativeGcodePreview(
     initialTool,
     loadedToolMask,
     usedToolMask,
+    machine ? JSON.stringify(machine) : null,
   );
 }
 

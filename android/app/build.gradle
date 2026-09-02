@@ -98,8 +98,8 @@ android {
         applicationId 'org.crabcore.u1control'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 19
-        versionName "3.0.0"
+        versionCode 20
+        versionName "3.0.1"
 
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
     }
@@ -139,9 +139,29 @@ android {
         }
     }
     packagingOptions {
+        resources {
+            // HiveMQ pulls in half a dozen Netty modules and each ships its own
+            // copy of these, which AGP will not merge. They are a jar index and
+            // a build stamp — nothing needs them at runtime.
+            excludes += [
+                'META-INF/INDEX.LIST',
+                'META-INF/io.netty.versions.properties',
+                // Several Java-versioned dependencies carry the same OSGi
+                // descriptor. Android does not use OSGi metadata at runtime.
+                'META-INF/versions/**/OSGI-INF/MANIFEST.MF',
+            ]
+        }
         jniLibs {
             def enableLegacyPackaging = findProperty('expo.useLegacyPackaging') ?: 'false'
             useLegacyPackaging enableLegacyPackaging.toBoolean()
+        }
+    }
+    testOptions {
+        unitTests {
+            // The Bambu transport logs through android.util.Log, whose methods
+            // throw "not mocked" in a plain JVM test. The live tests exercise
+            // real sockets, not the framework, so returning defaults is enough.
+            returnDefaultValues = true
         }
     }
     androidResources {
@@ -169,16 +189,62 @@ android {
     }
 }
 
+// The live Bambu tests talk to a real printer, so they read its address and
+// credentials from the environment rather than from anything committed here.
+// Without these the tests skip, which keeps CI and clean checkouts green.
+tasks.withType(Test).configureEach {
+    systemProperty "helix.appProjectDir", project.projectDir.absolutePath
+    [
+        "BAMBU_HOST",
+        "BAMBU_SERIAL",
+        "BAMBU_ACCESS_CODE",
+        "BAMBU_DUMP_DIR",
+        "BESPOK3D_U1_HOST",
+        "BESPOK3D_U1_PASSWORD",
+    ].each { key ->
+        def value = System.getenv(key)
+        if (value) {
+            environment key, value
+        }
+    }
+    testLogging {
+        showStandardStreams = true
+        events "passed", "skipped", "failed"
+    }
+}
+
 dependencies {
     // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")
     testImplementation("junit:junit:4.13.2")
+    // The Android stub jar plus returnDefaultValues makes every JSONObject read
+    // return a default, so JSON parsers silently "pass" against nothing. A real
+    // implementation on the test classpath makes them testable.
+    testImplementation("org.json:json:20231013")
 
     implementation platform('com.google.firebase:firebase-bom:34.16.0')
     implementation 'com.google.firebase:firebase-messaging'
 
     // Encrypted MakerWorld session-cookie storage (Android Keystore-backed).
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
+
+    // Bambu Lab printers speak MQTT over TLS on 8883 with a self-signed cert.
+    // HiveMQ is the only maintained Java client that lets us swap in a
+    // permissive TrustManagerFactory — see bambu/BambuMqttModule.kt.
+    implementation("com.hivemq:hivemq-mqtt-client:1.3.17")
+
+    // Bambu P1/X1 printers use implicit FTPS and require the data connection
+    // to resume the control connection's TLS session. Commons Net supplies the
+    // FTP state machine; BCJSSE is used because its public API can explicitly
+    // select the session to resume (Android's JSSE API cannot).
+    implementation("commons-net:commons-net:3.13.0")
+    implementation("org.bouncycastle:bcprov-jdk18on:1.83")
+    implementation("org.bouncycastle:bctls-jdk18on:1.83")
+    implementation("org.bouncycastle:bcpg-jdk18on:1.83")
+
+    // Bespok3d enrollment begins with a read-only SSH preflight against the U1.
+    // This maintained JSch fork supports the stock firmware's Ed25519 host key.
+    implementation("com.github.mwiede:jsch:2.28.6")
 
     def isGifEnabled = (findProperty('expo.gif.enabled') ?: "") == "true";
     def isWebpEnabled = (findProperty('expo.webp.enabled') ?: "") == "true";

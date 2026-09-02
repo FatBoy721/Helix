@@ -23,6 +23,99 @@ export function normalizeMoonrakerUrl(input: string): string {
   }
 }
 
+/**
+ * helixd, Fluidd and the webcam share the AD5X's port-80 origin. Moonraker
+ * remains on 7125, so callers must keep this proxy origin separate from their
+ * telemetry connection URL.
+ */
+export function helixdLanBaseUrl(input: string): string {
+  const base = normalizeBaseUrl(input);
+  if (!base) return '';
+
+  try {
+    const url = new URL(base);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
+    url.port = '';
+    url.pathname = '';
+    url.search = '';
+    url.hash = '';
+    return url.toString().replace(/\/+$/, '');
+  } catch {
+    return '';
+  }
+}
+
+export interface HelixdStatus {
+  backend_state?: unknown;
+  dns_name?: unknown;
+  serve_url?: unknown;
+}
+
+/** Returns an HTTPS/HTTP origin only while helixd says Tailscale is running. */
+export function helixdRemoteBaseUrl(status: unknown): string {
+  if (!status || typeof status !== 'object') return '';
+  const value = status as HelixdStatus;
+  if (value.backend_state !== 'Running' || typeof value.serve_url !== 'string') return '';
+
+  const base = normalizeBaseUrl(value.serve_url);
+  if (!base) return '';
+  try {
+    const url = new URL(base);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:' || !url.hostname) return '';
+    url.pathname = '';
+    url.search = '';
+    url.hash = '';
+    return url.toString().replace(/\/+$/, '');
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Tailscale Serve fronts port 80 only. Moonraker stays directly reachable on
+ * the same discovered tailnet node at 7125.
+ */
+export function helixdRemoteMoonrakerUrl(remoteBaseUrl: string): string {
+  const base = normalizeBaseUrl(remoteBaseUrl);
+  if (!base) return '';
+  try {
+    const url = new URL(base);
+    if (!url.hostname || !isTailscaleUrl(url.toString())) return '';
+    url.protocol = 'http:';
+    url.port = '7125';
+    url.pathname = '';
+    url.search = '';
+    url.hash = '';
+    return url.toString().replace(/\/+$/, '');
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * null means the LAN status endpoint could not be reached. An empty string is
+ * different: helixd answered, but its Tailscale backend is not usable.
+ */
+export async function discoverHelixdRemoteBase(
+  lanUrl: string,
+  timeoutMs = 4000,
+): Promise<string | null> {
+  const base = helixdLanBaseUrl(lanUrl);
+  if (!base) return null;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`${base}/api/status`, { signal: controller.signal });
+    if (!response.ok) return null;
+    return helixdRemoteBaseUrl(await response.json());
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export function isTailscaleUrl(input: string): boolean {
   const base = normalizeBaseUrl(input);
   if (!base) return false;
@@ -85,18 +178,66 @@ export function wsUrl(baseUrl: string): string {
   return baseUrl.replace(/^http/i, 'ws') + '/websocket';
 }
 
-// camera setting can be a bare path like /webcam/webrtc, resolved against
-// whichever printer host we're currently talking to. this is the whole trick
-// that makes the camera follow you between LAN and tailscale without editing
-// settings. heads up: camera is on port 80, moonraker is 7125.
+/**
+ * U1/PAXX per-print AI monitoring preference.
+ *
+ * Enabling explicitly arms both user-facing detectors so an earlier manual
+ * firmware setting cannot leave the master switch on while spaghetti or
+ * build-plate obstruction detection remains off. The residue and nozzle
+ * experiments are deliberately untouched.
+ */
+export type AiDetectionSensitivity = 'low' | 'high';
+
+export function buildAiMonitoringCommand(
+  enabled: boolean,
+  sensitivity: AiDetectionSensitivity = 'low'
+): string {
+  return enabled
+    ? `DEFECT_DETECTION_CONFIG MAIN_ENABLE=1 CLEAN_BED_ENABLE=1 NOODLE_ENABLE=1 SENSITIVITY=${sensitivity}`
+    : 'DEFECT_DETECTION_CONFIG MAIN_ENABLE=0';
+}
+
+function printerProxyOrigin(activeBaseUrl: string): string {
+  const base = normalizeBaseUrl(activeBaseUrl);
+  if (!base) return '';
+  try {
+    const url = new URL(base);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
+    // Legacy U1 LAN connections still point directly at Moonraker :7125 while
+    // their nginx camera proxy lives on port 80. Tailscale Serve is HTTPS and
+    // must retain its own origin; rewriting it to HTTP silently breaks remote
+    // camera and screen access.
+    if (url.protocol === 'http:') url.port = '';
+    url.pathname = '';
+    url.search = '';
+    url.hash = '';
+    return url.toString().replace(/\/+$/, '');
+  } catch {
+    return '';
+  }
+}
+
+// Camera paths are advertised relative to the same proxy origin used by
+// Fluidd and helixd. This makes one active base work for LAN and Tailscale.
 export function resolveCameraUrl(cameraUrl: string, activeBaseUrl: string): string {
   const cam = (cameraUrl || '').trim();
   if (!cam) return '';
   if (/^https?:\/\//i.test(cam)) return cam;
-  const base = normalizeBaseUrl(activeBaseUrl);
-  if (!base) return '';
-  const host = base.replace(/^https?:\/\//i, '').replace(/:\d+$/, '').replace(/\/.*$/, '');
-  return `http://${host}${cam.startsWith('/') ? cam : '/' + cam}`;
+  const origin = printerProxyOrigin(activeBaseUrl);
+  if (!origin) return '';
+  try {
+    return new URL(cam.startsWith('/') ? cam : `/${cam}`, `${origin}/`).toString();
+  } catch {
+    return '';
+  }
+}
+
+// helixd (the AD5X screen/touch daemon) shares the printer host with Moonraker
+// but listens on port 80 — Moonraker itself is on :7125. Derive the HTTP root
+// by stripping Moonraker's port and path, so the screen endpoint follows the
+// active LAN/Tailscale selection exactly like the camera does.
+export function resolveScreenApiUrl(activeBaseUrl: string): string {
+  return printerProxyOrigin(activeBaseUrl);
 }
 
 // The printer's own touchscreen, exposed as a webcam entry. Its WebView must
@@ -176,6 +317,9 @@ export interface WebcamInfo {
   service: string;
   stream_url: string;
   snapshot_url: string;
+  target_fps?: number;
+  target_fps_idle?: number;
+  aspect_ratio?: string;
 }
 
 export interface HistoryJob {
@@ -428,10 +572,13 @@ export const api = {
 
   queryObjects: <TStatus = Record<string, unknown>>(
     base: string,
-    objects: string[]
+    objects: string[],
+    timeoutMs?: number
   ) =>
     request<MoonrakerQueryResponse<TStatus>>(
       base,
-      `/printer/objects/query?${objects.map((o) => encodeURIComponent(o)).join('&')}`
+      `/printer/objects/query?${objects.map((o) => encodeURIComponent(o)).join('&')}`,
+      {},
+      timeoutMs
     ),
 };

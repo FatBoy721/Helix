@@ -1,6 +1,9 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  Animated,
+  Easing,
   KeyboardAvoidingView,
+  PanResponder,
   Platform,
   Pressable,
   ScrollView,
@@ -25,9 +28,11 @@ import { useMoonraker } from '../../hooks/useMoonraker';
 import AboutCard from '../../components/settings/AboutCard';
 import BackupCard from '../../components/settings/BackupCard';
 import MacroDisplayCard from '../../components/settings/MacroDisplayCard';
+import PrinterDiscoveryDialog from '../../components/settings/PrinterDiscoveryDialog';
 import PrinterEditorModal from '../../components/settings/PrinterEditorModal';
 import ThemedDialog from '../../components/ThemedDialog';
 import { buildSettingsSavePatch, hasDraftChanges } from '../../services/settingsDraft';
+import { deleteBespok3dCredentialRecord } from '../../services/bespok3dSecureStore';
 import {
   clearStoredFcmDeviceToken,
   configureFcmForPrinter,
@@ -51,12 +56,21 @@ import {
 import {
   api,
   applyConfigIfChanged,
+  type AiDetectionSensitivity,
   isTailscaleUrl,
   normalizeBaseUrl,
   normalizeMoonrakerUrl,
   printerConnectionUrl,
 } from '../../services/moonraker';
 import { getMakerWorldCookies } from '../../services/nativeSlicer';
+import type { DiscoveredPrinter } from '../../services/printerDiscovery';
+import { printerEntryFromDiscovery } from '../../services/printerSetup';
+import { MANUAL_PRINTER_KIND } from '../../services/printerProfiles';
+import {
+  dashboardSectionAvailable,
+  getDashboardSections,
+  setDashboardForPrinter,
+} from '../../services/dashboardSections';
 
 const ACCENTS = [
   { name: 'Fluidd Blue', hex: '#2196f3' },
@@ -121,6 +135,7 @@ export default function SettingsScreen() {
   // Non-null while the Add printer modal is open: a blank entry the modal
   // fills in, so adding looks and behaves exactly like editing.
   const [newPrinter, setNewPrinter] = useState<PrinterEntry | null>(null);
+  const [printerDiscoveryOpen, setPrinterDiscoveryOpen] = useState(false);
   const [editingPrinterId, setEditingPrinterId] = useState<string | null>(null);
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
   // null = the index. Nova's whole bet: one screen at a time, so a Save button
@@ -218,8 +233,19 @@ export default function SettingsScreen() {
     setPendingRemoval(p);
   };
 
-  const confirmRemovePrinter = (p: PrinterEntry) => {
+  const confirmRemovePrinter = async (p: PrinterEntry) => {
     setPendingRemoval(null);
+    // A deleted printer must not leave its bearer token or certificate behind.
+    try {
+      await deleteBespok3dCredentialRecord(p.id);
+    } catch (error) {
+      showAlert({
+        title: 'Could not remove printer securely',
+        message: error instanceof Error ? error.message : String(error),
+        icon: 'shield-alert-outline',
+      });
+      return;
+    }
     const printers = settings.printers.filter((x) => x.id !== p.id);
     const macroDisplayByPrinter = { ...settings.macroDisplayByPrinter };
     delete macroDisplayByPrinter[p.id];
@@ -278,6 +304,17 @@ export default function SettingsScreen() {
     return true;
   };
 
+  const reviewDiscoveredPrinter = (printer: DiscoveredPrinter) => {
+    setPrinterDiscoveryOpen(false);
+    setNewPrinter(
+      printerEntryFromDiscovery(
+        printer,
+        `p${Date.now()}`,
+        `Printer ${settings.printers.length + 1}`
+      )
+    );
+  };
+
   const setNotificationMode = (mode: Settings['notificationMode']) => {
     const patch: Partial<Settings> = { notificationMode: mode };
     if (mode === 'ntfy') {
@@ -291,12 +328,20 @@ export default function SettingsScreen() {
 
   const randomizeNtfyTopic = () => set({ ntfyTopic: generateNtfyTopic() });
 
+  const activeSections = getDashboardSections(settings);
+
+  // Writes against the active printer only. `dashboard` stays the template new
+  // printers inherit, so it tracks the last edit rather than going stale.
   const updateDashboardSection = (key: keyof DashboardSections, value: boolean) => {
+    const next = { ...activeSections, [key]: value };
     update({
-      dashboard: {
-        ...settings.dashboard,
-        [key]: value,
-      },
+      dashboard: next,
+      dashboardByPrinter: setDashboardForPrinter(
+        settings.dashboardByPrinter,
+        settings.activePrinterId,
+        next,
+        settings.dashboard
+      ),
     });
   };
 
@@ -359,12 +404,19 @@ export default function SettingsScreen() {
 
   const online = connection === 'connected';
   const activePrinter = draft.printers.find((p) => p.id === draft.activePrinterId);
-  const sectionsOn = SECTION_LABELS.filter(({ key }) => settings.dashboard[key]).length;
+  // The draft can stay mounted while another tab switches printers. Capability
+  // gates must follow the live active printer or U1-only controls leak onto an
+  // AD5X until Settings is remounted.
+  const liveActivePrinter = settings.printers.find((p) => p.id === settings.activePrinterId);
+  const availableSectionLabels = SECTION_LABELS.filter(({ key }) =>
+    dashboardSectionAvailable(activePrinter?.kind, key)
+  );
+  const sectionsOn = availableSectionLabels.filter(({ key }) => activeSections[key]).length;
   const notifyOn = NOTIFY_KEYS.filter((key) => draft[key]).length;
   const accentName = ACCENTS.find((a) => a.hex === draft.accentColor)?.name ?? 'Custom';
   const languageName = LANGUAGES.find((l) => l.code === draft.language)?.label ?? draft.language;
 
-  const SECTIONS: {
+  const allSections: {
     key: string;
     title: string;
     icon: IconName;
@@ -398,7 +450,14 @@ export default function SettingsScreen() {
       title: t('Dashboard sections'),
       icon: 'view-dashboard-outline',
       commit: 'instant',
-      summary: `${sectionsOn} ${t('of')} ${SECTION_LABELS.length} ${t('sections shown')}`,
+      summary: `${sectionsOn} ${t('of')} ${availableSectionLabels.length} ${t('sections shown')}`,
+    },
+    {
+      key: 'ai-monitoring',
+      title: 'AI monitoring',
+      icon: 'robot-outline',
+      commit: 'live',
+      summary: `${draft.aiDetectionSensitivity === 'high' ? 'High' : 'Low'} sensitivity · Spaghetti & bed`,
     },
     {
       key: 'appearance',
@@ -441,6 +500,9 @@ export default function SettingsScreen() {
       summary: t('Export, import, updates'),
     },
   ];
+  const SECTIONS = allSections.filter(
+    ({ key }) => key !== 'ai-monitoring' || liveActivePrinter?.kind === 'snapmaker-u1'
+  );
 
   const current = SECTIONS.find((s) => s.key === section) ?? null;
 
@@ -561,6 +623,15 @@ export default function SettingsScreen() {
                   ))}
                   <TouchableOpacity
                     style={styles.smallBtn}
+                    onPress={() => setPrinterDiscoveryOpen(true)}
+                  >
+                    <View style={styles.smallBtnContent}>
+                      <MaterialCommunityIcons name="radar" size={18} color={colors.primary} />
+                      <Text style={styles.smallBtnText}>Discover printers on Wi-Fi</Text>
+                    </View>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.smallBtn}
                     onPress={() =>
                       setNewPrinter({
                         id: `p${Date.now()}`,
@@ -569,22 +640,29 @@ export default function SettingsScreen() {
                         tailscaleUrl: '',
                         cameraUrl: '/webcam/webrtc',
                         connectionMode: 'lan',
+                        kind: MANUAL_PRINTER_KIND,
                       })
                     }
                   >
-                    <Text style={styles.smallBtnText}>+ {t('Add printer')}</Text>
+                    <Text style={styles.smallBtnText}>+ {t('Add printer manually')}</Text>
                   </TouchableOpacity>
                 </View>
               ) : null}
 
               {section === 'dashboard' ? (
+                <>
                 <View style={styles.card}>
+                  {/* These toggles are per printer now, so note it — otherwise
+                      there is no way to tell which machine a change applies to. */}
+                  <Text style={styles.note}>
+                    {t('These sections apply to this printer only.')}
+                  </Text>
                   <View style={styles.sectionGrid}>
-                    {SECTION_LABELS.map(({ key, label }) => (
+                    {availableSectionLabels.map(({ key, label }) => (
                       <DashboardSectionTile
                         key={key}
                         label={t(label)}
-                        value={settings.dashboard[key]}
+                        value={activeSections[key]}
                         onChange={(v) => updateDashboardSection(key, v)}
                       />
                     ))}
@@ -594,6 +672,22 @@ export default function SettingsScreen() {
                       onChange={(v) => update({ estopConfirm: v })}
                     />
                   </View>
+                </View>
+                </>
+              ) : null}
+
+              {section === 'ai-monitoring' ? (
+                <View style={styles.card}>
+                  <Text style={styles.cardTitle}>Detection sensitivity</Text>
+                  <Text style={styles.aiDescription}>
+                    Controls how readily AI pauses for spaghetti failures and build-plate
+                    obstructions. High catches more potential failures, but may cause more false
+                    pauses.
+                  </Text>
+                  <LabeledSensitivitySlider
+                    value={draft.aiDetectionSensitivity}
+                    onChange={(aiDetectionSensitivity) => setLive({ aiDetectionSensitivity })}
+                  />
                 </View>
               ) : null}
 
@@ -820,6 +914,12 @@ export default function SettingsScreen() {
         </ScrollView>
       </SafeAreaView>
 
+      <PrinterDiscoveryDialog
+        visible={printerDiscoveryOpen}
+        existingPrinters={draft.printers}
+        onClose={() => setPrinterDiscoveryOpen(false)}
+        onSelect={reviewDiscoveredPrinter}
+      />
       <PrinterEditorModal
         printer={editingPrinter}
         onClose={() => setEditingPrinterId(null)}
@@ -831,7 +931,6 @@ export default function SettingsScreen() {
         onClose={() => setNewPrinter(null)}
         onSave={saveNewPrinter}
       />
-
       <ThemedDialog
         visible={pendingRestart !== null}
         title={pendingRestart === 'klippy' ? 'Restart Klippy?' : 'Restart Moonraker?'}
@@ -1117,6 +1216,121 @@ function Toggle({
   );
 }
 
+function LabeledSensitivitySlider({
+  value,
+  onChange,
+}: {
+  value: AiDetectionSensitivity;
+  onChange: (value: AiDetectionSensitivity) => void;
+}) {
+  const [trackWidth, setTrackWidth] = useState(0);
+  const [dragging, setDragging] = useState(false);
+  const position = useRef(new Animated.Value(value === 'high' ? 1 : 0)).current;
+  const dragPosition = useRef(value === 'high' ? 1 : 0);
+  const trackRef = useRef<View>(null);
+  const trackWidthRef = useRef(0);
+  const trackPageXRef = useRef(0);
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+
+  useEffect(() => {
+    dragPosition.current = value === 'high' ? 1 : 0;
+    Animated.timing(position, {
+      toValue: dragPosition.current,
+      duration: 180,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: false,
+    }).start();
+  }, [position, value]);
+
+  const updatePosition = (pageX: number) => {
+    const usableWidth = Math.max(1, trackWidthRef.current - 24);
+    const next = Math.max(
+      0,
+      Math.min(1, (pageX - trackPageXRef.current - 12) / usableWidth)
+    );
+    dragPosition.current = next;
+    position.setValue(next);
+  };
+
+  const commitPosition = () => {
+    const next: AiDetectionSensitivity = dragPosition.current >= 0.5 ? 'high' : 'low';
+    onChangeRef.current(next);
+    setDragging(false);
+  };
+
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onPanResponderGrant: (event) => {
+        setDragging(true);
+        const pageX = event.nativeEvent.pageX;
+        trackRef.current?.measureInWindow((x, _y, width) => {
+          trackPageXRef.current = x;
+          trackWidthRef.current = width;
+          setTrackWidth(width);
+          updatePosition(pageX);
+        });
+      },
+      onPanResponderMove: (event) => updatePosition(event.nativeEvent.pageX),
+      onPanResponderRelease: commitPosition,
+      onPanResponderTerminate: commitPosition,
+    })
+  ).current;
+
+  const usableWidth = Math.max(0, trackWidth - 24);
+  const thumbX = position.interpolate({ inputRange: [0, 1], outputRange: [0, usableWidth] });
+  const fillWidth = position.interpolate({ inputRange: [0, 1], outputRange: [0, usableWidth] });
+
+  return (
+    <View style={styles.sensitivityControl}>
+      <View style={styles.sensitivityLabels}>
+        {(['low', 'high'] as const).map((option) => {
+          const selected = value === option;
+          return (
+            <Pressable key={option} onPress={() => onChange(option)} hitSlop={10}>
+              <Text style={[styles.sensitivityLabel, selected && styles.sensitivityLabelActive]}>
+                {option === 'low' ? 'Low' : 'High'}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+      <View
+        ref={trackRef}
+        style={styles.sensitivityTouchTrack}
+        onLayout={(event) => {
+          const width = event.nativeEvent.layout.width;
+          trackWidthRef.current = width;
+          setTrackWidth(width);
+          trackRef.current?.measureInWindow((x) => {
+            trackPageXRef.current = x;
+          });
+        }}
+        accessible
+        accessibilityRole="adjustable"
+        accessibilityLabel="AI detection sensitivity"
+        accessibilityValue={{ min: 0, max: 1, now: value === 'high' ? 1 : 0, text: value }}
+        accessibilityActions={[{ name: 'increment' }, { name: 'decrement' }]}
+        onAccessibilityAction={(event) =>
+          onChange(event.nativeEvent.actionName === 'increment' ? 'high' : 'low')
+        }
+        {...panResponder.panHandlers}
+      >
+        <View style={styles.sensitivityTrack} />
+        <Animated.View style={[styles.sensitivityFill, { width: fillWidth }]} />
+        <Animated.View
+          style={[
+            styles.sensitivityThumb,
+            { transform: [{ translateX: thumbX }, { scale: dragging ? 1.12 : 1 }] },
+          ]}
+        />
+      </View>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
@@ -1152,6 +1366,62 @@ const styles = StyleSheet.create({
     color: colors.subtext,
     fontSize: 12,
     marginBottom: spacing.sm,
+  },
+  aiDescription: {
+    color: colors.subtext,
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  sensitivityControl: {
+    marginTop: spacing.lg,
+  },
+  sensitivityLabels: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginHorizontal: 2,
+    marginBottom: 2,
+  },
+  sensitivityLabel: {
+    color: colors.subtext,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  sensitivityLabelActive: {
+    color: colors.primary,
+  },
+  sensitivityTouchTrack: {
+    height: 40,
+    justifyContent: 'center',
+  },
+  sensitivityTrack: {
+    position: 'absolute',
+    left: 12,
+    right: 12,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: colors.cardAlt,
+  },
+  sensitivityFill: {
+    position: 'absolute',
+    left: 12,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: colors.primary,
+  },
+  sensitivityThumb: {
+    position: 'absolute',
+    left: 0,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    borderWidth: 3,
+    borderColor: colors.primary,
+    backgroundColor: colors.text,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3,
+    elevation: 4,
   },
   field: {
     gap: 4,
@@ -1222,6 +1492,12 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 13,
     fontWeight: '600',
+  },
+  smallBtnContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.sm,
   },
   connectionBtn: {
     minHeight: 44,

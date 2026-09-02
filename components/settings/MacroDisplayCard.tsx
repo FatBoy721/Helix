@@ -3,6 +3,7 @@ import { StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-nativ
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useMoonraker } from '../../hooks/useMoonraker';
 import { useSettings } from '../../hooks/useSettings';
+import { getDashboardSections, setDashboardForPrinter } from '../../services/dashboardSections';
 import {
   MacroDisplaySettings,
   countSelectedMacros,
@@ -34,7 +35,13 @@ export default function MacroDisplayCard() {
         settings.activePrinterId,
         next
       ),
-      dashboard: { ...settings.dashboard, macros: true },
+      // Turning the macro card on applies to this printer, not every printer.
+      dashboardByPrinter: setDashboardForPrinter(
+        settings.dashboardByPrinter,
+        settings.activePrinterId,
+        { ...getDashboardSections(settings), macros: true },
+        settings.dashboard
+      ),
     });
   };
 

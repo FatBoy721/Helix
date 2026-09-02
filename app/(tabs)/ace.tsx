@@ -24,6 +24,9 @@ import type { TemperatureUnit } from '../../services/temperature';
 import { colors, spacing } from '../../constants/theme';
 import { useThemedAlert } from '../../hooks/useThemedAlert';
 
+/** No fallbacks: lanes fall back to their own reported colour or the empty outline. */
+const EMPTY_SLOT_COLORS: string[] = [];
+
 function resolveAceSlotColors(status: Record<string, any>, fallback: string[]): string[] {
   const raw = status.print_task_config?.filament_color_rgba;
   return fallback.map((fallbackColor, index) => {
@@ -50,12 +53,17 @@ function multiAceOverrideUrl(activeUrl: string): string {
 }
 
 export default function ACEScreen() {
-  const { units, aceMacros, hardwareDetected, sendGcode, activeAceIndex } = useACE();
+  const { units, aceMacros, hardwareDetected, sendGcode, activeAceIndex, mode } = useACE();
   const { connection, status, activeUrl } = useMoonraker();
   const { settings } = useSettings();
   const { showAlert, alertDialog } = useThemedAlert();
   const disabled = connection !== 'connected';
-  const slotColors = resolveAceSlotColors(status, settings.filamentSlotColors);
+  // A material station reports its own colours, and print_task_config is a
+  // Snapmaker-only object — falling back to the U1's manually configured slot
+  // colours here painted the AD5X's lanes with another printer's filament.
+  const slotColors = mode === 'material-station'
+    ? EMPTY_SLOT_COLORS
+    : resolveAceSlotColors(status, settings.filamentSlotColors);
   const [editingSlot, setEditingSlot] = useState<AceSlotDraft | null>(null);
   const [savingSlot, setSavingSlot] = useState(false);
 

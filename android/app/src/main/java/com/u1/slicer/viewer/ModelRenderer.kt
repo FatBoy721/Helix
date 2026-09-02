@@ -24,6 +24,18 @@ class ModelRenderer(private val context: Context) : GLSurfaceView.Renderer {
     private val mainHandler = Handler(Looper.getMainLooper())
     var meshData: MeshData? = null
         private set
+
+    /**
+     * Build volume of the printer this model is headed for. Set before the GL
+     * surface is created (the Activity resolves it from its intent), so the
+     * first frame is already the right bed.
+     *
+     * This renderer builds its own bed/grid rather than sharing BedDrawable —
+     * see setupBedMesh.
+     */
+    @Volatile
+    var bedProfile: BedProfile = BedProfile.U1
+
     private var modelShader: ShaderProgram? = null
     private var gridShader: ShaderProgram? = null
     private var textureShader: ShaderProgram? = null
@@ -180,8 +192,8 @@ class ModelRenderer(private val context: Context) : GLSurfaceView.Renderer {
     }
 
     internal fun resetCameraToDefaultView() {
-        camera.setTarget(135.0, 135.0, 0.0)
-        camera.distance = 500.0
+        camera.setTarget(bedProfile.centerX.toDouble(), bedProfile.centerY.toDouble(), 0.0)
+        camera.distance = bedProfile.defaultCameraDistance
         camera.elevation = 62.0
         camera.azimuth = -90.0
     }
@@ -992,21 +1004,28 @@ class ModelRenderer(private val context: Context) : GLSurfaceView.Renderer {
     }
 
     private fun setupBedMesh() {
-        // Parse the U1 bed STL (binary format) from assets.
-        // The STL is centred at (0,0); our print area is (0..270, 0..270) centred at (135,135).
-        // Translate by (+135, +135). Flatten to Z=0 so grid lines at Z=0.1+ sit flush above.
+        // Parse the plate STL (binary format) from assets. The mesh is authored
+        // about the centre of the printable area, so translate by half the bed
+        // to put it in (0..sizeX, 0..sizeY). Flatten to Z=0 so grid lines at
+        // Z=0.1+ sit flush above it.
+        val profile = bedProfile
+        val bedW = profile.sizeX
+        val bedH = profile.sizeY
         val verts = mutableListOf<Float>()
         try {
-            context.assets.open("bed/u1_bed.stl").use { stream ->
+            val asset = profile.modelAsset ?: throw IllegalStateException("no plate mesh")
+            context.assets.open("bed/$asset").use { stream ->
                 val bytes = stream.readBytes()
                 val buf = java.nio.ByteBuffer.wrap(bytes).order(java.nio.ByteOrder.LITTLE_ENDIAN)
                 buf.position(80) // skip header
                 val triCount = buf.int
+                // Guard a truncated or ASCII STL before trusting the count.
+                if (bytes.size < 84 + triCount * 50) throw IllegalStateException("not binary STL")
                 repeat(triCount) {
                     buf.position(buf.position() + 12) // skip normal
                     repeat(3) {
-                        val x = buf.float + 135f
-                        val y = buf.float + 135f
+                        val x = buf.float + profile.centerX
+                        val y = buf.float + profile.centerY
                         buf.float // discard original Z — flatten to Z=0
                         verts.add(x); verts.add(y); verts.add(0f)
                     }
@@ -1014,9 +1033,10 @@ class ModelRenderer(private val context: Context) : GLSurfaceView.Renderer {
                 }
             }
         } catch (e: Exception) {
-            // Fallback: simple quad if STL fails to load
-            verts.addAll(listOf(0f,0f,0f, 270f,0f,0f, 270f,270f,0f,
-                                0f,0f,0f, 270f,270f,0f, 0f,270f,0f))
+            // Fallback: plain rectangle. Also the intended path for a printer we
+            // have no plate mesh for, which declares a null modelAsset.
+            verts.addAll(listOf(0f,0f,0f, bedW,0f,0f, bedW,bedH,0f,
+                                0f,0f,0f, bedW,bedH,0f, 0f,bedH,0f))
         }
 
         bedFillVertexCount = verts.size / 3
@@ -1034,7 +1054,11 @@ class ModelRenderer(private val context: Context) : GLSurfaceView.Renderer {
     }
 
     private fun setupLogoTexture() {
-        // Render "snapmaker" text to a bitmap, upload as GL texture
+        // Vendor wordmark on the plate. Absent for machines we have no mark for
+        // — a bare plate beats stamping "snapmaker" on a FlashForge bed.
+        val logoText = bedProfile.logoText ?: return
+
+        // Render the wordmark to a bitmap, upload as GL texture
         val bmpW = 512; val bmpH = 128
         val bitmap = Bitmap.createBitmap(bmpW, bmpH, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
@@ -1045,7 +1069,7 @@ class ModelRenderer(private val context: Context) : GLSurfaceView.Renderer {
             textAlign = Paint.Align.CENTER
             letterSpacing = 0.08f
         }
-        canvas.drawText("snapmaker", bmpW / 2f, bmpH * 0.72f, paint)
+        canvas.drawText(logoText, bmpW / 2f, bmpH * 0.72f, paint)
 
         val textures = IntArray(1)
         GLES30.glGenTextures(1, textures, 0)
@@ -1058,9 +1082,13 @@ class ModelRenderer(private val context: Context) : GLSurfaceView.Renderer {
         GLUtils.texImage2D(GLES30.GL_TEXTURE_2D, 0, bitmap, 0)
         bitmap.recycle()
 
-        // Logo quad: 150mm wide × 37mm tall, centered on bed at (135, 135), Z=0
-        val lx = 135f - 75f; val rx = 135f + 75f
-        val ly = 135f - 18.5f; val ry = 135f + 18.5f
+        // Logo quad, centred on the bed at Z=0. Sized as a fraction of the bed
+        // rather than a fixed 150mm so it reads the same on a 180mm plate as on
+        // the U1's 270mm one; the fractions reproduce the original U1 150x37mm.
+        val logoW = bedProfile.sizeX * (150f / 270f)
+        val logoH = logoW * (37f / 150f)
+        val lx = bedProfile.centerX - logoW / 2f; val rx = bedProfile.centerX + logoW / 2f
+        val ly = bedProfile.centerY - logoH / 2f; val ry = bedProfile.centerY + logoH / 2f
         val z = 0f
         // position (xyz) + texcoord (uv) — stride 20 bytes
         val verts = floatArrayOf(
@@ -1085,8 +1113,8 @@ class ModelRenderer(private val context: Context) : GLSurfaceView.Renderer {
     }
 
     private fun setupGrid() {
-        val bedW = 270f
-        val bedH = 270f
+        val bedW = bedProfile.sizeX
+        val bedH = bedProfile.sizeY
 
         // Minor grid lines every 10mm — all at Z=0 (polygon offset pushes bed behind)
         val minorLines = mutableListOf<Float>()
@@ -1115,12 +1143,20 @@ class ModelRenderer(private val context: Context) : GLSurfaceView.Renderer {
         GLES30.glEnableVertexAttribArray(0)
         GLES30.glBindVertexArray(0)
 
-        // Major grid lines every 50mm — also Z=0
-        val majorLines = mutableListOf<Float>()
-        for (v in listOf(0f, 50f, 100f, 150f, 200f, 250f, 270f)) {
-            majorLines.addAll(listOf(v, 0f, 0f, v, bedH, 0f))
-            majorLines.addAll(listOf(0f, v, 0f, bedW, v, 0f))
+        // Major grid lines every 50mm — also Z=0. The far edge always gets a
+        // line even when it is not on a 50mm boundary (a 220mm bed ends at 220,
+        // not 200), which is why the U1 list used to carry a stray 270.
+        fun ticks(extent: Float): List<Float> {
+            val out = mutableListOf<Float>()
+            var v = 0f
+            while (v < extent) { out.add(v); v += 50f }
+            out.add(extent)
+            return out
         }
+
+        val majorLines = mutableListOf<Float>()
+        for (v in ticks(bedW)) majorLines.addAll(listOf(v, 0f, 0f, v, bedH, 0f))
+        for (v in ticks(bedH)) majorLines.addAll(listOf(0f, v, 0f, bedW, v, 0f))
         majorGridVertexCount = majorLines.size / 3
 
         val majBuf = ByteBuffer.allocateDirect(majorLines.size * 4)
@@ -1191,7 +1227,9 @@ class ModelRenderer(private val context: Context) : GLSurfaceView.Renderer {
         GLES30.glDrawArrays(GLES30.GL_LINES, 0, 8)
         GLES30.glBindVertexArray(0)
 
-        // 5. Snapmaker logo — blended text texture
+        // 5. Vendor wordmark — blended text texture. Skipped entirely for a bed
+        // profile with no logo, which never builds the quad.
+        if (logoVAO == 0) return
         val texShader = textureShader ?: return
         texShader.use()
         GLES30.glUniformMatrix4fv(texShader.getUniformLocation("u_MVPMatrix"), 1, false, camera.mvpMatrix, 0)

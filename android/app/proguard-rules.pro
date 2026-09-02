@@ -11,4 +11,13 @@
 -keep class com.swmansion.reanimated.** { *; }
 -keep class com.facebook.react.turbomodule.** { *; }
 
+# HiveMQ MQTT client (Bambu Lab LAN transport). It sits on Netty, which
+# references optional native transports and JDK-only classes that do not exist
+# on Android — R8 must not treat those as missing-class errors.
+-dontwarn io.netty.**
+-dontwarn com.hivemq.client.**
+-dontwarn org.slf4j.**
+-dontwarn java.lang.management.**
+-keep class io.netty.channel.socket.nio.** { *; }
+
 # Add any project specific keep options here:

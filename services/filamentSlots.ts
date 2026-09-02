@@ -35,6 +35,21 @@ export interface ManualSlotSettings {
   slotSubtypes: string[];
 }
 
+/**
+ * Whether a held printer report may still describe physical filament slots.
+ *
+ * Moonraker sensor state is unsafe once its socket is down. Bambu is different:
+ * its provider retains the last complete MQTT state while a short reconnect is
+ * in progress, and discarding that state makes the UI flash unrelated manual
+ * U1 slot settings until the next `pushall` reply arrives.
+ */
+export function canUseReportedFilamentSlots(
+  connection: string,
+  printerKind: string | null,
+): boolean {
+  return connection === 'connected' || printerKind === 'bambu-lan';
+}
+
 function printerText(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   const clean = value.trim();
@@ -88,4 +103,58 @@ export function resolveFilamentSlots(
       source: color || material ? 'printer' : 'manual',
     };
   });
+}
+
+/**
+ * The four lanes as the AD5X's material station actually reports them.
+ *
+ * The `print_task_config` path above is PAXX firmware: a FlashForge AD5X does
+ * not publish that object at all, so every lane fell through to the saved
+ * manual settings and the slicer offered spools left over from another printer.
+ * The station's real contents arrive over FlashForge's REST API instead
+ * (hooks/useMaterialStation), which is where these units come from.
+ *
+ * Returns null when the station has not reported yet. AD5X callers must turn
+ * that into neutral unknown lanes rather than falling back to manual U1 data.
+ */
+export function materialStationSlots(
+  units: { lanes: { index: number; status: string; brand?: string; material?: string; colorHex?: string }[] }[],
+): ResolvedFilamentSlot[] | null {
+  const lanes = units[0]?.lanes;
+  if (!lanes || lanes.length === 0) return null;
+
+  return Array.from({ length: 4 }, (_, index) => {
+    const lane = lanes.find((entry) => entry.index === index);
+    const material = (lane?.material ?? '').trim();
+    // A drying lane cannot feed a print right now, and the slot UI has no
+    // separate state for it — busy is the honest equivalent.
+    const status = !lane ? 'empty' : lane.status === 'drying' ? 'busy' : lane.status;
+
+    return {
+      index,
+      color: normalizeFilamentSlotColors([lane?.colorHex ?? ''])[0],
+      brand: lane?.brand?.trim() || undefined,
+      material,
+      mainType: material,
+      subType: '',
+      status: (status === 'loaded' || status === 'empty' || status === 'busy'
+        ? status
+        : 'unknown') as FilamentSlotStatus,
+      // The station is the machine speaking, not a saved preference.
+      source: 'printer' as const,
+    };
+  });
+}
+
+/** Honest AD5X placeholders while its credentialed IFS query is unavailable. */
+export function unavailableMaterialStationSlots(): ResolvedFilamentSlot[] {
+  return Array.from({ length: 4 }, (_, index) => ({
+    index,
+    color: '#30343A',
+    material: '',
+    mainType: '',
+    subType: '',
+    status: 'unknown' as const,
+    source: 'printer' as const,
+  }));
 }

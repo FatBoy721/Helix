@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  AppState,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -37,6 +38,7 @@ import {
   getModelPlates,
   getNativeSlicerStatus,
   getSharedMakerWorldLink,
+  takeBambuSendRequest,
   ModelPlate,
   NativeMakerWorldDownload,
   NativeSliceResult,
@@ -61,17 +63,38 @@ import {
 import { useMoonraker } from '../../hooks/useMoonraker';
 import { fetchMakerWorldPlateStats } from '../../services/makerWorld';
 import { useACE } from '../../hooks/useACE';
+import { useMaterialStation } from '../../hooks/useMaterialStation';
+import {
+  canUseReportedFilamentSlots,
+  materialStationSlots,
+  unavailableMaterialStationSlots,
+} from '../../services/filamentSlots';
 import type { AceUnit } from '../../hooks/useACE';
 import { useSettings } from '../../hooks/useSettings';
+import {
+  printerProfile,
+  resolveMachineProfile,
+  type PrinterKind,
+} from '../../services/printerProfiles';
 import { type FilamentSlotDisplay } from '../../components/FilamentSlotsEditor';
 import { normalizeFilamentSlotColors } from '../../constants/filamentColors';
 import { takeMwDownload } from '../../services/mwBus';
 import { subscribePendingModel, takePendingModel } from '../../services/pendingModel';
 import { setPrintSentNotice } from '../../services/printSentBus';
+import { setPrintIntent } from '../../services/printIntent';
+import { ifsOffPrintGcode } from '../../services/zmodPrintPrompt';
 import PrintPreprocessDialog, { type PrintPref } from '../../components/PrintPreprocessDialog';
-import { api, normalizeMoonrakerUrl, printerConnectionUrl, thumbnailUrl } from '../../services/moonraker';
+import { applicablePrefs, routeTools } from '../../services/printPreprocess';
+import {
+  api,
+  buildAiMonitoringCommand,
+  normalizeMoonrakerUrl,
+  printerConnectionUrl,
+  thumbnailUrl,
+} from '../../services/moonraker';
 import { resolveNativeMaterialProfiles } from '../../services/filamentProfiles';
 import { useThemedAlert } from '../../hooks/useThemedAlert';
+import { startBambuProjectFile, uploadBambuPrintArtifact } from '../../services/bambuMqtt';
 
 const MW_DESIGN_RE = /(?:https?:\/\/)?(?:www\.)?makerworld\.com\/(?:\w+\/)?models\/(\d+)/i;
 // The specific print profile/instance the user is viewing, e.g.
@@ -192,25 +215,62 @@ export default function SliceLabScreen() {
     flowCal: false,
     timelapse: false,
     autoLevel: false,
+    ifs: true,
   });
+  const [aiMonitoring, setAiMonitoring] = useState(true);
   const handledUrlRef = useRef<string | null>(null);
   const awaitingInteractive = useRef(false);
   const { activeUrl, connection, status, objectList } = useMoonraker();
   const ace = useACE();
   const { settings, update: updateSettings, loaded: settingsLoaded } = useSettings();
-  const toolLoad = useMemo(
-    () => resolveToolLoad(status, objectList, ace.units, ace.hardwareDetected, connection),
-    [status, objectList, ace.units, ace.hardwareDetected, connection],
+  // Bed of the printer this model is headed for, so the native preview draws the
+  // machine you are actually on instead of always the U1's 270mm plate. Bambu
+  // needs the serial too — one kind, two different plates.
+  const activeMachine = useMemo(() => {
+    const active = settings.printers.find((printer) => printer.id === settings.activePrinterId);
+    return resolveMachineProfile(active);
+  }, [settings.printers, settings.activePrinterId]);
+  const activePrinterKind = useMemo(
+    () =>
+      settings.printers.find((printer) => printer.id === settings.activePrinterId)?.kind ?? null,
+    [settings.printers, settings.activePrinterId],
   );
-  const filamentSlots = useMemo(
-    () => resolveFilamentSlots(
+  const bambuExternalSpool = activePrinterKind === 'bambu-lan'
+    && status.print_task_config?.bambu_filament_source === 'external';
+  const toolLoad = useMemo(
+    () => resolveToolLoad(
       status,
-      settings.filamentSlotColors,
-      settings.filamentSlotBrands,
-      settings.filamentSlotMaterials,
-      toolLoad,
+      objectList,
+      ace.units,
+      ace.hardwareDetected,
+      connection,
+      activePrinterKind,
     ),
-    [status, settings.filamentSlotColors, settings.filamentSlotBrands, settings.filamentSlotMaterials, toolLoad],
+    [status, objectList, ace.units, ace.hardwareDetected, connection, activePrinterKind],
+  );
+  // The AD5X reports its lanes over FlashForge's REST API, not Moonraker: it
+  // publishes no print_task_config at all, so resolveFilamentSlots below finds
+  // nothing and every lane silently falls back to the saved manual settings —
+  // which is how the slicer ended up offering spools from a different printer.
+  const materialStation = useMaterialStation();
+  const filamentSlots = useMemo(
+    () => {
+      if (activePrinterKind === 'flashforge-ad5x') {
+        const fromStation = materialStationSlots(materialStation.units);
+        // Never fall through to the global manual U1 slots. If FlashForge
+        // credentials are missing or its REST query has not answered yet,
+        // unknown neutral lanes are more honest than cached filament.
+        return fromStation ?? unavailableMaterialStationSlots();
+      }
+      return resolveFilamentSlots(
+        status,
+        settings.filamentSlotColors,
+        settings.filamentSlotBrands,
+        settings.filamentSlotMaterials,
+        toolLoad,
+      );
+    },
+    [activePrinterKind, materialStation.units, status, settings.filamentSlotColors, settings.filamentSlotBrands, settings.filamentSlotMaterials, toolLoad],
   );
   const effectiveFilamentSlotColors = useMemo(
     () => filamentSlots.map((slot) => slot.color),
@@ -298,6 +358,12 @@ export default function SliceLabScreen() {
   }, []);
 
   const pickLocalModel = useCallback(async () => {
+    // The tab can be reached before persisted printer settings and the native
+    // slicer status finish their cold-start reads. Opening Android's picker in
+    // that window races the activity result against initialization and also
+    // renders the model against DEFAULT_SETTINGS (the U1), regardless of the
+    // actual active printer.
+    if (!settingsLoaded || result.state === 'loading') return;
     try {
       const file = await pickModelFile();
       applyOpenedFile(file);
@@ -306,7 +372,7 @@ export default function SliceLabScreen() {
       if (/cancel/i.test(message)) return;
       showAlert({ title: 'Upload', message, icon: 'alert-circle-outline' });
     }
-  }, [applyOpenedFile, showAlert]);
+  }, [applyOpenedFile, result.state, settingsLoaded, showAlert]);
 
   const clearModel = useCallback(() => {
     handledUrlRef.current = null;
@@ -327,6 +393,37 @@ export default function SliceLabScreen() {
   // Open-with can finish importing after the Slice tab first paints — subscribe
   // so we still show the model when the native handoff lands late.
   useEffect(() => subscribePendingModel(applyOpenedFile), [applyOpenedFile]);
+
+  // The native Bambu preview cannot perform its own send: that verified path
+  // needs the live RN MQTT session plus saved credentials. Its Upload & Print
+  // button returns here and raises this one-shot request instead.
+  useEffect(() => {
+    let active = true;
+    const openRequestedSend = async () => {
+      if (!(await takeBambuSendRequest()) || !active) return;
+      const last = await getLastSliceResult();
+      if (!last || !active) {
+        showAlert({
+          title: 'Bambu print',
+          message: 'The completed slice is no longer available. Slice the model again.',
+          icon: 'alert-circle-outline',
+        });
+        return;
+      }
+      setSlice({ state: 'success', result: last });
+      setPrintStart({ state: 'idle' });
+      setSendProgress(0);
+      setPreprocessOpen(true);
+    };
+    void openRequestedSend();
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') void openRequestedSend();
+    });
+    return () => {
+      active = false;
+      sub.remove();
+    };
+  }, [showAlert]);
 
   // Re-check MakerWorld login + pick up interactive downloads / native slice results.
   useFocusEffect(
@@ -636,16 +733,30 @@ export default function SliceLabScreen() {
         connection === 'connected' ? activeUrl : null,
         filamentSlots,
       );
+      // Bambu's file stays on logical tool 0. The selected AMS lane travels in
+      // the project_file payload later; baking the physical lane into T-codes
+      // would make the old U1-oriented engine emit the wrong tool semantics.
+      // The loaded mask remains physical AMS truth, though: the native print
+      // sheet uses it to decide which lanes can actually feed that logical tool.
+      const bambuLane = toolLoad.firstLoaded ?? toolLoad.selectedTool;
+      const bambu = activePrinterKind === 'bambu-lan';
+      const previewColors = bambu
+        ? [effectiveFilamentSlotColors[bambuLane] ?? effectiveFilamentSlotColors[0], ...effectiveFilamentSlotColors.slice(1)]
+        : effectiveFilamentSlotColors;
+      const sliceMaterials = bambu && materialProfiles[bambuLane]
+        ? [materialProfiles[bambuLane], ...materialProfiles.slice(1)]
+        : materialProfiles;
       await openNativeModelPreview(
         path,
         title,
-        effectiveFilamentSlotColors,
+        previewColors,
         colors.primary,
         connection === 'connected' ? activeUrl : null,
-        toolLoad.selectedTool,
+        bambu ? 0 : toolLoad.selectedTool,
         toolLoad.nativeLoadedToolMask,
         Boolean(selectedPlate),
-        materialProfiles,
+        sliceMaterials,
+        activeMachine,
       );
     } catch (error) {
       showAlert({
@@ -658,7 +769,7 @@ export default function SliceLabScreen() {
       setExtractProgress(null);
       setExtracting(false);
     }
-  }, [activeUrl, connection, download, effectiveFilamentSlotColors, filamentSlots, showAlert, toolLoad, plates, selectedPlate]);
+  }, [activeMachine, activePrinterKind, activeUrl, connection, download, effectiveFilamentSlotColors, filamentSlots, showAlert, toolLoad, plates, selectedPlate]);
 
   const openToolpathPreview = useCallback(async () => {
     if (slice.state !== 'success') return;
@@ -673,6 +784,7 @@ export default function SliceLabScreen() {
         initialTool,
         toolLoad.nativeLoadedToolMask,
         slice.result.usedToolMask ?? (1 << initialTool),
+        activeMachine,
       );
     } catch (error) {
       showAlert({
@@ -681,7 +793,7 @@ export default function SliceLabScreen() {
         icon: 'alert-circle-outline',
       });
     }
-  }, [activeUrl, connection, download, showAlert, slice, toolLoad]);
+  }, [activeMachine, activeUrl, connection, download, showAlert, slice, toolLoad]);
 
   const openPreprocess = useCallback(() => {
     if (slice.state !== 'success') return;
@@ -716,9 +828,18 @@ export default function SliceLabScreen() {
   // The dialog's Print button: upload the sliced gcode, verify it, then start —
   // all in one go, driving the dialog's progress bar.
   const uploadAndPrint = useCallback(async (
-    requestedPrefs: Readonly<Record<PrintPref, boolean>>,
+    rawPrefs: Readonly<Record<PrintPref, boolean>>,
   ) => {
     if (slice.state !== 'success') return;
+    // The dialog can swap printers, and the toggles are one state object — so a
+    // time-lapse enabled for the U1 is still set after switching to an AD5X,
+    // where the toggle is not even shown and the macros do not exist. Honour
+    // only what the selected machine actually offers.
+    const requestedPrefs = applicablePrefs(rawPrefs, {
+      printerKind: activePrinterKind,
+      multicolor: (slice.result.usedToolMask ?? 0) !== 0
+        && [0, 1, 2, 3].filter((t) => ((slice.result.usedToolMask ?? 0) & (1 << t)) !== 0).length > 1,
+    });
     if (!activeUrl) {
       setPrintStart({ state: 'error', message: 'Printer URL is blank.' });
       return;
@@ -727,16 +848,36 @@ export default function SliceLabScreen() {
     const fileRequiredMask = slice.result.usedToolMask ?? (1 << slicedTool);
     const fileTools = [0, 1, 2, 3].filter((t) => (fileRequiredMask & (1 << t)) !== 0);
 
-    // Resolve the full per-file-tool target map (default identity) from toolRemap.
+    const isBambu = activePrinterKind === 'bambu-lan';
+    // Bambu keeps file tools logical and sends their physical AMS routing in
+    // project_file. Every existing printer keeps the old identity/remap path.
     const remap = toolRemap ?? {};
     const fullTarget: Record<number, number> = {};
-    for (const ft of fileTools) fullTarget[ft] = remap[ft] ?? ft;
+    if (isBambu) {
+      const routes = routeTools(
+        fileTools,
+        filamentSlots.map((slot) => ({
+          index: slot.index,
+          color: slot.color,
+          brand: slot.brand,
+          material: slot.material,
+          mainType: slot.mainType,
+          subType: slot.subType,
+          status: slot.status,
+        })),
+        remap,
+      );
+      for (const ft of fileTools) fullTarget[ft] = routes[ft].lane;
+    } else {
+      for (const ft of fileTools) fullTarget[ft] = remap[ft] ?? ft;
+    }
     const targets = fileTools.map((ft) => fullTarget[ft]);
     const allSameTarget = targets.length > 0 && targets.every((t) => t === targets[0]);
     const collapseSlot = allSameTarget ? targets[0] : -1;
 
     // Re-slice when the user routed any file tool to a different loaded slot.
     const wantsReslice =
+      !isBambu &&
       fileTools.some((ft) => fullTarget[ft] !== ft) &&
       Boolean(slice.result.modelPath) &&
       Boolean(slice.result.sliceSettings) &&
@@ -746,15 +887,94 @@ export default function SliceLabScreen() {
       ? targets.reduce((mask, t) => mask | (1 << t), 0)
       : fileRequiredMask;
     const usedExtruders = [0, 1, 2, 3].filter((tool) => (requiredToolMask & (1 << tool)) !== 0);
-    const missingTools = missingLoadedTools(toolLoad, requiredToolMask);
+    const missingTools = isBambu
+      ? targets.some((lane) => filamentSlots.find((slot) => slot.index === lane)?.status === 'empty')
+        ? bambuExternalSpool
+          ? 'External Spool'
+          : targets.map((lane) => `Lane ${lane + 1}`).join(', ')
+        : null
+      : missingLoadedTools(toolLoad, requiredToolMask);
     if (missingTools) {
       setPrintStart({ state: 'error', message: `Load filament in ${missingTools} before printing.` });
       return;
     }
+    // One toolhead, so colors can only come from the material station — or, with
+    // IFS off, from the external side spool. zmod's per-print IFS-off path is a
+    // SET_ZCOLOR sent in place of the normal print start; see ifsOffPrintGcode.
+    const ifsOff =
+      printerProfile(activePrinterKind).printPrefs.includes('ifs') && !requestedPrefs.ifs;
 
     const sourceName = download.state === 'success' ? download.result.fileName : null;
     try {
       let gcodePath = slice.result.gcodePath;
+      if (isBambu) {
+        if (fileRequiredMask !== 1 || fileTools.length !== 1 || fileTools[0] !== 0) {
+          throw new Error('Bambu LAN printing currently supports one logical filament only.');
+        }
+        const printer = settings.printers.find((entry) => entry.id === settings.activePrinterId);
+        const host = bambuHostFromUrl(printer?.url ?? '');
+        const serial = printer?.serialNumber?.trim() ?? '';
+        const accessCode = printer?.checkCode?.trim() ?? '';
+        if (!host || !serial || !accessCode) {
+          throw new Error('The Bambu printer needs its LAN address, serial number, and access code.');
+        }
+        const serialPrefix = serial.toUpperCase().slice(0, 3);
+        const p1s = serialPrefix === '01P';
+        const fullSizeA1 = serialPrefix === '039';
+        if (!p1s && !fullSizeA1) {
+          throw new Error('Bambu LAN printing currently supports the P1S and full-size A1 only.');
+        }
+        const currentState = status?.print_stats?.state;
+        if (currentState === 'printing' || currentState === 'paused') {
+          throw new Error(`Printer is already ${currentState}.`);
+        }
+        const targetLane = fullTarget[0];
+        const filament = filamentSlots.find((slot) => slot.index === targetLane);
+        if (!filament || filament.status === 'empty') {
+          throw new Error(bambuExternalSpool
+            ? 'Load filament on the External Spool before printing.'
+            : `Load filament in Lane ${targetLane + 1} before printing.`);
+        }
+
+        const remoteName = buildBambuProjectFilename(sourceName, gcodePath);
+        setPrintStart({ state: 'starting', message: 'Uploading project over FTPS…' });
+        setSendProgress(0.15);
+        const uploaded = await uploadBambuPrintArtifact({
+          host,
+          serial,
+          accessCode,
+          gcodePath,
+          remoteName,
+          usedToolMask: fileRequiredMask,
+          predictionSeconds: slice.result.estimatedTimeSeconds,
+          weightGrams: slice.result.estimatedFilamentGrams,
+          filamentType: bambuFilamentType(filament.mainType || filament.material),
+          filamentColor: normalizeFilamentSlotColors([filament.color])[0],
+        });
+        setPrintStart({ state: 'starting', message: 'Waiting for printer confirmation…' });
+        setSendProgress(0.75);
+        await startBambuProjectFile({
+          remoteName: uploaded.remoteName,
+          subtaskName: uploaded.remoteName.replace(/\.gcode\.3mf$/i, ''),
+          archiveMd5: uploaded.archiveMd5,
+          toolToLane: { 0: bambuExternalSpool ? -1 : targetLane },
+          // Preserve the payload accepted by the real P1S. The A1 is beta and
+          // may have any supported plate installed, so let its firmware detect
+          // the plate instead of falsely claiming it is SuperTack.
+          bedType: p1s ? 'supertack_plate' : 'auto',
+          useAms: !bambuExternalSpool,
+          bedLeveling: requestedPrefs.autoLevel,
+          flowCalibration: requestedPrefs.flowCal,
+          timelapse: requestedPrefs.timelapse,
+          vibrationCalibration: requestedPrefs.autoLevel,
+        });
+        setSendProgress(1);
+        setPrintStart({ state: 'done', message: `Print started: ${uploaded.remoteName}` });
+        setPreprocessOpen(false);
+        setPrintSentNotice({ filename: uploaded.remoteName });
+        router.push('/');
+        return;
+      }
       if (wantsReslice) {
         const onResliceProgress = (percentage: number) =>
           setSendProgress(0.05 + (Math.max(0, Math.min(100, percentage)) / 100) * 0.06);
@@ -771,6 +991,7 @@ export default function SliceLabScreen() {
               initialTool: collapseSlot,
               sliceSettings: slice.result.sliceSettings,
               materialProfiles: slice.result.materialProfiles,
+              machineProfile: JSON.stringify(activeMachine),
             },
             onResliceProgress,
           );
@@ -793,6 +1014,7 @@ export default function SliceLabScreen() {
               sliceSettings: slice.result.sliceSettings,
               materialProfiles: slice.result.materialProfiles,
               forceExtruderCount,
+              machineProfile: JSON.stringify(activeMachine),
             },
             onResliceProgress,
           );
@@ -831,33 +1053,55 @@ export default function SliceLabScreen() {
       if (currentState === 'printing' || currentState === 'paused') {
         throw new Error(`Printer is already ${currentState}.`);
       }
-      await api.runGcode(
-        activeUrl,
-        `SET_MAIN_STATE MAIN_STATE=IDLE\nSET_PRINT_USED_EXTRUDERS EXTRUDERS=${usedExtruders.join(',')}\nSET_PRINT_PREFERENCES BED_LEVEL=${requestedPrefs.autoLevel ? 1 : 0} TIME_LAPSE_CAMERA=${requestedPrefs.timelapse ? 1 : 0} FLOW_CALIBRATE=${requestedPrefs.flowCal ? 1 : 0} FLOW_CALIBRATE_EXTRUDERS=0,1,2,3`,
-      );
-      const applied = await api.queryObjects<{
-        print_task_config?: {
-          auto_bed_leveling?: boolean;
-          time_lapse_camera?: boolean;
-          flow_calibrate?: boolean;
-          flow_calib_extruders?: boolean[];
-          extruders_used?: boolean[];
-        };
-      }>(activeUrl, ['print_task_config']);
-      const taskConfig = applied.status?.print_task_config;
-      if (
-        taskConfig?.auto_bed_leveling !== requestedPrefs.autoLevel ||
-        taskConfig?.time_lapse_camera !== requestedPrefs.timelapse ||
-        taskConfig?.flow_calibrate !== requestedPrefs.flowCal ||
-        taskConfig?.flow_calib_extruders?.length !== 4 ||
-        !taskConfig?.flow_calib_extruders?.every(Boolean) ||
-        taskConfig?.extruders_used?.length !== 4 ||
-        !taskConfig?.extruders_used?.every((used, tool) => used === usedExtruders.includes(tool))
-      ) {
-        throw new Error('Printer rejected the selected print preferences.');
+      // PAXX/U1 firmware only — see supportsPrintPreferences. Other machines
+      // have neither the macros nor print_task_config, so this both errored and
+      // failed its own verification.
+      if (activeMachine.supportsPrintPreferences) {
+        await api.runGcode(
+          activeUrl,
+          `${buildAiMonitoringCommand(aiMonitoring, settings.aiDetectionSensitivity)}\nSET_MAIN_STATE MAIN_STATE=IDLE\nSET_PRINT_USED_EXTRUDERS EXTRUDERS=${usedExtruders.join(',')}\nSET_PRINT_PREFERENCES BED_LEVEL=${requestedPrefs.autoLevel ? 1 : 0} TIME_LAPSE_CAMERA=${requestedPrefs.timelapse ? 1 : 0} FLOW_CALIBRATE=${requestedPrefs.flowCal ? 1 : 0} FLOW_CALIBRATE_EXTRUDERS=0,1,2,3`,
+        );
+        const applied = await api.queryObjects<{
+          print_task_config?: {
+            auto_bed_leveling?: boolean;
+            time_lapse_camera?: boolean;
+            flow_calibrate?: boolean;
+            flow_calib_extruders?: boolean[];
+            extruders_used?: boolean[];
+          };
+        }>(activeUrl, ['print_task_config']);
+        const taskConfig = applied.status?.print_task_config;
+        if (
+          taskConfig?.auto_bed_leveling !== requestedPrefs.autoLevel ||
+          taskConfig?.time_lapse_camera !== requestedPrefs.timelapse ||
+          taskConfig?.flow_calibrate !== requestedPrefs.flowCal ||
+          taskConfig?.flow_calib_extruders?.length !== 4 ||
+          !taskConfig?.flow_calib_extruders?.every(Boolean) ||
+          taskConfig?.extruders_used?.length !== 4 ||
+          !taskConfig?.extruders_used?.every((used, tool) => used === usedExtruders.includes(tool))
+        ) {
+          throw new Error('Printer rejected the selected print preferences.');
+        }
       }
       setPrintStart({ state: 'starting', message: 'Starting print…' });
-      await api.startPrint(activeUrl, verifiedPath);
+      if (ifsOff) {
+        // IFS off: SET_ZCOLOR SILENT=2 starts the print with no material
+        // prompt at all, so there is nothing to stage an intent for — every
+        // T-command is ignored and the external side spool feeds the print.
+        await api.runGcode(activeUrl, ifsOffPrintGcode(verifiedPath, requestedPrefs.autoLevel));
+      } else {
+        // A zmod printer answers this with a material-selection prompt. Stage the
+        // mapping so it can be answered with the user's slots instead of the
+        // printer's guess. Helix slices so the G-code's tool index already is the
+        // physical slot, hence the identity map over the tools actually used.
+        setPrintIntent({
+          filename: verifiedPath,
+          toolToSlot: Object.fromEntries(usedExtruders.map((tool) => [tool, tool])),
+          // The AD5X takes levelling on its print macro, not as a preference.
+          autoLevel: requestedPrefs.autoLevel,
+        });
+        await api.startPrint(activeUrl, verifiedPath);
+      }
       setSendProgress(1);
       setPrintStart({ state: 'done', message: `Print started: ${verifiedPath}` });
       setPreprocessOpen(false);
@@ -873,7 +1117,7 @@ export default function SliceLabScreen() {
         message: `Send failed: ${error instanceof Error ? error.message : String(error)}`,
       });
     }
-  }, [activeUrl, slice, toolLoad, download, router, toolRemap, filamentSlots]);
+  }, [activeMachine, activePrinterKind, activeUrl, aiMonitoring, bambuExternalSpool, download, filamentSlots, router, settings.activePrinterId, settings.aiDetectionSensitivity, settings.printers, slice, status, toolLoad, toolRemap]);
 
   const refresh = async () => {
     setRefreshing(true);
@@ -882,6 +1126,7 @@ export default function SliceLabScreen() {
   };
 
   const ready = result.state === 'ready' ? result.status.loaded && !result.status.coreError : false;
+  const startupReady = settingsLoaded && result.state !== 'loading';
   const printerReady = connection === 'connected' && Boolean(activeUrl);
   const hasModel = download.state === 'success';
   const sliced = slice.state === 'success';
@@ -903,18 +1148,24 @@ export default function SliceLabScreen() {
   const slicedRequiredToolMask = slice.state === 'success'
     ? slice.result.usedToolMask ?? (1 << slicedInitialTool)
     : 1 << slicedInitialTool;
-  const missingPrintTools = sliced ? missingLoadedTools(toolLoad, slicedRequiredToolMask) : null;
+  // A Bambu slice deliberately asks for logical T0 even when AMS Lane 1 is
+  // empty; the dialog routes that logical tool to a loaded physical lane.
+  const missingPrintTools = sliced && activePrinterKind !== 'bambu-lan'
+    ? missingLoadedTools(toolLoad, slicedRequiredToolMask)
+    : null;
   const printDialogSlots = useMemo(
     () => filamentSlots.filter((slot) => (slicedRequiredToolMask & (1 << slot.index)) !== 0),
     [filamentSlots, slicedRequiredToolMask],
   );
-  // Tool-remap for the print dialog: each required (file) tool defaults to
-  // itself; toolRemap overrides individual tools to a different loaded slot.
+  // Existing printers preserve their identity defaults exactly. Bambu passes
+  // manual choices only so the dialog's routeTools can auto-pick a loaded AMS
+  // lane when logical T0's same-numbered lane is empty.
   const printDialogAssignments = useMemo(() => {
+    if (activePrinterKind === 'bambu-lan') return toolRemap ?? {};
     const m: Record<number, number> = {};
     for (const slot of printDialogSlots) m[slot.index] = toolRemap?.[slot.index] ?? slot.index;
     return m;
-  }, [printDialogSlots, toolRemap]);
+  }, [activePrinterKind, printDialogSlots, toolRemap]);
 
   // Pull the render thumbnail baked into the sliced gcode (shows in the card
   // immediately, before any upload — same preview the home card uses).
@@ -958,6 +1209,9 @@ export default function SliceLabScreen() {
   // The pinned action says why it can't run rather than just going grey. The
   // order matters: the reason nearest the user's next tap wins.
   const primaryAction = (() => {
+    if (!startupReady) {
+      return { icon: 'progress-wrench' as const, label: 'Loading printer…', enabled: false, onPress: noop };
+    }
     if (!hasModel) {
       const importing = download.state === 'downloading';
       return {
@@ -1005,7 +1259,10 @@ export default function SliceLabScreen() {
           }
         >
           {!hasModel ? (
-            <Pressable onPress={pickLocalModel} disabled={download.state === 'downloading'}>
+            <Pressable
+              onPress={pickLocalModel}
+              disabled={!startupReady || download.state === 'downloading'}
+            >
               <HeroCard
                 thumbUri={sliced ? sliceThumb : modelThumb}
                 height={heroHeight}
@@ -1127,7 +1384,11 @@ export default function SliceLabScreen() {
             }
           />
 
-          <ToolRail slots={filamentSlots} onEdit={setEditingSlot} />
+          <ToolRail
+            slots={filamentSlots}
+            onEdit={setEditingSlot}
+            externalSpool={bambuExternalSpool}
+          />
 
           {sliced ? <Secondary icon="close" label="Cancel slice" onPress={dismissSlice} /> : null}
         </ScrollView>
@@ -1200,11 +1461,15 @@ export default function SliceLabScreen() {
       perToolGrams={perToolGrams}
       prefs={printPrefs}
       onTogglePref={(pref) => setPrintPrefs((prev) => ({ ...prev, [pref]: !prev[pref] }))}
+      aiMonitoring={aiMonitoring}
+      onToggleAiMonitoring={() => setAiMonitoring((enabled) => !enabled)}
       sending={printStart.state === 'starting'}
       progress={sendProgress}
       statusMessage={printStart.state === 'starting' ? printStart.message : null}
       errorMessage={printStart.state === 'error' ? printStart.message : null}
       onSend={uploadAndPrint}
+      printerKind={activePrinterKind}
+      externalSpool={bambuExternalSpool}
     />
     {alertDialog}
     </View>
@@ -1222,6 +1487,22 @@ function buildPrinterUploadFilename(sourceName: string | null | undefined, gcode
     .replace(/^_+|_+$/g, '')
     .slice(0, 80) || 'print';
   return `${clean}_${Date.now()}.gcode`;
+}
+
+function buildBambuProjectFilename(sourceName: string | null | undefined, gcodePath: string): string {
+  return buildPrinterUploadFilename(sourceName, gcodePath).replace(/\.gcode$/i, '.gcode.3mf');
+}
+
+function bambuHostFromUrl(url: string): string {
+  return url.trim().replace(/^\w+:\/\//, '').replace(/[/:].*$/, '');
+}
+
+function bambuFilamentType(value: string): string {
+  return (value || 'PLA')
+    .trim()
+    .replace(/[^A-Za-z0-9+_.-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 32) || 'PLA';
 }
 
 function uploadedPathFromResponse(uploaded: UploadResult, fallback: string): string {
@@ -1301,14 +1582,24 @@ function resolveToolLoad(
   aceUnits: AceUnit[],
   aceHardwareDetected: boolean,
   connection: string,
+  printerKind: PrinterKind | null,
 ): ToolLoadInfo {
-  const slots: ToolLoadSlot[] = [0, 1, 2, 3].map((index) => ({ index, status: 'unknown' }));
+  const slotCount = status.print_task_config?.bambu_filament_source === 'external' ? 1 : 4;
+  const slots: ToolLoadSlot[] = Array.from(
+    { length: slotCount },
+    (_, index) => ({ index, status: 'unknown' }),
+  );
   let source: ToolLoadInfo['source'] = 'unknown';
   let hasData = false;
 
-  if (connection === 'connected' && Array.isArray(status.print_task_config?.filament_exist)) {
+  // A Bambu reconnect retains the last complete MQTT report while the new
+  // socket comes up. Keep that printer-authored AMS occupancy visible instead
+  // of flashing old manual U1 slots, but retain the connected-only rule for
+  // Moonraker printers whose stale sensor state must not authorize a print.
+  const mayUseReportedSlots = canUseReportedFilamentSlots(connection, printerKind);
+  if (mayUseReportedSlots && Array.isArray(status.print_task_config?.filament_exist)) {
     source = 'printer';
-    for (let index = 0; index < 4; index++) {
+    for (let index = 0; index < slotCount; index++) {
       const exists = status.print_task_config.filament_exist[index];
       if (typeof exists === 'boolean') {
         hasData = true;
@@ -1321,7 +1612,7 @@ function resolveToolLoad(
     source = 'ace';
     for (const unit of aceUnits) {
       for (const lane of unit.lanes) {
-        if (lane.index < 0 || lane.index > 3) continue;
+        if (lane.index < 0 || lane.index >= slots.length) continue;
         const next = lane.status === 'loaded' || lane.status === 'drying'
           ? 'loaded'
           : lane.status === 'busy'
@@ -1349,7 +1640,7 @@ function resolveToolLoad(
       for (const key of booleanKeys) {
         const detected = Boolean(status[key]?.filament_detected);
         const index = toolIndexFromSensorKey(key) ?? (booleanKeys.length === 1 ? 0 : null);
-        if (index == null || index < 0 || index > 3) continue;
+        if (index == null || index < 0 || index >= slots.length) continue;
         hasData = true;
         slots[index].status = detected ? 'loaded' : 'empty';
       }
@@ -1364,7 +1655,7 @@ function resolveToolLoad(
   const known = hasData && slots.some((slot) => slot.status !== 'unknown');
   const selectedTool = firstLoaded ?? 0;
   const blockReason = known && firstLoaded == null
-    ? 'No loaded filament detected. Load a U1 head before slicing or printing.'
+    ? 'No loaded filament detected. Load filament before slicing or printing.'
     : null;
 
   return {
@@ -1387,8 +1678,9 @@ function resolveFilamentSlots(
   toolLoad: ToolLoadInfo,
 ): FilamentSlotDisplay[] {
   const ptc = status.print_task_config ?? {};
+  const slotCount = ptc.bambu_filament_source === 'external' ? 1 : 4;
 
-  return Array.from({ length: 4 }, (_, index) => {
+  return Array.from({ length: slotCount }, (_, index) => {
     const loadStatus = toolLoad.slots[index]?.status ?? 'unknown';
     const printerColor = loadStatus !== 'empty'
       ? rgbaStringToHex(Array.isArray(ptc.filament_color_rgba) ? ptc.filament_color_rgba[index] : null)

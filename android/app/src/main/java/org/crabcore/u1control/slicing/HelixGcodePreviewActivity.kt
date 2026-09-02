@@ -20,6 +20,8 @@ import org.json.JSONObject
 import org.crabcore.u1control.MainActivity
 import com.u1.slicer.gcode.GcodeParser
 import com.u1.slicer.gcode.ParsedGcode
+import com.u1.slicer.viewer.BedProfile
+import com.u1.slicer.viewer.MachineProfile
 import com.u1.slicer.viewer.GcodeViewerView
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
@@ -34,6 +36,10 @@ import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
+
+/** Bambu upload/start is owned by the RN send flow, not this Moonraker preview. */
+internal fun usesHelixBambuSend(machineProfile: MachineProfile): Boolean =
+  machineProfile.sliceProfileAsset?.lowercase() in setOf("bambu_p1s.json", "bambu_a1.json")
 
 /**
  * Native 3D G-code toolpath preview — plain-views port of the reference app's
@@ -66,9 +72,16 @@ class HelixGcodePreviewActivity : Activity() {
   private var initialTool: Int = 0
   private var loadedToolMask: Int = -1
   private var usedToolMask: Int = -1
+  /** Build volume of the printer this gcode is headed for; see the model preview. */
+  private var bedProfile: BedProfile = BedProfile.U1
+  /** Full machine profile — also gates the PAXX-only print preferences below. */
+  private var machineProfile: MachineProfile = MachineProfile.U1
   private var prefFlowCal = false
   private var prefTimelapse = false
   private var prefAutoLevel = false
+  private var prefIfs = false
+  private var prefAiMonitoring = true
+  private var prefAiSensitivity = AiDetectionSensitivity.LOW
 
   // Print-dialog tool→slot mapping: index = the tool the slicer used, value =
   // the physical U1 slot the user picked for it. Identity until changed.
@@ -106,6 +119,12 @@ class HelixGcodePreviewActivity : Activity() {
     initialTool = intent.getIntExtra(EXTRA_INITIAL_TOOL, 0).coerceIn(0, 3)
     loadedToolMask = intent.getIntExtra(EXTRA_LOADED_TOOL_MASK, -1)
     usedToolMask = intent.getIntExtra(EXTRA_USED_TOOL_MASK, -1)
+    // The extra carries a MachineProfile wrapper, not a bare bed. Parsing it as
+    // a bed reads no size keys and yields a plateless 270 grid.
+    machineProfile = MachineProfile.fromJson(intent.getStringExtra(EXTRA_BED_PROFILE))
+    bedProfile = machineProfile.bed
+    prefAiMonitoring = PreprocessPreferenceStore.aiMonitoringEnabled(this)
+    prefAiSensitivity = PreprocessPreferenceStore.aiDetectionSensitivity(this)
     val title = intent.getStringExtra(EXTRA_TITLE)
       ?.takeIf { it.isNotBlank() }
       ?: "3D G-code View"
@@ -281,6 +300,7 @@ class HelixGcodePreviewActivity : Activity() {
   // Send-to-printer bar shown under the toolpath view. Uploads the sliced G-code
   // straight to the connected Moonraker (passed in from the RN app).
   private fun buildSendBar(): View {
+    val bambuSend = usesHelixBambuSend(machineProfile)
     val bar = LinearLayout(this).apply {
       orientation = LinearLayout.VERTICAL
       setBackgroundColor(Color.rgb(18, 21, 24))
@@ -289,11 +309,15 @@ class HelixGcodePreviewActivity : Activity() {
 
     // Hidden until a send actually starts — no idle chatter above the buttons.
     sendStatus = TextView(this).apply {
-      text = if (moonrakerUrl.isBlank()) "No printer connected in Helix." else ""
+      text = when {
+        bambuSend -> "Bambu print ready for LAN upload."
+        moonrakerUrl.isBlank() -> "No printer connected in Helix."
+        else -> ""
+      }
       textSize = 12f
       setTextColor(Color.rgb(160, 170, 180))
       setPadding(0, 0, 0, dp(8))
-      visibility = if (moonrakerUrl.isBlank()) View.VISIBLE else View.GONE
+      visibility = if (text.isBlank()) View.GONE else View.VISIBLE
     }
     bar.addView(sendStatus)
 
@@ -319,11 +343,21 @@ class HelixGcodePreviewActivity : Activity() {
     val enabled = moonrakerUrl.isNotBlank() || HelixPrinterStore.read(this).isNotEmpty()
     // Save works with no printer at all — it's the manual-upload escape hatch.
     row.addView(pill("Save", false) { saveGcode() },
-      LinearLayout.LayoutParams(0, dp(48), 0.8f).apply { setMargins(0, 0, dp(5), 0) })
-    row.addView(pill("Upload", false) { if (enabled) sendToPrinter(false) }.apply { alpha = if (enabled) 1f else 0.4f },
-      LinearLayout.LayoutParams(0, dp(48), 1f).apply { setMargins(dp(5), 0, dp(5), 0) })
-    row.addView(pill("Upload & Print", true) { if (enabled) showPrintPreprocessDialog() }.apply { alpha = if (enabled) 1f else 0.4f },
-      LinearLayout.LayoutParams(0, dp(48), 1.6f).apply { setMargins(dp(5), 0, 0, 0) })
+      LinearLayout.LayoutParams(0, dp(48), 0.8f).apply {
+        setMargins(0, 0, dp(5), 0)
+      })
+    // These actions speak Moonraker HTTP. Bambu's verified FTPS + MQTT path is
+    // in the Helix Slice screen, so showing these here would either claim the
+    // live printer is offline or send the wrong protocol to it.
+    if (bambuSend) {
+      row.addView(pill("Upload & Print", true) { returnToHelixForBambuSend() },
+        LinearLayout.LayoutParams(0, dp(48), 1.6f).apply { setMargins(dp(5), 0, 0, 0) })
+    } else {
+      row.addView(pill("Upload", false) { if (enabled) sendToPrinter(false) }.apply { alpha = if (enabled) 1f else 0.4f },
+        LinearLayout.LayoutParams(0, dp(48), 1f).apply { setMargins(dp(5), 0, dp(5), 0) })
+      row.addView(pill("Upload & Print", true) { if (enabled) showPrintPreprocessDialog() }.apply { alpha = if (enabled) 1f else 0.4f },
+        LinearLayout.LayoutParams(0, dp(48), 1.6f).apply { setMargins(dp(5), 0, 0, 0) })
+    }
     bar.addView(row)
     return bar
   }
@@ -357,9 +391,17 @@ class HelixGcodePreviewActivity : Activity() {
       .ifEmpty { listOf(initialTool.coerceIn(0, 3)) }
 
     val initialPrefs = mutableSetOf<PreprocessRouting.Pref>().apply {
+      if (prefAiMonitoring && machineProfile.supportsPrintPreferences) {
+        add(PreprocessRouting.Pref.AI_MONITORING)
+      }
       if (prefAutoLevel) add(PreprocessRouting.Pref.AUTO_LEVEL)
       if (prefFlowCal) add(PreprocessRouting.Pref.FLOW_CAL)
       if (prefTimelapse) add(PreprocessRouting.Pref.TIMELAPSE)
+      // RN defaults IFS on (slicer.tsx printPrefs): a material-station machine
+      // feeds from the station unless the operator opts out of it.
+      if (prefIfs || machineProfile.printPrefs.contains(PreprocessRouting.Pref.IFS.key)) {
+        add(PreprocessRouting.Pref.IFS)
+      }
     }
 
     val config = HelixPreprocessSheet.Config(
@@ -368,6 +410,14 @@ class HelixGcodePreviewActivity : Activity() {
       estGrams = LastSliceStore.estimatedFilamentGrams.toFloat(),
       layers = LastSliceStore.totalLayers,
       thumbnail = runCatching { GcodeThumbnailReader.readBitmap(gcodePath) }.getOrNull(),
+      // The RN layer decides which toggles this machine can honour, so the
+      // sheet and the JS dialog cannot drift apart again.
+      offeredPrefs = PreprocessRouting.offeredPrefs(
+        machineProfile.printPrefs,
+        supportsAiMonitoring = machineProfile.supportsPrintPreferences,
+      ),
+      // Same for what the machine calls its feeds — Lane 1–4 vs T0–T3.
+      laneNaming = machineProfile.laneNaming,
       lanes = lanes,
       required = required,
       perToolGrams = parsePerToolGrams(),
@@ -402,7 +452,48 @@ class HelixGcodePreviewActivity : Activity() {
     prefAutoLevel = prefs.contains(PreprocessRouting.Pref.AUTO_LEVEL)
     prefFlowCal = prefs.contains(PreprocessRouting.Pref.FLOW_CAL)
     prefTimelapse = prefs.contains(PreprocessRouting.Pref.TIMELAPSE)
+    prefIfs = prefs.contains(PreprocessRouting.Pref.IFS)
+    prefAiMonitoring = prefs.contains(PreprocessRouting.Pref.AI_MONITORING)
+    if (machineProfile.supportsPrintPreferences) {
+      PreprocessPreferenceStore.setAiMonitoringEnabled(this, prefAiMonitoring)
+    }
+
     sendToPrinter(true)
+  }
+
+  /**
+   * Waits briefly for the printer's material prompt and answers it with the
+   * lanes chosen on the sheet. Silent when none appears — most machines never
+   * raise one, and a print that started cleanly needs no confirmation.
+   */
+  private fun answerMaterialPrompt(client: OkHttpClient, base: String) {
+    val toolToSlot = toolSlotMap.withIndex().associate { (tool, lane) -> tool to lane }
+    val deadline = System.currentTimeMillis() + PROMPT_WAIT_MS
+    while (System.currentTimeMillis() < deadline) {
+      val body = runCatching {
+        client.newCall(
+          Request.Builder().url("$base/server/gcode_store?count=60").get().build(),
+        ).execute().use { resp -> if (resp.isSuccessful) resp.body?.string().orEmpty() else "" }
+      }.getOrDefault("")
+
+      val answer = ZmodPrintPrompt.answerFor(
+        ZmodPrintPrompt.messagesFromStore(body),
+        uploadName,
+        toolToSlot,
+        prefAutoLevel,
+      )
+      if (answer != null) {
+        val enc = URLEncoder.encode(answer, "UTF-8")
+        runCatching {
+          client.newCall(
+            Request.Builder().url("$base/printer/gcode/script?script=$enc")
+              .post("".toRequestBody(null)).build(),
+          ).execute().close()
+        }
+        return
+      }
+      Thread.sleep(PROMPT_POLL_MS)
+    }
   }
 
   private fun parseHex(hex: String): Int = try {
@@ -548,6 +639,8 @@ class HelixGcodePreviewActivity : Activity() {
     val requestedTimelapse = alsoPrint && prefTimelapse
     val requestedAutoLevel = alsoPrint && prefAutoLevel
     val requestedFlowCalibration = alsoPrint && prefFlowCal
+    val requestedAiMonitoring = alsoPrint && prefAiMonitoring
+    val requestedAiSensitivity = prefAiSensitivity
     val requestedPhysicalExtruders = physicalUsedExtruders()
     sending = true
     reportProgress(if (requestedTimelapse) "Preparing timelapse..." else "Uploading $uploadName...", 0.02f)
@@ -602,22 +695,49 @@ class HelixGcodePreviewActivity : Activity() {
             if (!resp.isSuccessful) throw IllegalStateException("Upload HTTP ${resp.code}")
           }
         if (alsoPrint) {
-          reportProgress("Applying print preferences...", 0.9f)
-          applyPrintPreferences(
-            client,
-            base,
-            requestedAutoLevel,
-            requestedTimelapse,
-            requestedFlowCalibration,
-            requestedPhysicalExtruders,
-          )
-          reportProgress("Starting $uploadName...", 0.96f)
-          val enc = URLEncoder.encode(uploadName, "UTF-8")
-          client.newCall(
-            Request.Builder().url("$base/printer/print/start?filename=$enc")
-              .post("".toRequestBody(null)).build(),
-          ).execute().use { resp ->
-            if (!resp.isSuccessful) throw IllegalStateException("Print start HTTP ${resp.code}")
+          // IFS off on a material-station machine: zmod's per-print external-spool
+          // path. SET_ZCOLOR SILENT=2 raises no material prompt at all, so there
+          // is nothing to answer — applyPrintPreferences already no-ops here
+          // (supportsPrintPreferences=false), and /printer/print/start is what
+          // would raise the prompt, so it is skipped too.
+          val ifsOff = machineProfile.printPrefs.contains(PreprocessRouting.Pref.IFS.key) && !prefIfs
+          if (ifsOff) {
+            reportProgress("Starting $uploadName (external spool)...", 0.96f)
+            val script = URLEncoder.encode(
+              ZmodPrintPrompt.ifsOffPrintGcode(uploadName, prefAutoLevel),
+              "UTF-8",
+            )
+            moonrakerJson(
+              client,
+              Request.Builder().url("$base/printer/gcode/script?script=$script")
+                .post("".toRequestBody(null)).build(),
+              "Print start",
+            )
+          } else {
+            reportProgress("Applying AI monitoring and print preferences...", 0.9f)
+            applyPrintPreferences(
+              client,
+              base,
+              requestedAutoLevel,
+              requestedTimelapse,
+              requestedFlowCalibration,
+              requestedAiMonitoring,
+              requestedAiSensitivity,
+              requestedPhysicalExtruders,
+            )
+            reportProgress("Starting $uploadName...", 0.96f)
+            val enc = URLEncoder.encode(uploadName, "UTF-8")
+            client.newCall(
+              Request.Builder().url("$base/printer/print/start?filename=$enc")
+                .post("".toRequestBody(null)).build(),
+            ).execute().use { resp ->
+              if (!resp.isSuccessful) throw IllegalStateException("Print start HTTP ${resp.code}")
+            }
+            // zmod answers a print start by asking which lane feeds each tool —
+            // a question this sheet just asked. Answer it here rather than waiting
+            // for the RN layer, which is not even in front yet.
+            reportProgress("Confirming materials...", 0.98f)
+            answerMaterialPrompt(client, base)
           }
         }
         reportProgress(if (alsoPrint) "Sent — printing $uploadName" else "Uploaded $uploadName", 1f)
@@ -640,6 +760,8 @@ class HelixGcodePreviewActivity : Activity() {
     autoLevel: Boolean,
     timelapse: Boolean,
     flowCalibration: Boolean,
+    aiMonitoring: Boolean,
+    aiSensitivity: AiDetectionSensitivity,
     usedExtruders: List<Int>,
   ) {
     val state = moonrakerJson(
@@ -654,7 +776,13 @@ class HelixGcodePreviewActivity : Activity() {
       throw IllegalStateException("Printer is already $state")
     }
 
-    val script = "SET_MAIN_STATE MAIN_STATE=IDLE\n" +
+    // PAXX/U1 firmware only. Other machines have neither SET_PRINT_PREFERENCES
+    // nor the print_task_config object, so this errored and then failed its own
+    // read-back with "Printer rejected the selected print preferences".
+    if (!machineProfile.supportsPrintPreferences) return
+
+    val script = PreprocessRouting.aiMonitoringCommand(aiMonitoring, aiSensitivity) + "\n" +
+      "SET_MAIN_STATE MAIN_STATE=IDLE\n" +
       "SET_PRINT_USED_EXTRUDERS EXTRUDERS=${usedExtruders.joinToString(",")}\n" +
       "SET_PRINT_PREFERENCES BED_LEVEL=${if (autoLevel) 1 else 0} " +
       "TIME_LAPSE_CAMERA=${if (timelapse) 1 else 0} " +
@@ -726,6 +854,16 @@ class HelixGcodePreviewActivity : Activity() {
       startActivity(homeIntent)
       finish()
     }
+  }
+
+  /** Returns to the still-mounted Slice tab, which owns Bambu FTPS + MQTT. */
+  private fun returnToHelixForBambuSend() {
+    LastSliceStore.requestBambuSend()
+    val helixIntent = Intent(this, MainActivity::class.java).apply {
+      addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+    }
+    startActivity(helixIntent)
+    finish()
   }
 
   // Dialog remap: rewrite tool changes onto the slots the user picked.
@@ -828,6 +966,8 @@ class HelixGcodePreviewActivity : Activity() {
         FrameLayout.LayoutParams.MATCH_PARENT,
         FrameLayout.LayoutParams.MATCH_PARENT,
       )
+      // Set before attach so the first frame already has the right bed.
+      it.renderer.bedProfile = bedProfile
     }
     viewer = view
     view.setExtruderColors(resolveSlotColors())
@@ -1024,6 +1164,10 @@ class HelixGcodePreviewActivity : Activity() {
     const val EXTRA_INITIAL_TOOL = "initialTool"
     const val EXTRA_LOADED_TOOL_MASK = "loadedToolMask"
     const val EXTRA_USED_TOOL_MASK = "usedToolMask"
+    const val EXTRA_BED_PROFILE = "bedProfile"
+    /** How long to wait for a material prompt after starting a print. */
+    private const val PROMPT_WAIT_MS = 12_000L
+    private const val PROMPT_POLL_MS = 600L
     const val EXTRA_MODEL_PATH = "modelPath"
     const val EXTRA_SLOT_COLORS = "slotColors"
     private const val REQ_SAVE_GCODE = 4471

@@ -13,7 +13,19 @@ import android.widget.TextView
 import android.widget.ArrayAdapter
 import com.u1.slicer.data.SliceConfig
 import org.crabcore.u1control.R
+import org.json.JSONArray
 import org.json.JSONObject
+
+/**
+ * The groups of settings the prepare screen can override.
+ *
+ * A group counts as chosen only once the user has opened its dialog and applied
+ * it. That distinction matters because these overrides are written into a 3MF's
+ * own project settings: emitting a group the user never touched would replace
+ * whatever the file asked for with this class's constructor defaults, which is
+ * how a downloaded model that specifies supports or a brim silently lost them.
+ */
+enum class SliceSettingGroup { SUPPORTS, BRIM, INFILL, IRONING }
 
 /** User-facing slice overrides on the prepare screen (Phase 1 — SliceConfig fields only). */
 data class HelixSliceSettings(
@@ -41,7 +53,14 @@ data class HelixSliceSettings(
   var ironingSpacing: Float = 0.15f,
   /** Ironing speed mm/s (Orca default 30). */
   var ironingSpeed: Int = 30,
+  /** Which groups the user actually applied; see [SliceSettingGroup]. */
+  var chosen: Set<SliceSettingGroup> = emptySet(),
 ) {
+  fun chose(group: SliceSettingGroup): Boolean = group in chosen
+
+  /** This value plus [group] marked as a deliberate user choice. */
+  fun choosing(group: SliceSettingGroup): HelixSliceSettings = copy(chosen = chosen + group)
+
   fun hasSupportsEnabled(): Boolean = supportsEnabled
 
   fun hasBrimEnabled(): Boolean = brimWidthMm > 0f
@@ -68,64 +87,133 @@ data class HelixSliceSettings(
     put("ironingFlow", ironingFlow)
     put("ironingSpacing", ironingSpacing.toDouble())
     put("ironingSpeed", ironingSpeed)
+    put("chosen", JSONArray(chosen.map { it.name }))
   }.toString()
 
+  /**
+   * Writes the user's choices onto [config], leaving untouched groups alone.
+   *
+   * Runs after [Project3mfSettings.applyTo], so anything not chosen here keeps
+   * the project's own value rather than this class's constructor default.
+   */
   fun applyTo(config: SliceConfig) {
-    config.supportEnabled = supportsEnabled
-    if (supportsEnabled) {
-      config.supportType = supportType
-      config.supportAngle = supportAngle.toFloat()
-      config.supportBuildPlateOnly = supportBuildPlateOnly
-      config.supportPattern = supportPattern
-      if (supportFilament > 0) config.supportFilament = supportFilament
-      val iface = when {
-        supportInterfaceFilament == -1 -> supportFilament
-        supportInterfaceFilament > 0 -> supportInterfaceFilament
-        else -> 0
+    if (chose(SliceSettingGroup.SUPPORTS)) {
+      config.supportEnabled = supportsEnabled
+      if (supportsEnabled) {
+        config.supportType = supportType
+        config.supportAngle = supportAngle.toFloat()
+        config.supportBuildPlateOnly = supportBuildPlateOnly
+        config.supportPattern = supportPattern
+        if (supportFilament > 0) config.supportFilament = supportFilament
+        val iface = when {
+          supportInterfaceFilament == -1 -> supportFilament
+          supportInterfaceFilament > 0 -> supportInterfaceFilament
+          else -> 0
+        }
+        if (iface > 0) config.supportInterfaceFilament = iface
       }
-      if (iface > 0) config.supportInterfaceFilament = iface
     }
-    config.brimWidth = brimWidthMm.coerceAtLeast(0f)
-    if (infillDensity in 0f..1f) config.fillDensity = infillDensity
-    if (infillPattern != "default") config.fillPattern = infillPattern
+    if (chose(SliceSettingGroup.BRIM)) config.brimWidth = brimWidthMm.coerceAtLeast(0f)
+    if (chose(SliceSettingGroup.INFILL)) {
+      if (infillDensity in 0f..1f) config.fillDensity = infillDensity
+      if (infillPattern != "default") config.fillPattern = infillPattern
+    }
     // Ironing has no SliceConfig fields — it rides only via the 3MF profile
     // overrides in [toProfileKeyOverrides] (so STL slices skip it).
   }
 
-  /** Keys for [SliceSettings3mfPatcher] (Orca project_settings.config JSON). */
+  /**
+   * Keys for [SliceSettings3mfPatcher] (Orca project_settings.config JSON).
+   *
+   * Only groups the user applied appear. Writing a key for an untouched group
+   * would overwrite the project's own answer with a default nobody picked —
+   * which is exactly how a 3MF authored with supports arrived at the engine
+   * with `enable_support: 0`.
+   */
   fun toProfileKeyOverrides(): Map<String, String> {
     val out = linkedMapOf<String, String>()
-    out["enable_support"] = if (supportsEnabled) "1" else "0"
-    if (supportsEnabled) {
-      out["support_type"] = supportType
-      out["support_threshold_angle"] = supportAngle.toString()
-      out["support_on_build_plate_only"] = if (supportBuildPlateOnly) "1" else "0"
-      out["support_base_pattern"] = supportPattern
-      if (supportFilament > 0) out["support_filament"] = supportFilament.toString()
-      val iface = when {
-        supportInterfaceFilament == -1 -> supportFilament
-        supportInterfaceFilament > 0 -> supportInterfaceFilament
-        else -> 0
+    if (chose(SliceSettingGroup.SUPPORTS)) {
+      out["enable_support"] = if (supportsEnabled) "1" else "0"
+      if (supportsEnabled) {
+        out["support_type"] = supportType
+        out["support_threshold_angle"] = supportAngle.toString()
+        out["support_on_build_plate_only"] = if (supportBuildPlateOnly) "1" else "0"
+        out["support_base_pattern"] = supportPattern
+        if (supportFilament > 0) out["support_filament"] = supportFilament.toString()
+        val iface = when {
+          supportInterfaceFilament == -1 -> supportFilament
+          supportInterfaceFilament > 0 -> supportInterfaceFilament
+          else -> 0
+        }
+        if (iface > 0) out["support_interface_filament"] = iface.toString()
       }
-      if (iface > 0) out["support_interface_filament"] = iface.toString()
     }
-    out["brim_width"] = brimWidthMm.coerceAtLeast(0f).toString()
-    out["brim_type"] = if (brimWidthMm > 0f) "outer_only" else "no_brim"
-    if (infillDensity in 0f..1f) {
-      out["sparse_infill_density"] = "${(infillDensity * 100).toInt()}%"
+    if (chose(SliceSettingGroup.BRIM)) {
+      out["brim_width"] = brimWidthMm.coerceAtLeast(0f).toString()
+      out["brim_type"] = if (brimWidthMm > 0f) "outer_only" else "no_brim"
     }
-    if (infillPattern != "default") out["sparse_infill_pattern"] = infillPattern
-    if (hasIroningEnabled()) {
+    if (chose(SliceSettingGroup.INFILL)) {
+      if (infillDensity in 0f..1f) {
+        out["sparse_infill_density"] = "${(infillDensity * 100).toInt()}%"
+      }
+      if (infillPattern != "default") out["sparse_infill_pattern"] = infillPattern
+    }
+    if (chose(SliceSettingGroup.IRONING)) {
+      // An applied ironing dialog with ironing switched off must still say so,
+      // or turning it back off would leave the project's own value standing.
       out["ironing_type"] = ironingType
-      out["ironing_pattern"] = ironingPattern
-      out["ironing_flow"] = "$ironingFlow%"
-      out["ironing_spacing"] = ironingSpacing.toString()
-      out["ironing_speed"] = ironingSpeed.toString()
+      if (hasIroningEnabled()) {
+        out["ironing_pattern"] = ironingPattern
+        out["ironing_flow"] = "$ironingFlow%"
+        out["ironing_spacing"] = ironingSpacing.toString()
+        out["ironing_speed"] = ironingSpeed.toString()
+      }
     }
     return out
   }
 
   companion object {
+    /**
+     * Prepare-screen state showing what [project] actually asks for.
+     *
+     * Nothing here counts as a user choice — [chosen] stays empty — so these
+     * values light the toolbar tiles and pre-fill the dialogs without being
+     * written back over the project as overrides. Open a dialog and apply it
+     * and the group becomes a real choice from that point on.
+     */
+    fun seededFrom(project: Project3mfSettings): HelixSliceSettings {
+      val settings = HelixSliceSettings()
+      if (!project.isPresent) return settings
+
+      project.boolean("enable_support")?.let { settings.supportsEnabled = it }
+      project.string("support_type")?.let { settings.supportType = it }
+      project.int("support_threshold_angle")?.let {
+        settings.supportAngle = it.coerceIn(0, 90)
+      }
+      project.boolean("support_on_build_plate_only")?.let { settings.supportBuildPlateOnly = it }
+      project.string("support_base_pattern")?.let { settings.supportPattern = it }
+      project.int("support_filament")?.let { settings.supportFilament = it }
+      project.int("support_interface_filament")?.let { settings.supportInterfaceFilament = it }
+
+      // A brim the project switched off has no width to show, whatever number
+      // is parked in brim_width.
+      val brimOff = project.string("brim_type") == "no_brim"
+      project.float("brim_width")?.let { settings.brimWidthMm = if (brimOff) 0f else it }
+
+      project.fraction("sparse_infill_density")?.let {
+        settings.infillDensity = it.coerceIn(0f, 1f)
+      }
+      project.string("sparse_infill_pattern")?.let { settings.infillPattern = it }
+
+      project.string("ironing_type")?.let { settings.ironingType = it }
+      project.string("ironing_pattern")?.let { settings.ironingPattern = it }
+      project.fraction("ironing_flow")?.let { settings.ironingFlow = (it * 100).toInt() }
+      project.float("ironing_spacing")?.let { settings.ironingSpacing = it }
+      project.int("ironing_speed")?.let { settings.ironingSpeed = it }
+
+      return settings
+    }
+
     /** Build settings from the RN sliceFile options map (all keys optional). */
     fun fromBridgeOptions(
       supportEnabled: Boolean?,
@@ -138,15 +226,46 @@ data class HelixSliceSettings(
       brimWidth: Double?,
     ): HelixSliceSettings {
       val settings = HelixSliceSettings()
-      supportEnabled?.let { settings.supportsEnabled = it }
-      supportType?.let { settings.supportType = it }
-      supportAngle?.let { settings.supportAngle = it.toInt().coerceIn(0, 90) }
-      supportFilament?.let { settings.supportFilament = it }
-      supportInterfaceFilament?.let { settings.supportInterfaceFilament = it }
-      supportBuildPlateOnly?.let { settings.supportBuildPlateOnly = it }
-      supportPattern?.let { settings.supportPattern = it }
-      brimWidth?.let { settings.brimWidthMm = it.toFloat() }
+      // A key the caller sent is a deliberate choice; one it omitted leaves the
+      // project's own value alone.
+      val chosen = mutableSetOf<SliceSettingGroup>()
+      supportEnabled?.let { settings.supportsEnabled = it; chosen += SliceSettingGroup.SUPPORTS }
+      supportType?.let { settings.supportType = it; chosen += SliceSettingGroup.SUPPORTS }
+      supportAngle?.let {
+        settings.supportAngle = it.toInt().coerceIn(0, 90)
+        chosen += SliceSettingGroup.SUPPORTS
+      }
+      supportFilament?.let { settings.supportFilament = it; chosen += SliceSettingGroup.SUPPORTS }
+      supportInterfaceFilament?.let {
+        settings.supportInterfaceFilament = it
+        chosen += SliceSettingGroup.SUPPORTS
+      }
+      supportBuildPlateOnly?.let {
+        settings.supportBuildPlateOnly = it
+        chosen += SliceSettingGroup.SUPPORTS
+      }
+      supportPattern?.let { settings.supportPattern = it; chosen += SliceSettingGroup.SUPPORTS }
+      brimWidth?.let { settings.brimWidthMm = it.toFloat(); chosen += SliceSettingGroup.BRIM }
+      settings.chosen = chosen
       return settings
+    }
+
+    /**
+     * The chosen-group set from a [toJson] payload.
+     *
+     * A record written before this field existed has no "chosen" array. Those
+     * are replays of a slice the user had already configured, so treating them
+     * as "everything the prepare screen can set was chosen" reproduces that
+     * slice exactly rather than quietly re-slicing it with different settings.
+     */
+    private fun chosenFromJson(o: JSONObject): Set<SliceSettingGroup> {
+      val raw = o.optJSONArray("chosen") ?: return SliceSettingGroup.entries.toSet()
+      return (0 until raw.length())
+        .mapNotNull { index ->
+          val name = raw.optString(index)
+          SliceSettingGroup.entries.firstOrNull { it.name == name }
+        }
+        .toSet()
     }
 
     /** Reconstruct from [toJson] output; null/blank/garbage → defaults. */
@@ -170,6 +289,7 @@ data class HelixSliceSettings(
           ironingFlow = o.optInt("ironingFlow", 10),
           ironingSpacing = o.optDouble("ironingSpacing", 0.15).toFloat(),
           ironingSpeed = o.optInt("ironingSpeed", 30),
+          chosen = chosenFromJson(o),
         )
       }.getOrDefault(HelixSliceSettings())
     }
@@ -415,7 +535,7 @@ object HelixSupportSettingsUi {
       title = "Supports",
       iconRes = R.drawable.ic_tool_support,
       content = content,
-      onPrimary = { onApply(draft) },
+      onPrimary = { onApply(draft.choosing(SliceSettingGroup.SUPPORTS)) },
     )
   }
 }
@@ -499,7 +619,7 @@ object HelixInfillSettingsUi {
       title = "Infill",
       iconRes = R.drawable.ic_tool_arrange,
       content = content,
-      onPrimary = { onApply(draft) },
+      onPrimary = { onApply(draft.choosing(SliceSettingGroup.INFILL)) },
     )
   }
 }
@@ -616,7 +736,7 @@ object HelixIroningSettingsUi {
       title = "Ironing",
       iconRes = R.drawable.ic_tool_iron,
       content = content,
-      onPrimary = { onApply(draft) },
+      onPrimary = { onApply(draft.choosing(SliceSettingGroup.IRONING)) },
     )
   }
 }

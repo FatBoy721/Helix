@@ -6,6 +6,7 @@ import React, { useState } from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import CameraFeed from '../../CameraFeed';
+import ScreenMirror from '../../ScreenMirror';
 import {
   alpha,
   CameraMock,
@@ -14,7 +15,9 @@ import {
   Sparkline,
 } from '../shared';
 import type { CockpitData, CockpitTemp, CockpitTool } from './data';
+import { useSettings } from '../../../hooks/useSettings';
 import { t } from '../../../services/i18n';
+import type { BambuFan, BambuHeater } from '../../../services/bambuControls';
 
 // ~16s of trace at the model's 2s sampling interval.
 const MIN_TRACE_POINTS = 8;
@@ -26,6 +29,24 @@ const PANDA_DRY_PRESETS = [
   { label: 'PETG 60°C 12h', temp: 60, hours: 12 },
 ];
 
+const BAMBU_TEMPERATURE_PRESETS: Record<BambuHeater, number[]> = {
+  nozzle: [0, 180, 200, 220, 240, 260],
+  bed: [0, 40, 55, 65, 80, 100],
+};
+const BAMBU_FAN_PRESETS = [0, 25, 50, 75, 100];
+const BAMBU_FANS: { key: BambuFan; label: string }[] = [
+  { key: 'part', label: 'Part' },
+  { key: 'aux', label: 'Aux' },
+  { key: 'chamber', label: 'Chamber' },
+];
+
+function reportBambuControlError(title: string, error: unknown) {
+  Alert.alert(
+    title,
+    error instanceof Error ? error.message : t('The printer did not accept the command.')
+  );
+}
+
 /**
  * Four across, colour in a thick left edge. Carried over from the Rail
  * direction: the edges line up into one striped band, so you find the spool you
@@ -35,35 +56,145 @@ const PANDA_DRY_PRESETS = [
 export function ToolheadRail({
   data,
   onEditSlot,
+  onConfigureMaterialStation,
 }: {
   data: CockpitData;
   onEditSlot: (index: number) => void;
+  onConfigureMaterialStation: () => void;
 }) {
+  const { settings } = useSettings();
+  const activePrinter = settings.printers.find((printer) => printer.id === settings.activePrinterId);
+  const bambu = activePrinter?.kind === 'bambu-lan';
+  const ad5x = activePrinter?.kind === 'flashforge-ad5x';
+  const externalSpool = bambu && data.tools.length === 1;
+  const sectionTitle = externalSpool ? t('External Spool') : bambu ? 'AMS Slots' : ad5x ? 'IFS Slots' : t('Toolheads');
+  const materialStationNeedsSetup =
+    ad5x &&
+    (data.materialStationError === 'missing-credentials' ||
+      data.materialStationError === 'auth-failed');
+
+  const openBambuSlot = (tool: CockpitTool) => {
+    const busy = data.state === 'printing';
+    const actions = [
+      !busy && !tool.empty
+        ? {
+            text: tool.active ? t('Unload') : t('Load'),
+            onPress: () => void data.actions.changeBambuFilament(
+              tool.active ? null : tool.bambuTrayIndex,
+              tool.bambuChangeTemp
+            ).catch((error: unknown) => {
+              Alert.alert(
+                t('Filament change failed'),
+                error instanceof Error
+                  ? error.message
+                  : t('The printer did not accept the filament change.')
+              );
+            }),
+          }
+        : null,
+      { text: t('Edit filament'), onPress: () => onEditSlot(tool.id) },
+      { text: t('Cancel'), style: 'cancel' as const },
+    ].filter(Boolean) as { text: string; style?: 'cancel'; onPress?: () => void }[];
+
+    Alert.alert(
+      externalSpool ? t('External Spool') : `${t('AMS Slot')} ${tool.id + 1}`,
+      busy
+        ? t('Filament cannot be changed while the printer is busy.')
+        : tool.active
+          ? t('This slot is currently feeding the nozzle.')
+          : tool.empty
+            ? t('This slot is empty.')
+            : `${tool.brand} ${tool.material}`.trim(),
+      actions
+    );
+  };
+
   return (
     <View style={styles.section}>
       <SectionLabel palette={P} action={t('Manage')}>
-        {t('Toolheads')}
+        {sectionTitle}
       </SectionLabel>
+      {materialStationNeedsSetup ? (
+        <View style={styles.ifsSetupCard}>
+          <MaterialCommunityIcons name="database-lock-outline" size={21} color={P.accent} />
+          <View style={styles.ifsSetupCopy}>
+            <Text style={styles.ifsSetupTitle}>
+              {data.materialStationError === 'auth-failed'
+                ? t('IFS access was rejected')
+                : t('Connect the AD5X IFS')}
+            </Text>
+            <Text style={styles.ifsSetupText}>
+              {t('Add the printer serial number and Printer ID to show which rolls are actually loaded.')}
+            </Text>
+          </View>
+          <Pressable
+            style={({ pressed }) => [styles.ifsSetupButton, pressed && { opacity: 0.72 }]}
+            onPress={onConfigureMaterialStation}
+            accessibilityRole="button"
+            accessibilityLabel={t('Set up IFS access')}
+          >
+            <Text style={styles.ifsSetupButtonText}>{t('Set up')}</Text>
+          </Pressable>
+        </View>
+      ) : null}
+      {bambu && data.bambu?.amsHealth.length ? (
+        <View style={styles.amsHealthRow}>
+          {data.bambu.amsHealth.map((health) => (
+            <View key={health.unit} style={styles.amsHealthChip}>
+              <MaterialCommunityIcons name="water-percent" size={15} color={P.accent} />
+              <Text style={styles.amsHealthText}>
+                {data.bambu!.amsHealth.length > 1 ? `AMS ${health.unit + 1} · ` : ''}
+                {health.humidity == null ? t('Humidity unavailable') : `${t('Humidity')} ${health.humidity}/5`}
+                {health.temperature == null ? '' : ` · ${Math.round(health.temperature)}°C`}
+              </Text>
+            </View>
+          ))}
+          <Text style={styles.amsHealthHint}>{t('1 is driest')}</Text>
+        </View>
+      ) : null}
       <View style={styles.rail}>
         {data.tools.map((tool) => (
-          <ToolCard key={tool.id} tool={tool} onPress={() => onEditSlot(tool.id)} />
+          <ToolCard
+            key={tool.id}
+            tool={tool}
+            positionLabel={externalSpool
+              ? t('External Spool')
+              : bambu
+                ? `${t('Slot')} ${tool.id + 1}`
+                : ad5x
+                  ? `${t('Slot')} ${tool.id + 1}`
+                  : `T${tool.id + 1}`}
+            onPress={ad5x ? undefined : bambu ? () => openBambuSlot(tool) : () => onEditSlot(tool.id)}
+          />
         ))}
       </View>
     </View>
   );
 }
 
-function ToolCard({ tool, onPress }: { tool: CockpitTool; onPress: () => void }) {
+function ToolCard({
+  tool,
+  positionLabel,
+  onPress,
+}: {
+  tool: CockpitTool;
+  positionLabel: string;
+  onPress?: () => void;
+}) {
+  // Empty Bambu trays still need to open so their saved filament can be edited.
+  const disabled = !onPress;
   return (
     <Pressable
+      disabled={disabled}
       onPress={onPress}
+      accessibilityState={{ disabled }}
       style={({ pressed }) => [
         styles.toolCard,
         tool.active && {
           borderColor: alpha(P.accent, 0.5),
           backgroundColor: alpha(P.accent, 0.06),
         },
-        pressed && { opacity: 0.7 },
+        pressed && !disabled && { opacity: 0.7 },
       ]}
     >
       {/* An empty slot still has a saved colour; painting the edge solid would
@@ -75,7 +206,7 @@ function ToolCard({ tool, onPress }: { tool: CockpitTool; onPress: () => void })
         ]}
       />
       <View style={styles.toolBody}>
-        <Text style={[styles.toolId, tool.active && { color: P.accent }]}>T{tool.id + 1}</Text>
+        <Text style={[styles.toolId, tool.active && { color: P.accent }]}>{positionLabel}</Text>
         {tool.empty ? (
           <Text style={[styles.toolMaterial, { color: P.dim }]}>{t('Empty')}</Text>
         ) : (
@@ -103,22 +234,92 @@ function ToolCard({ tool, onPress }: { tool: CockpitTool; onPress: () => void })
 }
 
 export function TempRow({ cardWidth, data }: { cardWidth: number; data: CockpitData }) {
+  const chooseTemperature = (temp: CockpitTemp) => {
+    const heater: BambuHeater | null = temp.key === 'nozzle'
+      ? 'nozzle'
+      : temp.key === 'bed'
+        ? 'bed'
+        : null;
+    if (!heater) return;
+    Alert.alert(t(`Set ${temp.label} temperature`), t('Choose a target temperature.'), [
+      { text: t('Cancel'), style: 'cancel' },
+      ...BAMBU_TEMPERATURE_PRESETS[heater].map((target) => ({
+        text: `${target === temp.target ? '✓ ' : ''}${target === 0 ? t('Off') : `${target}°C`}`,
+        onPress: () => void data.actions.setBambuTemperature(heater, target)
+          .catch((error: unknown) => reportBambuControlError(t('Temperature change failed'), error)),
+      })),
+    ]);
+  };
+
+  const chooseFanSpeed = (fan: BambuFan, label: string, current: number) => {
+    Alert.alert(`${label} ${t('fan')}`, t('Choose a fan speed.'), [
+      { text: t('Cancel'), style: 'cancel' },
+      ...BAMBU_FAN_PRESETS.map((percent) => ({
+        text: `${percent === current ? '✓ ' : ''}${percent === 0 ? t('Off') : `${percent}%`}`,
+        onPress: () => void data.actions.setBambuFan(fan, percent)
+          .catch((error: unknown) => reportBambuControlError(t('Fan change failed'), error)),
+      })),
+    ]);
+  };
+
+  const visibleFans = BAMBU_FANS.flatMap((fan) => {
+    const speed = data.bambu?.fans[fan.key];
+    return speed == null ? [] : [{ ...fan, speed }];
+  });
+
   return (
     <View style={styles.section}>
-      <SectionLabel palette={P}>{t('Temperatures')}</SectionLabel>
+      <SectionLabel palette={P} action={data.bambu ? t('Tap to set') : undefined}>
+        {t('Temperatures')}
+      </SectionLabel>
       <View style={styles.row}>
         {data.temps.map((temp) => (
-          <TempCard key={temp.key} temp={temp} width={cardWidth} />
+          <TempCard
+            key={temp.key}
+            temp={temp}
+            width={cardWidth}
+            onPress={data.bambu && !data.offline && (temp.key === 'nozzle' || temp.key === 'bed')
+              ? () => chooseTemperature(temp)
+              : undefined}
+          />
         ))}
       </View>
+      {visibleFans.length > 0 ? (
+        <View style={styles.bambuFanRow}>
+          {visibleFans.map((fan) => (
+            <Pressable
+              key={fan.key}
+              disabled={data.offline}
+              accessibilityRole="button"
+              accessibilityLabel={`${fan.label} fan ${fan.speed}%`}
+              onPress={() => chooseFanSpeed(fan.key, fan.label, fan.speed)}
+              style={({ pressed }) => [
+                styles.bambuFanChip,
+                data.offline && styles.pandaChipDisabled,
+                pressed && { opacity: 0.68 },
+              ]}
+            >
+              <MaterialCommunityIcons name="fan" size={16} color={P.accent} />
+              <Text style={styles.bambuFanLabel}>{fan.label}</Text>
+              <Text style={styles.bambuFanValue}>{fan.speed}%</Text>
+            </Pressable>
+          ))}
+        </View>
+      ) : null}
     </View>
   );
 }
 
-function TempCard({ temp, width }: { temp: CockpitTemp; width: number }) {
+function TempCard({ temp, width, onPress }: { temp: CockpitTemp; width: number; onPress?: () => void }) {
   const heating = temp.target > 0;
   return (
-    <View style={[styles.tempCard, { width }]}>
+    <Pressable
+      disabled={!onPress}
+      accessibilityRole={onPress ? 'button' : undefined}
+      accessibilityLabel={onPress ? `${temp.label} ${temp.value}°, target ${temp.target}°` : undefined}
+      onPress={onPress}
+      style={({ pressed }) => [styles.tempCard, { width }, pressed && { opacity: 0.72 }]}
+    >
       <MaterialCommunityIcons name={temp.icon} size={17} color={P.dim} />
       <Text style={styles.tempLabel}>{temp.label}</Text>
       <View style={styles.tempValueRow}>
@@ -144,7 +345,7 @@ function TempCard({ temp, width }: { temp: CockpitTemp; width: number }) {
           <View style={styles.tempWarmupRule} />
         </View>
       )}
-    </View>
+    </Pressable>
   );
 }
 
@@ -285,10 +486,9 @@ function Chip({
 }
 
 /**
- * The printer's own touchscreen, mirrored. In the real build this is the `gui`
- * webcam (name === 'gui' or a /screen/ URL) rendered in a WebView that must
- * stay MOUNTED when hidden — remounting /screen/ makes the printer report
- * "No Signal". Hide it with height 0 + pointerEvents none instead.
+ * The printer's own touchscreen, mirrored. On the AD5X this is helixd's live
+ * /api/screen mirror with remote taps (ScreenMirror); other machines fall back
+ * to the `gui` webcam in a WebView.
  */
 export function PrinterScreen({
   data,
@@ -301,35 +501,43 @@ export function PrinterScreen({
   onInteractStart: () => void;
   onInteractEnd: () => void;
 }) {
-  // The U1 panel is 4:3, unlike the 16:9 print camera — a shared ratio would
-  // letterbox one of them.
-  const height = Math.round(width * (3 / 4));
+  const { settings } = useSettings();
+  const activePrinter = settings.printers.find((p) => p.id === settings.activePrinterId);
+  // helixd (screen + tap daemon) only exists on the AD5X — U1/generic keep the
+  // legacy gui webcam mirror.
+  const useLiveScreen = activePrinter?.kind === 'flashforge-ad5x';
+
+  // The legacy U1 panel is 4:3; the live AD5X panel sizes itself (5:3) via the
+  // mirror's aspectRatio, so no fixed height is needed there.
+  const legacyHeight = Math.round(width * (3 / 4));
 
   return (
     <View style={styles.section}>
       <SectionLabel palette={P}>{t('Printer screen')}</SectionLabel>
-      {/* The embedded panel forwards touches (including drags) to the printer.
-          The parent ScrollView would otherwise claim any vertical movement as a
-          scroll, so it's disabled for the duration of a touch here — without
-          this the screen only ever sees taps, and its sliders/menus are dead. */}
+      {/* The embedded panel forwards touches to the printer. The parent
+          ScrollView would otherwise claim vertical movement as a scroll, so
+          it's disabled for the duration of a touch here — without this the
+          screen only ever sees taps, and its sliders/menus are dead. */}
       <View
-        style={[styles.screenCard, { height }]}
+        style={[styles.screenCard, !useLiveScreen && { height: legacyHeight }]}
         onTouchStart={onInteractStart}
         onTouchEnd={onInteractEnd}
         onTouchCancel={onInteractEnd}
       >
-        {data.guiScreen ? (
+        {useLiveScreen ? (
+          <ScreenMirror />
+        ) : data.guiScreen ? (
           <CameraFeed
             url={data.guiScreen.url}
             snapshotUrl={data.guiScreen.snapshotUrl}
-            height={height}
+            height={legacyHeight}
             chromeless
             showControls={false}
           />
         ) : (
           <CameraMock
             palette={P}
-            height={height}
+            height={legacyHeight}
             radius={0}
             label={t('NO PRINTER SCREEN')}
             icon="monitor-dashboard"
@@ -360,6 +568,41 @@ const styles = StyleSheet.create({
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
 
   rail: { flexDirection: 'row', gap: 8 },
+  ifsSetupCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    padding: 12,
+    borderRadius: P.radius - 5,
+    borderWidth: 1,
+    borderColor: alpha(P.accent, 0.35),
+    backgroundColor: alpha(P.accent, 0.07),
+  },
+  ifsSetupCopy: { flex: 1, gap: 2 },
+  ifsSetupTitle: { color: P.text, fontSize: 12, fontWeight: '800' },
+  ifsSetupText: { color: P.dim, fontSize: 10, lineHeight: 14 },
+  ifsSetupButton: {
+    minHeight: 36,
+    justifyContent: 'center',
+    paddingHorizontal: 13,
+    borderRadius: 999,
+    backgroundColor: P.accentFill,
+  },
+  ifsSetupButtonText: { color: P.onAccent, fontSize: 11, fontWeight: '800' },
+  amsHealthRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 7 },
+  amsHealthChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    height: 30,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: alpha(P.accent, 0.28),
+    backgroundColor: alpha(P.accent, 0.07),
+  },
+  amsHealthText: { color: P.text, fontSize: 11, fontWeight: '700' },
+  amsHealthHint: { color: P.dim, fontSize: 10, fontWeight: '600' },
   toolCard: {
     flex: 1,
     flexDirection: 'row',
@@ -411,6 +654,22 @@ const styles = StyleSheet.create({
   tempValueRow: { flexDirection: 'row', alignItems: 'baseline', gap: 3, marginBottom: 5 },
   tempValue: { color: P.text, fontSize: 26, fontWeight: '700', letterSpacing: -0.8 },
   tempTarget: { color: P.dim, fontSize: 11, fontWeight: '700' },
+  bambuFanRow: { flexDirection: 'row', gap: 8 },
+  bambuFanChip: {
+    flex: 1,
+    minHeight: 44,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+    borderRadius: P.radius - 6,
+    borderWidth: 1,
+    borderColor: P.border,
+    backgroundColor: P.surface,
+    paddingHorizontal: 7,
+  },
+  bambuFanLabel: { color: P.dim, fontSize: 10, fontWeight: '700' },
+  bambuFanValue: { color: P.text, fontSize: 11, fontWeight: '800' },
 
   macroScroll: { gap: 8, paddingRight: 4 },
   macroPill: {
