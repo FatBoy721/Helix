@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AppState, Image, Modal, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { WebView, type WebViewMessageEvent } from 'react-native-webview';
+import { buildH264PlayerHtml, resolveH264Url } from './h264Player';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -117,6 +118,7 @@ function NativeSnapshotFeed({
 }
 
 const WEBRTC_FIRST_FRAME_MESSAGE = 'helix:webrtc:first-frame';
+const H264_FAILED_MESSAGE = 'helix:h264:failed';
 const LIVE_PREVIEW_TIMEOUT_MS = 15_000;
 
 // camera-streamer serves stream.mjpg at the full sensor rate — measured on a
@@ -127,17 +129,21 @@ const LIVE_PREVIEW_TIMEOUT_MS = 15_000;
 // every other request behind it — Moonraker polls, SET_LED, the printer's own
 // touchscreen.
 //
-// 20 is measured, not guessed. Sweeping fps against ping on a U1 (idle
-// baseline ~10ms):
+// Two independent limits, and both are needed.
 //
-//   fps=15 -> 2.13MB/s,  7.5ms      fps=25 -> 2.80MB/s, 26.6ms
-//   fps=20 -> 2.80MB/s,  9.5ms      fps=30 -> 3.87MB/s, 34.4ms
-//   uncapped -> 5.51MB/s, 350ms
+// 1. This cap, because the U1's 2.4GHz radio is the real bottleneck. Uncapped,
+//    stream.mjpg sends ~5.8MB/s of 184KB frames; the link tops out around 5MB/s,
+//    so 2.8MB backs up in nginx's send queue and every other request — Moonraker
+//    polls, SET_LED, the printer's own touchscreen — waits ~290ms behind it.
+//    Measured with the fast reader below already in place, so this is the radio,
+//    not the decoder. At 20 the queue stays empty and ping sits at the ~10ms idle
+//    baseline.
+// 2. The reader in liveLoop, which drops stale frames, because the cap alone
+//    does not stop a phone that decodes slower than the link delivers from
+//    falling behind.
 //
-// 25 returns the same bitrate as 20 - the sensor tops out near 20 at this
-// frame size - so asking for more yields no extra frames and only buys
-// queueing delay. 20 is the last setting that still streams at the idle
-// latency baseline.
+// stream.mjpg honours only `fps`; width/res/quality are ignored. Set 0 to
+// disable the cap.
 const MJPEG_BRIDGE_FPS = 20;
 
 function resolveMjpegBridgeUrl(url: string): string | undefined {
@@ -145,7 +151,7 @@ function resolveMjpegBridgeUrl(url: string): string | undefined {
     const parsed = new URL(url);
     if (!/\/webcam\/webrtc\/?$/i.test(parsed.pathname)) return undefined;
     parsed.pathname = '/webcam/stream.mjpg';
-    parsed.search = `?fps=${MJPEG_BRIDGE_FPS}`;
+    parsed.search = MJPEG_BRIDGE_FPS > 0 ? `?fps=${MJPEG_BRIDGE_FPS}` : '';
     parsed.hash = '';
     return parsed.toString();
   } catch {
@@ -242,6 +248,10 @@ var readySent = false;
 var snapshotTimer = null;
 var reloadTimer = null;
 var readyPoll = null;
+var controller = null;
+var prevUrl = null;
+var lastFrame = 0;
+var watchdog = null;
 
 function setStatus(t) {
   statusEl.textContent = t;
@@ -267,37 +277,99 @@ function snapshotLoop() {
   img.src = bust(SRC);
 }
 
-function liveLoop() {
-  // A multipart/x-mixed-replace img does NOT reliably fire onload per frame —
-  // the browser keeps one request open and swaps decoded parts into the same
-  // element. Waiting on onload therefore never fires the first-frame message,
-  // the "Starting live camera…" snapshot overlay never lifts, and a working
-  // stream sits hidden behind one stale still (which is what "camera frozen"
-  // actually was). Poll naturalWidth instead: non-zero means a part decoded.
-  readyPoll = setInterval(function () {
-    if (img.naturalWidth > 0) {
-      clearInterval(readyPoll);
-      notifyReady();
-      setStatus('');
-    }
-  }, 250);
-  img.onload = function () { notifyReady(); setStatus(''); };
-  img.onerror = function () {
-    setStatus('reconnecting\\u2026');
-    if (stopped) return;
-    if (reloadTimer) clearTimeout(reloadTimer);
-    reloadTimer = setTimeout(function () { img.src = bust(SRC); }, 800);
-  };
-  // No cache-busting query here: the native multipart decoder keeps this one
-  // request open and streams frames into it, it does not re-fetch per frame.
-  img.src = SRC;
+// Decode the MJPEG stream by hand instead of assigning the multipart URL to
+// img.src and letting the browser do it.
+//
+// The native decoder is a SLOW consumer: it decodes every part in order, so a
+// phone that cannot keep up stops draining the socket, TCP back-pressures, and
+// the frames pile up on the PRINTER. Measured on a U1: 2.5MB (~13 frames)
+// stuck in nginx's send queue, the picture about a second stale, and every
+// other request — Moonraker polls, SET_LED, the printer's own touchscreen —
+// queued behind it at ~750ms. It also never reliably fires onload per frame.
+//
+// Reading it ourselves fixes both: the socket is drained as fast as the network
+// delivers, and of everything buffered we render only the NEWEST complete frame
+// and throw the rest away. The stream stays live, the send queue stays empty,
+// and the phone decodes only what it can actually display.
+//
+// This is how Helix did it up to v1.2.8; the switch to the native decoder is
+// what made the feed feel slow.
+function findMarker(b, second, from) {
+  for (var i = from; i < b.length - 1; i++) {
+    if (b[i] === 0xFF && b[i + 1] === second) return i;
+  }
+  return -1;
 }
+
+function showFrame(bytes) {
+  lastFrame = Date.now();
+  setStatus('');
+  var u = URL.createObjectURL(new Blob([bytes], { type: 'image/jpeg' }));
+  img.onload = function () {
+    if (prevUrl) URL.revokeObjectURL(prevUrl);
+    prevUrl = u;
+    notifyReady();
+  };
+  img.src = u;
+}
+
+async function liveLoop() {
+  while (!stopped) {
+    controller = new AbortController();
+    try {
+      var res = await fetch(bust(SRC), { cache: 'no-store', signal: controller.signal });
+      if (!res.ok || !res.body) throw new Error('http ' + res.status);
+      var reader = res.body.getReader();
+      var buf = new Uint8Array(0);
+      for (;;) {
+        var r = await reader.read();
+        if (r.done || stopped) break;
+        var nb = new Uint8Array(buf.length + r.value.length);
+        nb.set(buf, 0);
+        nb.set(r.value, buf.length);
+        buf = nb;
+        // Pull out every complete frame this chunk completed, keep the last.
+        var latest = null;
+        for (;;) {
+          var soi = findMarker(buf, 0xD8, 0);
+          if (soi < 0) {
+            // No start marker at all: drop a runaway buffer rather than grow.
+            if (buf.length > 2000000) buf = new Uint8Array(0);
+            break;
+          }
+          var eoi = findMarker(buf, 0xD9, soi + 2);
+          if (eoi < 0) {
+            if (soi > 0) buf = buf.slice(soi);
+            break;
+          }
+          latest = buf.slice(soi, eoi + 2);
+          buf = buf.slice(eoi + 2);
+        }
+        if (latest) showFrame(latest);
+      }
+    } catch (e) {}
+    if (stopped) return;
+    setStatus('reconnecting\\u2026');
+    await new Promise(function (r) { setTimeout(r, 800); });
+  }
+}
+
+// A stalled stream keeps the socket open with no bytes; abort so the loop
+// reconnects rather than showing a frozen still forever.
+watchdog = setInterval(function () {
+  if (!SNAPSHOT && lastFrame && Date.now() - lastFrame > 6000 && controller) {
+    try { controller.abort(); } catch (e) {}
+  }
+}, 2000);
 
 function stopPlayer() {
   stopped = true;
   if (snapshotTimer) clearInterval(snapshotTimer);
   if (reloadTimer) clearTimeout(reloadTimer);
   if (readyPoll) clearInterval(readyPoll);
+  if (watchdog) clearInterval(watchdog);
+  if (controller) { try { controller.abort(); } catch (e) {} }
+  if (prevUrl) { try { URL.revokeObjectURL(prevUrl); } catch (e) {} }
 }
 
 window.addEventListener('pagehide', stopPlayer);
@@ -481,6 +553,8 @@ export default function CameraFeed({
   const [savingSnapshot, setSavingSnapshot] = useState(false);
   const [readyPlayerKey, setReadyPlayerKey] = useState<string | null>(null);
   const [snapshotFallbackKey, setSnapshotFallbackKey] = useState<string | null>(null);
+  // Set when the H.264 player reports it cannot run here; drops to MJPEG.
+  const [h264FailedKey, setH264FailedKey] = useState<string | null>(null);
   const [screenFocused, setScreenFocused] = useState(true);
   const [appActive, setAppActive] = useState(AppState.currentState === 'active');
   const webViewRef = useRef<WebView>(null);
@@ -519,27 +593,51 @@ export default function CameraFeed({
   // here, or it takes the whole LAN link down with it. iOS is unaffected:
   // WKWebView has solid native WebRTC support and does not hit the Android
   // ICE issue, so it loads the real WebRTC page, which is rate-controlled.
+  const playerKey = `${url}-${nonce}-${fullscreen ? 'fs' : 'card'}`;
+
+  // Prefer the printer's H.264 endpoint on Android: the SAME 1080p30 video as
+  // stream.mjpg for 1.9Mbit/s instead of 44Mbit/s, over plain HTTP. MJPEG stays
+  // as the fallback for anything that cannot mux or decode it.
+  const h264Url = useMemo(
+    () =>
+      isWebrtcPage && Platform.OS === 'android' && h264FailedKey !== playerKey
+        ? resolveH264Url(url)
+        : undefined,
+    [h264FailedKey, isWebrtcPage, playerKey, url],
+  );
+
   const mjpegBridgeUrl = useMemo(
-    () => (isWebrtcPage && Platform.OS === 'android' ? resolveMjpegBridgeUrl(url) : undefined),
-    [isWebrtcPage, url],
+    () =>
+      isWebrtcPage && Platform.OS === 'android' && !h264Url
+        ? resolveMjpegBridgeUrl(url)
+        : undefined,
+    [h264Url, isWebrtcPage, url],
   );
   const html = useMemo(
     () => buildPlayerHtml(mjpegBridgeUrl ?? url, isSnapshot),
     [isSnapshot, mjpegBridgeUrl, url],
   );
   const screenHtml = useMemo(() => buildScreenPlayerHtml(url), [url]);
+  const h264Html = useMemo(
+    () =>
+      h264Url
+        ? buildH264PlayerHtml(h264Url, WEBRTC_FIRST_FRAME_MESSAGE, H264_FAILED_MESSAGE)
+        : '',
+    [h264Url],
+  );
   const webViewSource = useMemo(
     () =>
-      isWebrtcPage && !mjpegBridgeUrl
-        ? { uri: url }
-        : { html: isRemoteScreen ? screenHtml : html, baseUrl: origin },
-    [html, isRemoteScreen, isWebrtcPage, mjpegBridgeUrl, origin, screenHtml, url],
+      h264Url
+        ? { html: h264Html, baseUrl: origin }
+        : isWebrtcPage && !mjpegBridgeUrl
+          ? { uri: url }
+          : { html: isRemoteScreen ? screenHtml : html, baseUrl: origin },
+    [h264Html, h264Url, html, isRemoteScreen, isWebrtcPage, mjpegBridgeUrl, origin, screenHtml, url],
   );
   const screenPauseBootstrap = useMemo(
     () => `window.__helixScreenPaused = ${streamPaused ? 'true' : 'false'}; true;`,
     [streamPaused],
   );
-  const playerKey = `${url}-${nonce}-${fullscreen ? 'fs' : 'card'}`;
   const previewUri = useMemo(
     () => (snapshotUrl ? cacheBustUrl(snapshotUrl) : undefined),
     [snapshotUrl, playerKey],
@@ -561,6 +659,7 @@ export default function CameraFeed({
     return () => clearTimeout(timeout);
   }, [playerKey, showSnapshotPreview]);
 
+
   const syncRemoteScreenPause = useCallback(() => {
     if (!isRemoteScreen) return;
     const nextPaused = streamPaused ? 'true' : 'false';
@@ -578,9 +677,9 @@ export default function CameraFeed({
   }, [syncRemoteScreenPause]);
 
   const handleWebViewMessage = (event: WebViewMessageEvent) => {
-    if (event.nativeEvent.data === WEBRTC_FIRST_FRAME_MESSAGE) {
-      setReadyPlayerKey(playerKey);
-    }
+    const data = event.nativeEvent.data;
+    if (data === WEBRTC_FIRST_FRAME_MESSAGE) setReadyPlayerKey(playerKey);
+    else if (data === H264_FAILED_MESSAGE) setH264FailedKey(playerKey);
   };
 
   const openFullscreen = async () => {
@@ -685,7 +784,7 @@ export default function CameraFeed({
           injectedJavaScriptBeforeContentLoaded={
             isRemoteScreen ? screenPauseBootstrap : undefined
           }
-          onMessage={isWebrtcPage ? handleWebViewMessage : undefined}
+          onMessage={isWebrtcPage || h264Url ? handleWebViewMessage : undefined}
           onLoadEnd={isRemoteScreen ? syncRemoteScreenPause : undefined}
         />
       ) : (
