@@ -1,0 +1,23 @@
+# Scene 7 of 8 — the bed mesh surface.
+# Depends on store-home having run first in the same capture: goldie installs
+# the APK once per run, so the printer configured there persists across flows
+# (launch: does not clear data). This flow cannot declare executionPrerequisite
+# because it starts with launch: — the two are mutually exclusive.
+#
+# Tabs are selected by their visible label. The bottom bar labels are real text
+# ("Files", "Slice", "Tools"), so no coordinates are needed.
+
+steps:
+  - launch: org.crabcore.u1control
+  - tap:
+      text: Tools
+  - await:
+      visible:
+        text: Bed Mesh
+  - tap:
+      text: Bed Mesh
+  - await:
+      visible:
+        text: Surface
+  # The 3D surface builds progressively; 4s covers a cold mesh fetch + render.
+  - wait: 4000

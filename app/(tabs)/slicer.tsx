@@ -876,12 +876,27 @@ export default function SliceLabScreen() {
     const collapseSlot = allSameTarget ? targets[0] : -1;
 
     // Re-slice when the user routed any file tool to a different loaded slot.
-    const wantsReslice =
-      !isBambu &&
-      fileTools.some((ft) => fullTarget[ft] !== ft) &&
+    const routedElsewhere = !isBambu && fileTools.some((ft) => fullTarget[ft] !== ft);
+    const canReslice =
       Boolean(slice.result.modelPath) &&
       Boolean(slice.result.sliceSettings) &&
       Boolean(slice.result.materialProfiles);
+    const wantsReslice = routedElsewhere && canReslice;
+
+    // Routing to a different material and NOT re-slicing means uploading gcode
+    // whose temps/flow belong to the material it was sliced for. That used to
+    // happen silently, which made it look like remapping simply did nothing —
+    // the file went up unchanged and printed at the original material's temps.
+    // Refuse instead of lying: the user can still print by re-slicing manually.
+    if (routedElsewhere && !canReslice) {
+      setPrintStart({
+        state: 'error',
+        message:
+          'Cannot re-slice for the selected lane — the original model is no longer available. '
+          + 'Re-open the model and slice again, or route this print back to its own lane.',
+      });
+      return;
+    }
 
     const requiredToolMask = wantsReslice
       ? targets.reduce((mask, t) => mask | (1 << t), 0)
@@ -984,7 +999,16 @@ export default function SliceLabScreen() {
             filamentSlots.find((s) => s.index === collapseSlot)?.material ?? `slot ${collapseSlot}`;
           setPrintStart({ state: 'starting', message: `Re-slicing for ${chosenMaterial}…` });
           setSendProgress(0.05);
-          const collapsedPath = await collapseModelToTool(slice.result.modelPath as string, collapseSlot);
+          // Collapsing rewrites per-object extruder tags inside a 3MF. An STL
+          // carries no such tags — it is a single mesh — so there is nothing to
+          // reassign and initialTool below already does the whole job. Running
+          // the collapse on one threw "No objects found in <name>.stl", because
+          // it looks for a 3D/3dmodel.model zip entry an STL does not have, and
+          // that killed the send outright.
+          const modelPath = slice.result.modelPath as string;
+          const collapsedPath = /\.3mf$/i.test(modelPath)
+            ? await collapseModelToTool(modelPath, collapseSlot)
+            : modelPath;
           const resliced = await sliceModelFile(
             collapsedPath,
             {
@@ -1470,6 +1494,14 @@ export default function SliceLabScreen() {
       onSend={uploadAndPrint}
       printerKind={activePrinterKind}
       externalSpool={bambuExternalSpool}
+      // Mirrors the send-time gate in uploadAndPrint, so the sheet only promises
+      // a re-slice when one can actually run.
+      canReslice={
+        slice.state === 'success'
+        && Boolean(slice.result.modelPath)
+        && Boolean(slice.result.sliceSettings)
+        && Boolean(slice.result.materialProfiles)
+      }
     />
     {alertDialog}
     </View>

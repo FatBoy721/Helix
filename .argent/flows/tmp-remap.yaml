@@ -1,0 +1,9 @@
+steps:
+  - tap:
+      text: Upload & Print
+  - await:
+      visible:
+        text: Hold to start
+  - await:
+      idle: true
+  - wait: 1500

@@ -52,7 +52,13 @@ import {
   type BambuHeater,
 } from '../services/bambuControls';
 
-export type DashboardState = 'offline' | 'idle' | 'printing' | 'finished' | 'error';
+export type DashboardState =
+  | 'offline'
+  | 'connecting'
+  | 'idle'
+  | 'printing'
+  | 'finished'
+  | 'error';
 
 export interface DashboardTool {
   id: number;
@@ -259,6 +265,9 @@ function pandaModeLabel(
   if (target > 0 || state.work_on === true) return t('Manual');
   return heater ? t('Idle') : t('not detected');
 }
+
+/** Shared empty LED palette — a fresh [] would be a new identity per render. */
+const NO_LED_COLORS: number[][] = [];
 
 export function useDashboardModel(): DashboardModel {
   const {
@@ -554,6 +563,10 @@ export function useDashboardModel(): DashboardModel {
     finished && !!filename && observedLiveFilename === filename && dismissedJob !== jobKey;
 
   const state = useMemo<DashboardState>(() => {
+    // 'connecting' is a real transport state, not a dead printer. Folding it
+    // into 'offline' made every printer switch flash OFFLINE for the couple of
+    // seconds the new transport takes to come up, which reads as a fault.
+    if (connection === 'connecting') return 'connecting';
     if (connection !== 'connected') return 'offline';
     if (klippyState === 'error' || klippyState === 'shutdown') return 'error';
     if (printing || paused) return 'printing';
@@ -732,7 +745,13 @@ export function useDashboardModel(): DashboardModel {
     () => Object.keys(status).find((k) => /^(led|neopixel|dotstar)\s/.test(k)),
     [status]
   );
-  const ledColors: number[][] = status[ledKey ?? '']?.color_data ?? [];
+  // Memoised, and falling back to a shared constant rather than a fresh []:
+  // a new array literal here is a new identity on EVERY render, which made
+  // every consumer that depends on it (toggleLight below) unstable too.
+  const ledColors: number[][] = useMemo(
+    () => status[ledKey ?? '']?.color_data ?? NO_LED_COLORS,
+    [status, ledKey],
+  );
   const reportedLedOn = ledColors.some((c) => Array.isArray(c) && c.some((v) => num(v) > 0));
   const [ledOverride, setLedOverride] = useState<{ key: string; on: boolean } | null>(null);
   const activeLedOverride = ledOverride && ledOverride.key === ledKey ? ledOverride : null;
@@ -742,20 +761,32 @@ export function useDashboardModel(): DashboardModel {
     if (!pending || pending.key !== ledKey || !ledColors.length) return;
     if (reportedLedOn === pending.on) setLedOverride(null);
   }, [ledColors.length, ledKey, ledOverride, reportedLedOn]);
+  // The handler reads the live values through a ref instead of closing over
+  // them, so its identity depends only on [ledKey, sendGcode]. Closing over
+  // lightOn/ledColors gave the dashboard a brand-new onToggleLight on every
+  // render, which propagates a new prop into the camera card each time.
+  const lightStateRef = useRef({ on: lightOn, hasWhite: false });
+  lightStateRef.current = {
+    on: lightOn,
+    hasWhite: ledColors.some((c) => Array.isArray(c) && c.length > 3),
+  };
   const toggleLight = useMemo(() => {
     if (!ledKey) return undefined;
     return () => {
       const name = ledKey.replace(/^(led|neopixel|dotstar)\s+/, '');
-      const hasWhite = ledColors.some((c) => Array.isArray(c) && c.length > 3);
-      const v = lightOn ? 0 : 1;
-      setLedOverride({ key: ledKey, on: !lightOn });
+      const { on: currentOn, hasWhite } = lightStateRef.current;
+      const v = currentOn ? 0 : 1;
+      setLedOverride({ key: ledKey, on: !currentOn });
+      // Drive every channel the fixture reports together — guessing which
+      // single channel (RGB vs WHITE) actually drives the visible light and
+      // only touching that one silently no-ops when the guess is wrong.
       sendGcode(
         hasWhite
-          ? `SET_LED LED=${name} RED=0 GREEN=0 BLUE=0 WHITE=${v} SYNC=0`
+          ? `SET_LED LED=${name} RED=${v} GREEN=${v} BLUE=${v} WHITE=${v} SYNC=0`
           : `SET_LED LED=${name} RED=${v} GREEN=${v} BLUE=${v} SYNC=0`
       );
     };
-  }, [ledColors, ledKey, lightOn, sendGcode]);
+  }, [ledKey, sendGcode]);
 
   // ---------------------------------------------------------------- misc
   const visibleMacros = useMemo(

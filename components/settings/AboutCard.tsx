@@ -245,30 +245,15 @@ export default function AboutCard() {
 
   const chooseUpdateSource = () => {
     if (checkingUpdates || downloadingUpdate) return;
+    // Helix ships from GitHub releases. A build made for a store listing
+    // (HELIX_DISTRIBUTION=play) defers to it; every other build goes straight
+    // to the release check rather than making the user pick a source that only
+    // ever has one right answer.
     if (!canInstallGitHubApk) {
       openPlayStore().catch(() => {});
       return;
     }
-    setDialog({
-      title: t('Check for updates'),
-      message:
-        'Choose GitHub for the direct APK, or Play Store for your enrolled testing track.',
-      icon: 'update',
-      actions: [
-        { text: t('Not now'), onPress: closeDialog },
-        {
-          text: 'GitHub APK',
-          icon: 'github',
-          onPress: checkGitHubForUpdates,
-        },
-        {
-          text: 'Play Store',
-          icon: 'google-play',
-          variant: 'primary',
-          onPress: openPlayStore,
-        },
-      ],
-    });
+    checkGitHubForUpdates();
   };
 
   const showOpenSourceLicenses = () => {

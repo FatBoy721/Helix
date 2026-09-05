@@ -1,0 +1,67 @@
+# Scene 2 of 8 — sliced G-code preview. The headline claim of the app, so it
+# runs a real slice on the device rather than faking a preview.
+# Depends on store-home having run first in the same capture: goldie installs
+# the APK once per run, so the printer configured there persists across flows
+# (launch: does not clear data). This flow cannot declare executionPrerequisite
+# because it starts with launch: — the two are mutually exclusive.
+
+steps:
+  - launch: org.crabcore.u1control
+  - tap:
+      text: Slice
+  - await:
+      visible:
+        text: FILAMENT
+  - tap:
+      text: Upload .3mf / .stl
+
+  # System document picker (com.google.android.documentsui, outside the app).
+  # It opens on "Recent", which is EMPTY for this file — Recent only lists
+  # documents that have actually been opened, and a freshly pushed .stl has
+  # not been. So navigate explicitly: roots drawer -> Downloads.
+  #
+  # The drawer is an overlay that `describe` does not enumerate, so its
+  # contents look invisible when inspecting; the text selectors resolve
+  # against it anyway. Do not "fix" these by replacing them with coordinates.
+  - await:
+      visible:
+        text: Show roots
+  - tap:
+      text: Show roots
+  - await:
+      visible:
+        text: Open from
+  - tap:
+      text: Downloads
+  # Wait for the drawer to actually close. uiautomator describes the file list
+  # THROUGH the open drawer, so the row looks present and tappable while the
+  # drawer is still covering it — taps land on the drawer and silently do
+  # nothing. Gate on the drawer's own title disappearing.
+  - await:
+      hidden:
+        text: Open from
+  - wait: 800
+  - await:
+      visible:
+        text: Reduction Gear 22T.stl
+  - tap:
+      text: Reduction Gear 22T.stl
+  - await:
+      visible:
+        text: Prepare & Slice
+  - wait: 2000
+  - tap:
+      text: Prepare & Slice
+  - await:
+      visible:
+        text: Slice
+  - wait: 3000
+  - tap:
+      text: Slice
+  # A real slice of ~900 triangles at 0.2mm. This is CPU-bound on the emulator,
+  # so the wait is generous; the await below is what actually gates it.
+  - await:
+      visible:
+        text: Upload & Print
+      timeout: 180000
+  - wait: 2500

@@ -43,7 +43,10 @@ export interface CockpitJob {
 }
 
 export interface CockpitData {
+  /** True while unreachable OR still dialling — both mean "cannot send yet". */
   offline: boolean;
+  /** Distinguishes "still dialling" from "not there", for labelling only. */
+  connecting: boolean;
   state: PrinterState;
   paused: boolean;
   actions: DashboardActions;
@@ -96,12 +99,16 @@ function macroIcon(name: string): IconName {
 
 export function useCockpitData(): CockpitData {
   const model = useDashboardModel();
-  const offline = model.state === 'offline';
+  const connecting = model.state === 'connecting';
+  // Controls stay disabled while connecting — there is no transport to send on
+  // yet — but the label must not claim the printer is offline.
+  const offline = model.state === 'offline' || connecting;
   // Offline still has to render something; idle is the least misleading shell.
   const state: PrinterState = offline ? 'idle' : (model.state as PrinterState);
 
   return {
     offline,
+    connecting,
     state,
     paused: model.paused,
     actions: model.actions,

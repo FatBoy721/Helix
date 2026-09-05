@@ -47,7 +47,9 @@ import org.crabcore.u1control.slicing.PreprocessRouting.Tool
  */
 class HelixPreprocessSheet(
   private val activity: Activity,
-  private val config: Config,
+  // var, not val: a re-slice on start replaces the gcode, and every figure the
+  // sheet is showing then belongs to the file that was just thrown away.
+  private var config: Config,
 ) {
   data class Config(
     val fileName: String,
@@ -76,6 +78,13 @@ class HelixPreprocessSheet(
     val onPrinterPicked: (HelixPrinterStore.Printer) -> Unit,
     /** file tool → physical lane, plus the chosen print preferences. */
     val onSend: (Map<Int, Int>, Set<Pref>) -> Unit,
+    /**
+     * Material the gcode was sliced with for a given file tool, or null when it
+     * cannot be determined. Drives the "will re-slice" line: routing a tool onto
+     * a lane holding a different polymer re-slices on send, so the estimate
+     * above it still describes the ORIGINAL material until that runs.
+     */
+    val slicedMaterialFor: (Int) -> String? = { null },
   )
 
   data class PrinterState(
@@ -339,6 +348,32 @@ class HelixPreprocessSheet(
     progressPct?.text = "$pct%"
   }
 
+  /**
+   * Re-slicing for a lane's material replaces the gcode mid-send, so the time,
+   * weight, layer count and per-tool grams on the sheet all describe the slice
+   * that was just discarded — and the "re-slices for PETG on start" notice
+   * describes a change that has already happened. Refresh them in place.
+   *
+   * Safe to call while the send overlay is up: the overlay is a child of [root]
+   * and [render] only rebuilds [body] and [footer] underneath it.
+   */
+  fun onResliced(
+    estTimeSeconds: Float,
+    estGrams: Float,
+    layers: Int,
+    perToolGrams: List<Double>,
+    required: List<Int>,
+  ) = activity.runOnUiThread {
+    config = config.copy(
+      estTimeSeconds = estTimeSeconds,
+      estGrams = estGrams,
+      layers = layers,
+      perToolGrams = perToolGrams,
+      required = required,
+    )
+    render()
+  }
+
   fun onSendFailed(message: String) = activity.runOnUiThread {
     sending = false
     errorMessage = message
@@ -381,6 +416,7 @@ class HelixPreprocessSheet(
 
     body.addSpaced(hero(), 0, fullWidth())
     body.addSpaced(statBand(tools), 11, fullWidth())
+    resliceNotice(tools)?.let { body.addSpaced(it, 8, fullWidth()) }
     body.addSpaced(
       if (notes.isNotEmpty()) notice(notes, blocked) else cleanRow(rerouted),
       11,
@@ -460,6 +496,42 @@ class HelixPreprocessSheet(
     pill.addSpaced(HelixIcons.view(activity, HelixIcons.CHEVRON_DOWN, 15f, P.DIM), 5)
     pill.layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(28))
     return pill
+  }
+
+  /**
+   * "Sliced for PLA · re-slices for PETG" — shown when a routed lane holds a
+   * different polymer than the file was sliced with.
+   *
+   * The stat band above is the ORIGINAL material's estimate and cannot be
+   * anything else: the re-slice only runs on send. Saying so is the point —
+   * silence here read as "remapping does nothing" (issue #18), because the
+   * numbers never moved and the print came out at the old material's temps.
+   *
+   * Same polymer routed to another lane (PLA -> PLA BASIC) is not flagged: that
+   * keeps the instant T-code remap and the estimate stays true.
+   */
+  private fun resliceNotice(tools: List<Tool>): View? {
+    val pairs = tools.mapNotNull { tool ->
+      val sliced = config.slicedMaterialFor(tool.fileTool) ?: return@mapNotNull null
+      val target = tool.lane.material
+      if (!MaterialChange.needsReslice(sliced, target)) null else sliced to target
+    }
+    if (pairs.isEmpty()) return null
+
+    val from = pairs.map { MaterialChange.mainType(it.first) }.distinct().joinToString(", ")
+    val to = pairs.map { MaterialChange.mainType(it.second) }.distinct().joinToString(", ")
+    return LinearLayout(activity).apply {
+      orientation = LinearLayout.HORIZONTAL
+      gravity = Gravity.CENTER_VERTICAL
+      addView(
+        text("↻", 12f, P.ACCENT, bold = true),
+        LinearLayout.LayoutParams(
+          LinearLayout.LayoutParams.WRAP_CONTENT,
+          LinearLayout.LayoutParams.WRAP_CONTENT,
+        ).apply { rightMargin = dp(8) },
+      )
+      addView(text("Sliced for $from · re-slices for $to on start", 11.5f, P.DIM), weighted())
+    }
   }
 
   private fun statBand(tools: List<Tool>): View {

@@ -5,6 +5,7 @@ import * as Sharing from 'expo-sharing';
 
 const APK_MIME = 'application/vnd.android.package-archive';
 const ACTION_VIEW = 'android.intent.action.VIEW';
+const ACTION_INSTALL_PACKAGE = 'android.intent.action.INSTALL_PACKAGE';
 const FLAG_GRANT_READ_URI_PERMISSION = 1;
 
 export type UpdateOpenResult = 'browser' | 'installer' | 'share';
@@ -33,11 +34,24 @@ export async function openUrl(url: string): Promise<void> {
 
 async function openAndroidInstaller(fileUri: string): Promise<void> {
   const contentUri = await FileSystem.getContentUriAsync(fileUri);
-  await IntentLauncher.startActivityAsync(ACTION_VIEW, {
-    data: contentUri,
-    type: APK_MIME,
-    flags: FLAG_GRANT_READ_URI_PERMISSION,
-  });
+  // ACTION_VIEW on the APK mime type is claimed by anything that opens
+  // archives. On a real device the hand-off raised a chooser offering Termux
+  // and an office suite next to the package installer, and picking either one
+  // fails the update with no useful error. INSTALL_PACKAGE is only ever
+  // registered by installers, so try it first and keep VIEW as the fallback
+  // for devices that do not advertise it.
+  try {
+    await IntentLauncher.startActivityAsync(ACTION_INSTALL_PACKAGE, {
+      data: contentUri,
+      flags: FLAG_GRANT_READ_URI_PERMISSION,
+    });
+  } catch {
+    await IntentLauncher.startActivityAsync(ACTION_VIEW, {
+      data: contentUri,
+      type: APK_MIME,
+      flags: FLAG_GRANT_READ_URI_PERMISSION,
+    });
+  }
 }
 
 async function shareApk(fileUri: string): Promise<void> {

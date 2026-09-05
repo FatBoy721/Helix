@@ -1,0 +1,42 @@
+# Scene 6 of 8 — the model editor, model placed on the plate.
+# Depends on store-home having run first in the same capture: goldie installs
+# the APK once per run, so the printer configured there persists across flows
+# (launch: does not clear data). This flow cannot declare executionPrerequisite
+# because it starts with launch: — the two are mutually exclusive.
+
+steps:
+  - launch: org.crabcore.u1control
+  - tap:
+      text: Slice
+  - await:
+      visible:
+        text: FILAMENT
+  - tap:
+      text: Upload .3mf / .stl
+
+  # System document picker. NOTE: no roots-drawer navigation here, unlike
+  # store-gcode. DocumentsUI remembers its last folder, and store-gcode
+  # (scene 2) has already parked it in Downloads by the time this scene
+  # (scene 6) runs, so the picker opens straight onto the file.
+  #
+  # Re-opening the drawer here actively breaks: tapping "Downloads" when
+  # Downloads is already the current root does not dismiss the drawer, and the
+  # drawer then swallows the tap on the file. Capture prep clears DocumentsUI
+  # (`adb shell pm clear com.google.android.documentsui`) so the first picker
+  # use in a run always starts at Recent — see README-android.md.
+  - await:
+      visible:
+        text: Reduction Gear 22T.stl
+  - tap:
+      text: Reduction Gear 22T.stl
+  - await:
+      visible:
+        text: Prepare & Slice
+  - wait: 2000
+  - tap:
+      text: Prepare & Slice
+  - await:
+      visible:
+        text: Slice
+  # The plate renders and the model drops in; let the camera settle.
+  - wait: 3500

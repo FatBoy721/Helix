@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AppState, Image, Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { AppState, Image, Modal, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { WebView, type WebViewMessageEvent } from 'react-native-webview';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -32,9 +32,14 @@ interface Props {
 
 const SNAPSHOT_POLL_MS = 250;
 
-// Bambu (and any feed with a snapshot endpoint) renders natively: the app
-// polls the snapshot URL with plain RN Image instead of decoding MJPEG or a
-// WebRTC page inside a WebView — the WebView renders blank on some devices.
+// RN's native Image component (RCTImageLoader, NSURLSession-backed) gets
+// blocked by ATS on some networks (observed over Tailscale/CGNAT addresses)
+// even with NSAllowsArbitraryLoads set — but expo-file-system's downloadAsync
+// (a different native networking path, the same one the rest of the app's
+// HTTP calls use) does not hit that block. So each frame is downloaded to a
+// local file via downloadAsync and displayed with a plain Image, instead of
+// polling <Image source={{uri: httpUrl}}> directly or paying WebView's much
+// heavier per-frame decode/layout cost.
 function NativeSnapshotFeed({
   url,
   paused,
@@ -44,63 +49,103 @@ function NativeSnapshotFeed({
   paused: boolean;
   resetKey: string;
 }) {
-  const [frameNonce, setFrameNonce] = useState(() => Date.now());
   const [failed, setFailed] = useState(false);
-  // The visible Image only ever points at an already-decoded frame: each poll
-  // loads into a hidden preloader first, and the visible URI hard-swaps once
-  // that load finishes (Bambu Handy style — frame by frame, no fade).
-  // Swapping mid-decode is what made the feed flash.
   const [displayedUri, setDisplayedUri] = useState<string | null>(null);
-  const frameUri = cacheBustUrl(url, frameNonce);
-
-  const advanceFrame = useCallback(() => {
-    // Never restart at ?n=1 after a refresh/remount. React Native's image cache
-    // retains those URLs, which made one fresh frame flash before an old frame
-    // from the first camera session replaced it.
-    setFrameNonce((previous) => Math.max(Date.now(), previous + 1));
-  }, []);
+  const prevPathRef = useRef<string | null>(null);
+  const inFlightRef = useRef(false);
 
   useEffect(() => {
-    advanceFrame();
     setFailed(false);
     setDisplayedUri(null);
-  }, [advanceFrame, resetKey]);
+    const stale = prevPathRef.current;
+    prevPathRef.current = null;
+    if (stale) FileSystem.deleteAsync(stale, { idempotent: true }).catch(() => {});
+  }, [resetKey]);
 
   useEffect(() => {
     if (paused) return;
-    const timer = setInterval(advanceFrame, SNAPSHOT_POLL_MS);
-    return () => clearInterval(timer);
-  }, [advanceFrame, paused, resetKey]);
+    let cancelled = false;
+
+    const poll = async () => {
+      if (cancelled || inFlightRef.current) return;
+      const cacheDir = FileSystem.cacheDirectory;
+      if (!cacheDir) return;
+      inFlightRef.current = true;
+      const targetPath = `${cacheDir}helix-snap-${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`;
+      try {
+        const result = await FileSystem.downloadAsync(cacheBustUrl(url), targetPath, {
+          headers: { 'Cache-Control': 'no-store' },
+        });
+        if (cancelled) {
+          FileSystem.deleteAsync(targetPath, { idempotent: true }).catch(() => {});
+          return;
+        }
+        if (result.status >= 200 && result.status < 300) {
+          setFailed(false);
+          setDisplayedUri(result.uri);
+          const previous = prevPathRef.current;
+          prevPathRef.current = targetPath;
+          if (previous) FileSystem.deleteAsync(previous, { idempotent: true }).catch(() => {});
+        } else {
+          setFailed(true);
+          FileSystem.deleteAsync(targetPath, { idempotent: true }).catch(() => {});
+        }
+      } catch {
+        if (!cancelled) setFailed(true);
+        FileSystem.deleteAsync(targetPath, { idempotent: true }).catch(() => {});
+      } finally {
+        inFlightRef.current = false;
+      }
+    };
+
+    poll();
+    const timer = setInterval(poll, SNAPSHOT_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [url, paused, resetKey]);
 
   return (
     <View style={styles.webview}>
       {displayedUri && (
         <Image source={{ uri: displayedUri }} style={styles.snapshotImage} resizeMode="contain" />
       )}
-      <Image
-        source={{ uri: frameUri }}
-        style={styles.preloaderImage}
-        resizeMode="contain"
-        onLoad={() => {
-          setFailed(false);
-          setDisplayedUri(frameUri);
-        }}
-        onError={() => setFailed(true)}
-      />
       {failed && <Text style={styles.reconnecting}>reconnecting…</Text>}
     </View>
   );
 }
 
 const WEBRTC_FIRST_FRAME_MESSAGE = 'helix:webrtc:first-frame';
-const LIVE_PREVIEW_TIMEOUT_MS = 4_000;
+const LIVE_PREVIEW_TIMEOUT_MS = 15_000;
+
+// camera-streamer serves stream.mjpg at the full sensor rate — measured on a
+// U1 at ~30fps of 184KB frames, i.e. 5.5MB/s (44Mbit/s). The `target_fps` in
+// Moonraker's webcam record is advertisement only; stream.mjpg ignores it and
+// honours just this query parameter. On the U1's 2.4GHz link that unthrottled
+// stream saturates the uplink, backs ~2.5MB up in nginx's send queue, and puts
+// every other request behind it — Moonraker polls, SET_LED, the printer's own
+// touchscreen.
+//
+// 20 is measured, not guessed. Sweeping fps against ping on a U1 (idle
+// baseline ~10ms):
+//
+//   fps=15 -> 2.13MB/s,  7.5ms      fps=25 -> 2.80MB/s, 26.6ms
+//   fps=20 -> 2.80MB/s,  9.5ms      fps=30 -> 3.87MB/s, 34.4ms
+//   uncapped -> 5.51MB/s, 350ms
+//
+// 25 returns the same bitrate as 20 - the sensor tops out near 20 at this
+// frame size - so asking for more yields no extra frames and only buys
+// queueing delay. 20 is the last setting that still streams at the idle
+// latency baseline.
+const MJPEG_BRIDGE_FPS = 20;
 
 function resolveMjpegBridgeUrl(url: string): string | undefined {
   try {
     const parsed = new URL(url);
     if (!/\/webcam\/webrtc\/?$/i.test(parsed.pathname)) return undefined;
     parsed.pathname = '/webcam/stream.mjpg';
-    parsed.search = '';
+    parsed.search = `?fps=${MJPEG_BRIDGE_FPS}`;
     parsed.hash = '';
     return parsed.toString();
   } catch {
@@ -168,9 +213,16 @@ const WEBRTC_FIRST_FRAME_SCRIPT = `
 true;
 `;
 
-// MJPEG streams can outpace mobile JPEG decoding, so the player keeps only the
-// newest complete frame and reconnects when frames stop arriving.
-// crabcore
+// WKWebView's fetch() resolves fine against a chunked multipart/x-mixed-replace
+// (MJPEG) response but throws "Load failed" the moment response.body.getReader()
+// is actually read — confirmed by instrumenting it: fetch resolves 200 OK with
+// a body in ~1s, then the reader throws immediately, every attempt, regardless
+// of how long a timeout is given. So the continuous feed does NOT go through
+// fetch/ReadableStream at all. Instead it relies on WebKit's own native decoder
+// for multipart/x-mixed-replace, which a plain <img src="..."> triggers
+// directly (long-documented Safari/WebKit behavior for MJPEG IP-camera
+// streams) — the browser keeps that one <img> updating in place as new parts
+// arrive, no JS per-frame parsing loop needed.
 function buildPlayerHtml(url: string, snapshotMode: boolean): string {
   return `<!DOCTYPE html><html><head>
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -185,13 +237,11 @@ var SRC = ${JSON.stringify(url)};
 var SNAPSHOT = ${snapshotMode ? 'true' : 'false'};
 var img = document.getElementById('v');
 var statusEl = document.getElementById('s');
-var lastFrame = 0;
-var controller = null;
-var prevUrl = null;
 var stopped = false;
 var readySent = false;
 var snapshotTimer = null;
-var watchdogTimer = null;
+var reloadTimer = null;
+var readyPoll = null;
 
 function setStatus(t) {
   statusEl.textContent = t;
@@ -202,109 +252,58 @@ function bust(u) {
   return u + (u.indexOf('?') >= 0 ? '&' : '?') + 'n=' + Date.now();
 }
 
-function showFrame(bytes) {
-  lastFrame = Date.now();
-  setStatus('');
-  if (!readySent && window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
-    readySent = true;
+function notifyReady() {
+  if (readySent) return;
+  readySent = true;
+  if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
     window.ReactNativeWebView.postMessage(${JSON.stringify(WEBRTC_FIRST_FRAME_MESSAGE)});
-  }
-  var blob = new Blob([bytes], { type: 'image/jpeg' });
-  var u = URL.createObjectURL(blob);
-  img.onload = function () {
-    if (prevUrl) URL.revokeObjectURL(prevUrl);
-    prevUrl = u;
-  };
-  img.src = u;
-}
-
-function findMarker(b, second, from) {
-  for (var i = from; i < b.length - 1; i++) {
-    if (b[i] === 0xFF && b[i + 1] === second) return i;
-  }
-  return -1;
-}
-
-async function streamLoop() {
-  while (!stopped) {
-    if (document.hidden) {
-      await new Promise(function (r) { setTimeout(r, 500); });
-      continue;
-    }
-    controller = new AbortController();
-    try {
-      var res = await fetch(bust(SRC), { cache: 'no-store', signal: controller.signal });
-      if (!res.ok || !res.body) throw new Error('http ' + res.status);
-      var reader = res.body.getReader();
-      var buf = new Uint8Array(0);
-      for (;;) {
-        var r = await reader.read();
-        if (r.done) break;
-        var nb = new Uint8Array(buf.length + r.value.length);
-        nb.set(buf, 0);
-        nb.set(r.value, buf.length);
-        buf = nb;
-        // Extract all complete frames but render only the newest one.
-        var latest = null;
-        for (;;) {
-          var soi = findMarker(buf, 0xD8, 0);
-          if (soi < 0) {
-            if (buf.length > 2000000) buf = new Uint8Array(0);
-            break;
-          }
-          var eoi = findMarker(buf, 0xD9, soi + 2);
-          if (eoi < 0) {
-            if (soi > 0) buf = buf.slice(soi);
-            break;
-          }
-          latest = buf.slice(soi, eoi + 2);
-          buf = buf.slice(eoi + 2);
-        }
-        if (latest) showFrame(latest);
-      }
-    } catch (e) {}
-    if (stopped) return;
-    setStatus(document.hidden ? '' : 'reconnecting\\u2026');
-    await new Promise(function (r) { setTimeout(r, 800); });
   }
 }
 
 function snapshotLoop() {
-  img.onload = function () { lastFrame = Date.now(); setStatus(''); };
+  img.onload = function () { notifyReady(); setStatus(''); };
   img.onerror = function () { setStatus('reconnecting\\u2026'); };
   snapshotTimer = setInterval(function () { img.src = bust(SRC); }, 700);
   img.src = bust(SRC);
 }
 
-// Watchdog: no frame for 6s -> kill the fetch, loop reconnects.
-watchdogTimer = setInterval(function () {
-  if (!SNAPSHOT && lastFrame && Date.now() - lastFrame > 6000 && controller) {
-    try { controller.abort(); } catch (e) {}
-  }
-}, 2000);
+function liveLoop() {
+  // A multipart/x-mixed-replace img does NOT reliably fire onload per frame —
+  // the browser keeps one request open and swaps decoded parts into the same
+  // element. Waiting on onload therefore never fires the first-frame message,
+  // the "Starting live camera…" snapshot overlay never lifts, and a working
+  // stream sits hidden behind one stale still (which is what "camera frozen"
+  // actually was). Poll naturalWidth instead: non-zero means a part decoded.
+  readyPoll = setInterval(function () {
+    if (img.naturalWidth > 0) {
+      clearInterval(readyPoll);
+      notifyReady();
+      setStatus('');
+    }
+  }, 250);
+  img.onload = function () { notifyReady(); setStatus(''); };
+  img.onerror = function () {
+    setStatus('reconnecting\\u2026');
+    if (stopped) return;
+    if (reloadTimer) clearTimeout(reloadTimer);
+    reloadTimer = setTimeout(function () { img.src = bust(SRC); }, 800);
+  };
+  // No cache-busting query here: the native multipart decoder keeps this one
+  // request open and streams frames into it, it does not re-fetch per frame.
+  img.src = SRC;
+}
 
 function stopPlayer() {
   stopped = true;
   if (snapshotTimer) clearInterval(snapshotTimer);
-  if (watchdogTimer) clearInterval(watchdogTimer);
-  if (controller) {
-    try { controller.abort(); } catch (e) {}
-  }
-  if (prevUrl) URL.revokeObjectURL(prevUrl);
+  if (reloadTimer) clearTimeout(reloadTimer);
+  if (readyPoll) clearInterval(readyPoll);
 }
 
-// Hidden WebViews must not leave a costly MJPEG client running on the printer.
-document.addEventListener('visibilitychange', function () {
-  if (document.hidden && controller) {
-    try { controller.abort(); } catch (e) {}
-  } else if (!SNAPSHOT && Date.now() - lastFrame > 3000 && controller) {
-    try { controller.abort(); } catch (e) {}
-  }
-});
 window.addEventListener('pagehide', stopPlayer);
 window.addEventListener('beforeunload', stopPlayer);
 
-if (SNAPSHOT) snapshotLoop(); else streamLoop();
+if (SNAPSHOT) snapshotLoop(); else liveLoop();
 </script>
 </body></html>`;
 }
@@ -514,11 +513,14 @@ export default function CameraFeed({
   }, [url]);
 
   // Android WebView cannot reliably establish the U1's WebRTC page because
-  // its sandbox may deny network-interface enumeration during ICE. The U1
-  // serves the same camera as continuous MJPEG, which our bounded parser can
-  // display smoothly without WebRTC permissions.
+  // its sandbox may deny network-interface enumeration during ICE, so it
+  // bridges to the printer's MJPEG rendition instead. That rendition is NOT
+  // throttled by the printer (see MJPEG_BRIDGE_FPS) — it has to be capped
+  // here, or it takes the whole LAN link down with it. iOS is unaffected:
+  // WKWebView has solid native WebRTC support and does not hit the Android
+  // ICE issue, so it loads the real WebRTC page, which is rate-controlled.
   const mjpegBridgeUrl = useMemo(
-    () => (isWebrtcPage ? resolveMjpegBridgeUrl(url) : undefined),
+    () => (isWebrtcPage && Platform.OS === 'android' ? resolveMjpegBridgeUrl(url) : undefined),
     [isWebrtcPage, url],
   );
   const html = useMemo(

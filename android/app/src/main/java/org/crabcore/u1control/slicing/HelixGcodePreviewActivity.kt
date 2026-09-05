@@ -18,6 +18,7 @@ import android.widget.ProgressBar
 import android.widget.TextView
 import org.json.JSONObject
 import org.crabcore.u1control.MainActivity
+import com.u1.slicer.NativeLibrary
 import com.u1.slicer.gcode.GcodeParser
 import com.u1.slicer.gcode.ParsedGcode
 import com.u1.slicer.viewer.BedProfile
@@ -440,6 +441,12 @@ class HelixGcodePreviewActivity : Activity() {
       },
       onPrinterPicked = { printer -> moonrakerUrl = printer.url.ifBlank { printer.tailscaleUrl } },
       onSend = ::startPrint,
+      // What each file tool was sliced with, so the sheet can warn before the
+      // user commits that a different-polymer lane means a re-slice on start.
+      slicedMaterialFor = { tool ->
+        HelixSliceRunner.parseMaterialProfiles(LastSliceStore.materialProfilesJson)
+          .getOrNull(tool)?.material
+      },
     )
 
     preprocessSheet = HelixPreprocessSheet(this, config).also { it.show() }
@@ -666,6 +673,11 @@ class HelixGcodePreviewActivity : Activity() {
           return@Thread
         }
         moonrakerUrl = base
+        // Routing a tool onto a lane holding a DIFFERENT polymer needs the model
+        // sliced again: remappedGcodeFile() below only rewrites T-codes, so every
+        // temperature and flow figure would still be the original material's.
+        // Same polymer (PLA -> PLA BASIC) keeps the fast T-code remap.
+        if (alsoPrint && !reslicedForLaneMaterials()) return@Thread
         var file = remappedGcodeFile()
         if (requestedTimelapse) {
           file = GcodeTimelapseInjector.inject(file.absolutePath, cacheDir)
@@ -867,6 +879,121 @@ class HelixGcodePreviewActivity : Activity() {
   }
 
   // Dialog remap: rewrite tool changes onto the slots the user picked.
+  /**
+   * Re-slices the model when any routed lane holds a different polymer than the
+   * gcode was sliced with, and repoints [gcodePath] at the result.
+   *
+   * Runs on the send thread (see sendToPrinter) so the engine call can block;
+   * progress goes through the sheet's existing overlay. Returns false when the
+   * send must stop — the reason has already been shown.
+   *
+   * No-ops and returns true when nothing was rerouted, or when every rerouted
+   * lane holds the same polymer, which is the common case and stays instant.
+   */
+  private fun reslicedForLaneMaterials(): Boolean {
+    val rerouted = (0..3).filter { tool ->
+      toolSlotMap[tool] != tool && (requiredToolMask() and (1 shl tool)) != 0
+    }
+    if (rerouted.isEmpty()) return true
+
+    val slicedProfiles = HelixSliceRunner.parseMaterialProfiles(LastSliceStore.materialProfilesJson)
+    val details = runCatching { FilamentSlotDetails.read(this) }.getOrDefault(emptyList())
+    fun slicedMaterial(tool: Int) = slicedProfiles.getOrNull(tool)?.material
+    fun laneMaterial(lane: Int) = details.getOrNull(lane)?.material
+
+    val changed = rerouted.filter {
+      MaterialChange.needsReslice(slicedMaterial(it), laneMaterial(toolSlotMap[it]))
+    }
+    if (changed.isEmpty()) return true
+
+    val model = LastSliceStore.modelPath
+    if (model.isNullOrBlank() || !File(model).exists()) {
+      // The gcode outlived the model it came from (app restarted, cache
+      // cleared). Refuse rather than print PETG at PLA temps — the old code
+      // uploaded silently here, which is what made this invisible.
+      setSendStatus(
+        "Can't re-slice for the new material — the model is gone. Re-open it in Slice.",
+      )
+      return false
+    }
+
+    val targetTool = toolSlotMap[changed.first()]
+    val targetName = laneMaterial(targetTool)?.takeIf { it.isNotBlank() } ?: "the new material"
+    reportProgress("Re-slicing for $targetName...", 0.03f)
+
+    return try {
+      // EVERY 3MF gets collapsed, single-tool reroutes included. The file's own
+      // per-object `extruder` tags outrank initialTool, so skipping this made the
+      // slicer list the target lane's material in the header while leaving the
+      // object on slot 0: verified on a real U1 as `filament_type = PLA;PLA;PETG`
+      // with `nozzle_temperature = 220,220,255`, yet `T2` printing at `M109 S220`
+      // - PETG pulled from lane 3 and extruded at PLA temps. That is issue #18
+      // wearing a correct-looking header, which is worse than the original bug.
+      //
+      // Only a non-3MF skips it: an STL carries no object tags at all, and
+      // running the collapse on one threw "No objects found".
+      val source = if (model.endsWith(".3mf", ignoreCase = true)) {
+        val collapsed = File(cacheDir, "reslice_collapsed.3mf")
+        PlateExtractor.collapseToSingleExtruder(File(model), targetTool, collapsed).absolutePath
+      } else {
+        model
+      }
+
+      val outcome = HelixSliceRunner.run(
+        context = this,
+        lib = NativeLibrary(),
+        path = source,
+        onProgress = { percent, stage ->
+          reportProgress("Re-slicing for $targetName... $stage", 0.03f + (percent / 100f) * 0.09f)
+        },
+        initialTool = targetTool,
+        sliceSettings = HelixSliceSettings.fromJson(LastSliceStore.sliceSettingsJson),
+        materialProfilesJson = LastSliceStore.materialProfilesJson,
+        machine = machineProfile,
+      )
+      val result = outcome.result
+      if (result == null || !result.success || result.gcodePath.isBlank()) {
+        setSendStatus("Re-slice for $targetName failed. Print unchanged, or slice it again.")
+        return false
+      }
+      gcodePath = result.gcodePath
+      // The gcode is replaced, so everything derived from the old one is now
+      // wrong: the tool mask the sheet builds `required` from, and the estimates
+      // it is displaying. LastSliceStore matters beyond the sheet — it still
+      // pointed at the pre-re-slice gcodePath, so anything re-reading it (a
+      // re-opened preview, a second re-slice) would have picked up the discarded
+      // file.
+      initialTool = outcome.initialTool
+      usedToolMask = outcome.usedToolMask
+      LastSliceStore.record(
+        model = model,
+        result = result,
+        initialTool = outcome.initialTool,
+        usedToolMask = outcome.usedToolMask,
+        sliceSettingsJson = LastSliceStore.sliceSettingsJson,
+        materialProfilesJson = LastSliceStore.materialProfilesJson,
+      )
+      preprocessSheet?.onResliced(
+        estTimeSeconds = result.estimatedTimeSeconds,
+        estGrams = result.estimatedFilamentGrams,
+        layers = result.totalLayers,
+        perToolGrams = parsePerToolGrams(),
+        required = (0..3).filter { (requiredToolMask() and (1 shl it)) != 0 }
+          .ifEmpty { listOf(initialTool.coerceIn(0, 3)) },
+      )
+      // The file now genuinely uses the target lane, so the T-code remap that
+      // follows must not shift it a second time.
+      for (tool in changed) toolSlotMap[tool] = tool
+      true
+    } catch (_: HelixSliceRunner.BusyError) {
+      setSendStatus("The slicer is busy. Try again in a moment.")
+      false
+    } catch (error: Throwable) {
+      setSendStatus("Re-slice for $targetName failed: ${error.message ?: "unknown error"}")
+      false
+    }
+  }
+
   private fun remappedGcodeFile(): File {
     val identity = toolSlotMap.withIndex().all { (i, v) -> i == v }
     if (identity) return File(gcodePath)

@@ -1,152 +1,133 @@
-# Play Store screenshots (Android + goldie framing)
+# Play Store screenshots
 
-goldie is an iOS tool: its `capture` stage drives an iOS simulator through
-argent, its only device spec is `iphone-6.9`, its only bezels are iPhone 17
-Pro, and `verify` checks Apple's spec table. None of that applies to Android.
+goldie 0.3.1 added native Android support, so this is a normal goldie project
+now. The `pixel-10-pro` device key drives the emulator over adb, pins the
+status bar, replays argent flows, and renders **1080×1920** tiles — already
+Play-legal (16:9, inside the 2:1 cap) with the bundled Pixel 10 Pro bezel.
 
-What *is* reusable is goldie's back half. `frame` only reads raw PNGs listed in
-`out/raw/<device>/manifest.json` and composites them onto a captioned tile, so
-Android captures can be fed straight into it.
+The hand-rolled pipeline this replaced (`prep-raw.sh`, `play-resize.sh`,
+`write-manifest.py`, a fake `iphone-6.9` raw directory, manual `adb input tap`
+navigation, and a padding step to reach a legal aspect ratio) is **deleted**.
+Do not reintroduce any of it.
 
-**Only run these three stages.** `capture`, `preview`, `doctor` and `verify`
-assume an iOS build and will fail or mislead.
-
-## 1. Boot the emulator and install a release build
-
-A debug build paints LogBox banners into the captures and needs Metro running,
-so it makes unusable marketing assets. Use the release APK.
-
-```bash
-export PATH=/opt/homebrew/share/android-commandlinetools/platform-tools:$PATH
-ANDROID_SDK_ROOT=/opt/homebrew/share/android-commandlinetools \
-  /opt/homebrew/share/android-commandlinetools/emulator/emulator \
-  -avd FoldFast-Pixel-8 -no-snapshot-load -no-boot-anim &
-adb wait-for-device
-adb install -r -d android/app/build/outputs/apk/release/app-release.apk
+```
+goldie/
+├── goldie.config.ts        scenes, copy, theme
+├── scripts/
+│   ├── printer-proxy.py    LAN bridge + /webcam/webrtc shim  (still ours)
+│   └── gen-gear.py         generates the sample model
+└── out/                    generated, gitignored
+.argent/flows/store-*.yaml  one flow per scene
 ```
 
-## 2. Give the emulator a route to the printer
+## Prerequisites
 
-An empty, offline app is not a screenshot worth shipping — the dashboard shows
-a white error card and zeroed temperatures. But the emulator has **no route to
-the LAN** (`nc: connect: No route to host`), so it cannot reach the printer
-directly.
-
-Bridge it with a host-side TCP proxy plus `adb reverse`:
-
-- `scripts/printer-proxy.py` listens on `127.0.0.1:7125` → printer `:7125`
-  (Moonraker) and `127.0.0.1:8081` → printer `:80` (web UI, camera, screen).
-- **Run it with `/usr/bin/python3`.** macOS Local Network Privacy blocks
-  Homebrew `node` from the LAN (`EHOSTUNREACH`) while Apple-signed binaries are
-  allowed. This is not the Claude sandbox; disabling it does not help.
+**The AVD must use the Pixel 10 Pro (or 9 Pro) hardware profile** — goldie
+matches on it and will not use any other emulator. `Helix-Pixel10Pro` is that
+AVD. Creating it needs **cmdline-tools 21.0**; 20.0 has no `pixel_10_pro`
+device definition.
 
 ```bash
-/usr/bin/python3 goldie/scripts/printer-proxy.py &     # edit TARGET first
-adb root                       # needed to bind :80 inside the emulator
-adb reverse tcp:7125 tcp:7125
-adb reverse tcp:8081 tcp:8081
-adb reverse tcp:80   tcp:8081  # the camera and mirrored screen live on :80
+sdkmanager --install "cmdline-tools;21.0"
+avdmanager create avd -n Helix-Pixel10Pro \
+  -k "system-images;android-35;google_apis;arm64-v8a" -d "pixel_10_pro"
 ```
 
-Then point the app at the tunnel: printer URL `http://127.0.0.1:7125`,
-connection mode **LAN only**.
-
-### The camera needs to be a snapshot, not WebRTC
-
-The printer advertises `/webcam/webrtc`, and WebRTC needs UDP that an
-`adb reverse` tunnel cannot carry — the card renders a dead player with
-"Connection lost". `CameraFeed` treats any URL matching `/snapshot/i` as a
-polled still image over plain HTTP, which the tunnel *does* carry.
-
-The printer editor did not persist this field reliably, so write it directly
-(requires `adb root`):
+## Capture prep (goldie does not do these)
 
 ```bash
-DB=/data/data/org.crabcore.u1control/databases/RKStorage
-adb shell "sqlite3 $DB \"select value from catalystLocalStorage\"" > settings.json
-# set .cameraUrl and .printers[active].cameraUrl to
-#   http://127.0.0.1:8081/webcam/snapshot.jpg
-adb push settings.new.json /data/local/tmp/settings.new.json
-adb shell am force-stop org.crabcore.u1control
-adb shell "sqlite3 $DB \"update catalystLocalStorage \
-  set value = CAST(readfile('/data/local/tmp/settings.new.json') AS TEXT) \
-  where key='u1control.settings.v1'\""
+# 1. the printer bridge — MUST be /usr/bin/python3, see the script's docstring
+/usr/bin/python3 goldie/scripts/printer-proxy.py &
+
+# 2. emulator + tunnels
+emulator -avd Helix-Pixel10Pro &
+adb root                        # required to bind :80 inside the emulator
+adb reverse tcp:7125 tcp:7125   # Moonraker
+adb reverse tcp:8081 tcp:8081   # printer web root
+adb reverse tcp:80   tcp:8081   # what the app's relative camera path hits
+
+# 3. the sample model the slicer scenes open
+python3 goldie/scripts/gen-gear.py
+adb push "Reduction Gear 22T.stl" /sdcard/Download/
+
+# 4. reset the file picker so it always starts at Recent (see Gotchas)
+adb shell pm clear com.google.android.documentsui
 ```
 
-`CAST(... AS TEXT)` matters: a bare `readfile()` stores a BLOB and the app
-falls back to first-run setup with every printer gone.
-
-## 3. Clean the status bar
+Then:
 
 ```bash
-adb shell settings put global sysui_demo_allowed 1
-for c in "command enter" "command clock -e hhmm 0930" \
-         "command battery -e level 100 -e plugged false" \
-         "command network -e wifi show -e level 4" \
-         "command network -e mobile hide" \
-         "command notifications -e visible false"; do
-  adb shell am broadcast -a com.android.systemui.demo -e $c
-done
-```
-
-## 4. Capture the scenes
-
-```bash
-adb exec-out screencap -p > goldie/captures/<scene-id>.png
-```
-
-One file per scene id in `goldie.config.ts`. Keep the untouched captures in
-`goldie/captures/`; `scripts/prep-raw.sh` crops each one to 1080×2265 (dropping
-the light 3-button nav bar, which clashes badly with Helix's dark UI) and
-stages it in `out/raw/iphone-6.9/`. That directory is named `iphone-6.9`
-because it is goldie's only device key — it does not mean the captures came
-from an iPhone.
-
-The Slice tab needs a model loaded or it screenshots as "NO MODEL". Generate
-one with `scripts/gen-gear.py`, push it to `/sdcard/Download/`, and open it
-through the app's own picker. Model coordinates map to bed coordinates, so
-centre the mesh on the bed (the U1 plate is 220 mm) or it lands in a corner.
-
-## 5. Prep, frame, resize
-
-`frame` refuses to run without `out/raw/<device>/manifest.json`, which normally
-comes from `capture`. `prep-raw.sh` crops the captures and writes that manifest
-(it only needs sceneId/file per scene).
-
-```bash
-goldie/scripts/prep-raw.sh                                             # crop + manifest
-GOLDIE_CONFIG=$PWD/goldie/goldie.config.ts npx -y goldie@0 frame --screen-only
-GOLDIE_CONFIG=$PWD/goldie/goldie.config.ts npx -y goldie@0 manifest    # for the studio
-goldie/scripts/play-resize.sh                                          # -> Play sizes
+GOLDIE_CONFIG=$PWD/goldie/goldie.config.ts npx -y goldie@0 capture
+GOLDIE_CONFIG=$PWD/goldie/goldie.config.ts npx -y goldie@0 frame
+GOLDIE_CONFIG=$PWD/goldie/goldie.config.ts npx -y goldie@0 manifest
 GOLDIE_CONFIG=$PWD/goldie/goldie.config.ts npx -y goldie@0 studio --no-open
 ```
 
-`frame` needs `ffmpeg` on the PATH for its final flatten (`brew install
-ffmpeg`). `--screen-only` suppresses the iPhone bezel; the config sets
-`theme.screenOnly` too, so the flag is belt-and-braces.
+Upload from `goldie/out/screenshots/pixel-10-pro/en-US/`. Play allows 8 phone
+screenshots, which is exactly what the config produces.
 
-`goldie frame` renders at 1320×2868 — Apple's 6.9" size, a **2.17:1** ratio.
-Google Play caps phone screenshots at 2:1, so those tiles would be rejected as
-they come out of goldie. `play-resize.sh` pads each one to exactly 9:16
-(1620×2880) using `fillborders=mode=smear`, which replicates the edge pixels
-so the background gradient extends instead of leaving solid bars.
+Do **not** run `doctor` or `verify` — both assume an iOS build and Apple's
+spec table.
 
-**Upload from `goldie/out/play/phone/`, not from `out/screenshots/`.** The
-`6.9`/`en-US` path segments are goldie's iOS naming and mean nothing to Play.
+## Gotchas, all of them learned the hard way
 
-### The studio silently overrides the config
+**Every run starts with the app wiped.** argent's `reinstall-app` does
+`adb uninstall` then `adb install`, so there is no printer configured and the
+first-run sheet is showing. `store-home.yaml` therefore does the setup, and
+the other flows inherit it because `launch:` resumes rather than clears. This
+is why **store-home must stay first in `scenes`**.
 
-Running `goldie studio` writes `goldie/goldie.design.json`, and that file
-**wins over `goldie.config.ts`** on every later `frame`. It appeared here with
-a grey gradient and `template: "magazine"` — whose `minimal` layout draws no
-copy at all — so the tiles came out grey and captionless with the config
-untouched and looking correct.
+**`launch:` resumes, it does not reset.** A modal left open by a previous
+flow is still open for the next one, and the tab bar is then unreachable.
+Flows that open a modal should leave the app on a normal screen.
 
-If a re-frame comes out not matching the config, delete `goldie.design.json`
-and frame again. Keep it only if you deliberately restyled in the studio and
-want that look; the honest fix is to copy the values you liked back into
-`theme.*` in the config and delete the file.
+**Never type into a field without settling first.** Focus lands
+asynchronously; a keyboard step fired too early goes to the *previously*
+focused field. That concatenated two URLs into the LAN box, and Helix handed
+`http://127.0.0.1:7125http://…` straight to okhttp, which threw
+`IllegalArgumentException: Invalid URL port` and **hard-crashed the app**
+mid-capture. (That crash is a real Helix bug — the URL is never validated
+before opening the websocket.)
 
-Play Store allows a maximum of **8** phone screenshots, which is what the
-config produces. `captures/timelapse.png` is a spare (the Timelapse tab, with
-real clip thumbnails) if you want to swap one out.
+**Prefer placeholder text over coordinates for fields.** Focusing a field
+raises the keyboard, which reflows the dialog, so any coordinate measured
+beforehand points at the wrong row afterwards.
+
+**But some things cannot be selected by text.** The connection-mode pills are
+labelled `"󰖩, LAN only"` — leading icon glyph — so `text:` misses them, and
+the helper sentence below also contains "LAN only", so a looser match is
+ambiguous. The flow sidesteps this entirely by relying on the `'lan'` default.
+
+**`describe` sees through overlays.** The document picker's roots drawer is an
+overlay; uiautomator lists the file rows underneath it as visible and
+tappable, so taps land on the drawer and silently do nothing. Gate on the
+drawer's title (`Open from`) disappearing, not on the row appearing.
+
+**The picker remembers its last folder.** Tapping "Downloads" when Downloads
+is already current does not dismiss the drawer, which then eats the file tap.
+So `store-gcode` (scene 2) navigates via the drawer, and `store-model`
+(scene 6) does not — by then the picker is already parked in Downloads.
+`pm clear com.google.android.documentsui` in prep makes the first use
+deterministic.
+
+**Do not add a trailing `await idle` to dashboard flows.** Live temperatures
+and the polling camera mean the screen never holds still, so idle always times
+out with a warning. Use a fixed wait.
+
+**Live data rots selectors.** `store-printsheet` used to tap a print by
+filename and broke within days when the library changed. It now taps the first
+row under ALL FILES by position — the list is sorted by Recent, so row 1 is
+always "the most recent print", which is what the scene actually means.
+
+**The chamber light.** The camera scene is much better lit with it on:
+
+```bash
+curl -s "http://127.0.0.1:7125/printer/gcode/script?script=SET_LED%20LED=cavity_led%20WHITE=1%20SYNC=0"
+```
+
+## Known cosmetic issue
+
+The status-bar clock (pinned to 9:41 by goldie's demo mode) is clipped to
+".41" by the bezel's screen window — the raw capture is clean, so this is
+goldie's Pixel frame geometry against a 1280×2856 source. Harmless, but if it
+ever matters, `theme.screenOnly: true` drops the bezel entirely.

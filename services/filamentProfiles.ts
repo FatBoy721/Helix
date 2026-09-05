@@ -31,7 +31,9 @@ const MATERIALS = [
 // keys chemistry by base polymer, so the catalog floor is MAIN_TYPE-keyed.
 export function deriveMainType(display: string): string {
   const upper = (display || '').trim().toUpperCase();
-  if (!upper || upper === 'EMPTY') return 'PLA';
+  // 'NONE' is what the U1 reports for an empty lane; filamentSlots.ts strips it
+  // upstream, but MaterialChange.kt mirrors this function and must agree.
+  if (!upper || upper === 'EMPTY' || upper === 'NONE') return 'PLA';
   if (isKnownFilamentMainType(upper)) return upper;
   return (
     FILAMENT_MAIN_TYPES.find(

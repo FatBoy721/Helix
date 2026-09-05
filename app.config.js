@@ -1,7 +1,10 @@
 const appJson = require('./app.json');
 
 module.exports = () => {
-  const distribution = process.env.HELIX_DISTRIBUTION === 'github' ? 'github' : 'play';
+  // Helix distributes through GitHub releases, so the in-app updater is on by
+  // default; set HELIX_DISTRIBUTION=play to build a store variant that defers
+  // to the Play listing instead.
+  const distribution = process.env.HELIX_DISTRIBUTION === 'play' ? 'play' : 'github';
 
   return {
     ...appJson.expo,

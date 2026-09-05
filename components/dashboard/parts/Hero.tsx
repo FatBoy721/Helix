@@ -347,6 +347,7 @@ export function JobCard({ data }: { data: CockpitData }) {
 }
 
 function toneFor(data: CockpitData): { label: string; color: string } {
+  if (data.connecting) return { label: t('CONNECTING'), color: P.dim };
   if (data.offline) return { label: t('OFFLINE'), color: P.dim };
   switch (data.state) {
     case 'printing':

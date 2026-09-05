@@ -1,0 +1,33 @@
+# Scene 4 of 8 — the print sheet for an existing job.
+# Depends on store-home having run first in the same capture: goldie installs
+# the APK once per run, so the printer configured there persists across flows
+# (launch: does not clear data). This flow cannot declare executionPrerequisite
+# because it starts with launch: — the two are mutually exclusive.
+
+steps:
+  - launch: org.crabcore.u1control
+  - tap:
+      text: Files
+  - await:
+      visible:
+        text: ALL FILES
+  # First row under ALL FILES, by position rather than by filename.
+  #
+  # This is deliberately a coordinate. The library is live data off the
+  # printer, so any filename hardcoded here rots the moment someone prints
+  # something new — an earlier version of this flow pinned
+  # "Ubuntu USB-A Logo Cover_PLA_7m19s" and broke within days. Position
+  # encodes what the scene actually wants: the most recent print. The list is
+  # sorted by "Recent" by default, so row 1 is always that.
+  #
+  # Geometry from describe: first row frame (0.037, 0.496, 0.925, 0.069).
+  - echo: First file row under ALL FILES — the most recently modified print.
+  - await:
+      idle: true
+  - tap:
+      x: 0.5
+      y: 0.53
+  - await:
+      visible:
+        text: DURATION
+  - wait: 2000

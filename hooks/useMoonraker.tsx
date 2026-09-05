@@ -149,6 +149,9 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
   const failCountRef = useRef(0);
   const urlIndexRef = useRef(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The in-flight heartbeat probe. Held so a printer switch can cancel it —
+  // otherwise it outlives its own connection and reconnects the next one.
+  const heartbeatProbeRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const connectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const generationRef = useRef(0);
   const settingsRef = useRef<Settings>(settings);
@@ -536,30 +539,43 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
       clearInterval(heartbeatTimerRef.current);
       heartbeatTimerRef.current = null;
     }
+    if (heartbeatProbeRef.current) {
+      clearTimeout(heartbeatProbeRef.current);
+      heartbeatProbeRef.current = null;
+    }
   }, []);
 
-  const startHeartbeat = useCallback(() => {
+  // Takes the generation of the socket it belongs to. Without that guard a probe
+  // started for the previous printer stays armed across a switch and, six
+  // seconds later, tears down the healthy connection to the printer the user
+  // just picked — which then backs off up to the 8s cap before trying again.
+  // Measured on device: switching AD5X -> U1 connected in ~2s, was killed at
+  // ~15s, and only settled after ~25s.
+  const startHeartbeat = useCallback((gen: number) => {
     stopHeartbeat();
     heartbeatTimerRef.current = setInterval(() => {
+      if (gen !== generationRef.current) return;
       if (!connectedRef.current) return;
       const ws = wsRef.current;
       if (!ws || ws.readyState !== WS_OPEN) return;
       let answered = false;
-      const probeTimeout = setTimeout(() => {
+      if (heartbeatProbeRef.current) clearTimeout(heartbeatProbeRef.current);
+      heartbeatProbeRef.current = setTimeout(() => {
+        heartbeatProbeRef.current = null;
+        if (gen !== generationRef.current) return;
         if (!answered && connectedRef.current) {
           addLine('error', '// Printer connection stalled — reconnecting');
           connectRef.current();
         }
       }, HEARTBEAT_TIMEOUT_MS);
-      rpc('server.info')
-        .then(() => {
-          answered = true;
-          clearTimeout(probeTimeout);
-        })
-        .catch(() => {
-          answered = true;
-          clearTimeout(probeTimeout);
-        });
+      const settle = () => {
+        answered = true;
+        if (heartbeatProbeRef.current) {
+          clearTimeout(heartbeatProbeRef.current);
+          heartbeatProbeRef.current = null;
+        }
+      };
+      rpc('server.info').then(settle).catch(settle);
     }, HEARTBEAT_INTERVAL_MS);
   }, [rpc, addLine, stopHeartbeat]);
 
@@ -676,7 +692,7 @@ export function MoonrakerProvider({ children }: { children: React.ReactNode }) {
       setConnection('connected');
       addLine('response', `// Connected to ${url}`);
       initPrinter(gen);
-      startHeartbeat();
+      startHeartbeat(gen);
     };
 
     ws.onmessage = (ev) => {

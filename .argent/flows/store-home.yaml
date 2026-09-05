@@ -1,0 +1,85 @@
+# Scene 1 of 8 — the dashboard, and the setup every later flow depends on.
+#
+# goldie reinstalls the APK once per capture run (argent's reinstall-app does
+# `adb uninstall` then `adb install`), so every run starts with NO printer
+# configured and the first-run sheet showing. This flow therefore does the
+# setup, and the remaining store-* flows inherit the configured app, because
+# `launch:` resumes the task rather than clearing data.
+#
+# So this flow MUST stay first in `scenes`. It cannot declare
+# executionPrerequisite because it starts with `launch:` — the two are
+# mutually exclusive — hence this comment instead.
+#
+# It also depends on a host-side tunnel goldie knows nothing about:
+#   /usr/bin/python3 goldie/scripts/printer-proxy.py &
+#   adb root && adb reverse tcp:7125 tcp:7125
+#                adb reverse tcp:8081 tcp:8081 && adb reverse tcp:80 tcp:8081
+# Without it the printer is unreachable and this captures as Offline.
+
+steps:
+  - launch: org.crabcore.u1control
+  - await:
+      visible:
+        text: Add printer manually
+  - tap:
+      text: Add printer manually
+  - await:
+      visible:
+        text: Printer URL (LAN)
+
+  # The sheet animates in. Without settling here the next step can fire
+  # mid-slide and land on whatever is behind the dialog.
+  - await:
+      idle: true
+
+  # Fields are selected by their PLACEHOLDER text, never by coordinate:
+  # focusing a field raises the keyboard, which reflows the dialog, so any
+  # coordinate measured beforehand points at the wrong row afterwards.
+  - tap:
+      text: http://192.168.1.x:7125
+  # Focus has to actually land before typing. Without this pause the keyboard
+  # step can still be aimed at the previously focused field, concatenating two
+  # URLs into one box — Helix then hands "…:7125http://…" to okhttp and dies
+  # with IllegalArgumentException: Invalid URL port.
+  - await:
+      idle: true
+  - wait: 900
+  - tool: keyboard
+    args:
+      text: http://127.0.0.1:7125
+  # Let the typed value commit to state before submitting. Tapping "Add
+  # printer" too early submits an empty URL, the dialog rejects it and stays
+  # open, and the flow then fails on `await hidden` below.
+  - wait: 1200
+
+  # NOTE: the camera field is deliberately left at its default,
+  # "/webcam/webrtc". goldie/scripts/printer-proxy.py intercepts that exact
+  # path and serves a page polling the printer's snapshot endpoint, so the
+  # default already renders a live picture over the TCP-only tunnel. (WebRTC
+  # itself needs UDP, which an `adb reverse` tunnel cannot carry.)
+  #
+  # NOTE: no connection-mode step either. A manually-added printer already
+  # defaults to connectionMode: 'lan' (components/FirstRunSetup.tsx). Tapping
+  # the pill would mean a coordinate — its label leads with an icon glyph, so
+  # text: cannot select it — and that coordinate hit the modal backdrop and
+  # dismissed the dialog.
+  #
+  # Both notes are the same lesson: every field this flow does not touch is a
+  # field that cannot break the capture.
+
+  - await:
+      visible:
+        text: Add printer
+  - tap:
+      text: Add printer
+  - await:
+      hidden:
+        text: Printer URL (LAN)
+
+  # Moonraker connect + first status push. Only worth capturing once
+  # temperatures and toolheads are populated.
+  #
+  # A trailing `await idle` is NOT used here: the dashboard has live-updating
+  # temperatures and a polling camera, so the screen never holds still and
+  # idle always times out with a warning. A fixed wait is honest about that.
+  - wait: 9000

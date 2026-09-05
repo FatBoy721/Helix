@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "goldie": {
+      "source": "kacperkapusciak/goldie",
+      "sourceType": "github",
+      "skillPath": "skills/goldie/SKILL.md",
+      "computedHash": "af3dc8512fda0f78c31a52f73f834a3df1fb4829c3bb43883d39b9da3fae3458"
+    }
+  }
+}

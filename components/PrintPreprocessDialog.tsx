@@ -95,6 +95,13 @@ type Props = {
   printerKind?: string | null;
   /** Bambu's virtual tray when the printer has no physical AMS attached. */
   externalSpool?: boolean;
+  /**
+   * True when the caller still holds the source model and will re-slice on send
+   * if a tool is routed to another lane. The Files tab reprints gcode already on
+   * the printer and has no model, so it leaves this false and no re-slice notice
+   * is shown — remapping there only changes which lane feeds the existing gcode.
+   */
+  canReslice?: boolean;
 };
 
 const HOLD_MS = 700;
@@ -142,6 +149,7 @@ export default function PrintPreprocessDialog({
   layers = 0,
   printerKind = null,
   externalSpool = false,
+  canReslice = false,
 }: Props) {
   // AD5X and Bambu owners know the feeds as numbered lanes; the U1 names its
   // tools T0–T3 and the feeds stay plain "lanes".
@@ -189,6 +197,20 @@ export default function PrintPreprocessDialog({
     () => buildPreprocessTools(required, lanes, assignments, perToolGrams),
     [required, lanes, assignments, perToolGrams],
   );
+
+  // Routing a file tool to a different lane re-slices at SEND time, not now —
+  // so the duration/grams/layers above still describe the material the file was
+  // originally sliced for. Say so, rather than showing stale numbers as if they
+  // were current: that silence read as "remapping does nothing" (issue #18).
+  // Bambu is excluded because it routes in project_file without re-slicing.
+  const resliceFor = useMemo(() => {
+    if (!canReslice || externalSpool || printerKind === 'bambu-lan') return null;
+    const names = tools
+      .filter((tool) => tool.assigned !== tool.fileTool)
+      .map((tool) => tool.lane.material)
+      .filter((material): material is string => Boolean(material));
+    return names.length > 0 ? Array.from(new Set(names)).join(', ') : null;
+  }, [tools, canReslice, externalSpool, printerKind]);
 
   const selectedPrinter = printers.find((printer) => printer.id === activePrinterId) ?? printers[0];
   const printerBusy = Boolean(selectedPrinter?.busy);
@@ -354,6 +376,16 @@ export default function PrintPreprocessDialog({
                 label={layers > 0 ? `${layers} layers` : 'Filament'}
               />
             </View>
+
+            {resliceFor ? (
+              <View style={styles.resliceNote}>
+                <MaterialCommunityIcons name="autorenew" size={14} color={P.accent} />
+                <Text style={styles.resliceText}>
+                  Re-slices for <Text style={styles.resliceMaterial}>{resliceFor}</Text> when you
+                  start — the estimate above is for the material it was sliced with.
+                </Text>
+              </View>
+            ) : null}
 
             {notes.length > 0 ? (
               <View
@@ -844,6 +876,16 @@ const styles = StyleSheet.create({
   notice: { borderWidth: 1, borderRadius: P.radius - 6, padding: 12, gap: 8 },
   noticeRow: { flexDirection: 'row', alignItems: 'center', gap: 9 },
   noticeText: { flex: 1, color: P.text, fontSize: 12.5, fontWeight: '700', lineHeight: 17 },
+  resliceNote: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    paddingHorizontal: 2,
+    marginTop: 10,
+  },
+  resliceText: { flex: 1, color: P.dim, fontSize: 12, fontWeight: '600', lineHeight: 16 },
+  resliceMaterial: { color: P.text, fontWeight: '800' },
+
   clean: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 2 },
   cleanText: { flex: 1, color: P.dim, fontSize: 12, fontWeight: '600' },
   errText: { color: P.danger, fontSize: 12, fontWeight: '700' },

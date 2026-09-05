@@ -1,0 +1,17 @@
+# Scene 3 of 8 — the file library.
+# Depends on store-home having run first in the same capture: goldie installs
+# the APK once per run, so the printer configured there persists across flows
+# (launch: does not clear data). This flow cannot declare executionPrerequisite
+# because it starts with launch: — the two are mutually exclusive.
+#
+# Tabs are selected by their visible label. The bottom bar labels are real text
+# ("Files", "Slice", "Tools"), so no coordinates are needed.
+
+steps:
+  - launch: org.crabcore.u1control
+  - tap:
+      text: Files
+  - await:
+      visible:
+        text: RECENT
+  - wait: 2500
