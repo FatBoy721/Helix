@@ -9,7 +9,7 @@
 // Shapes verified against Parallel-7/FlashForgeEmulator in AD5X mode.
 // crabcore
 
-import { normalizeBaseUrl } from './moonraker';
+import { isTailscaleUrl, normalizeBaseUrl, printerProxyOrigin } from './moonraker';
 
 /** FlashForge's REST API always listens here, independent of Moonraker's 7125. */
 export const FLASHFORGE_API_PORT = 8898;
@@ -58,10 +58,27 @@ export type FlashForgeResult<T> =
   | { ok: true; value: T }
   | { ok: false; error: FlashForgeError };
 
-/** Swap a Moonraker URL onto the FlashForge API port, keeping the host. */
+/**
+ * Where to reach FlashForge's REST API for a printer we are connected to.
+ *
+ * On the LAN that is just a port swap. Over Tailscale it CANNOT be: the stock
+ * daemon binds the LAN address only — `192.168.1.83:8898 LISTEN`, with
+ * 127.0.0.1:8898 refusing — so it is invisible on the tailnet, while Moonraker
+ * binds 0.0.0.0 and stays reachable. That asymmetry is why remote printer
+ * control worked while the IFS slots never registered. helixd is reachable
+ * remotely and proxies the API at /api/ff, so use that when off-LAN.
+ *
+ * LAN deliberately keeps the direct port swap: it needs no helixd, so a printer
+ * without the mod still reports its material station.
+ */
 export function flashforgeApiUrl(printerUrl: string): string {
   const base = normalizeBaseUrl(printerUrl);
   if (!base) return '';
+
+  if (isTailscaleUrl(base)) {
+    const origin = printerProxyOrigin(base);
+    return origin ? `${origin}/api/ff` : '';
+  }
 
   try {
     const url = new URL(base);

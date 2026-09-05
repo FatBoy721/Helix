@@ -197,7 +197,7 @@ export function buildAiMonitoringCommand(
     : 'DEFECT_DETECTION_CONFIG MAIN_ENABLE=0';
 }
 
-function printerProxyOrigin(activeBaseUrl: string): string {
+export function printerProxyOrigin(activeBaseUrl: string): string {
   const base = normalizeBaseUrl(activeBaseUrl);
   if (!base) return '';
   try {
