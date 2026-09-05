@@ -277,6 +277,27 @@ export default function AboutCard() {
     });
   };
 
+  const showOpenSourceLicenses = () => {
+    setDialog({
+      title: 'Open-source licenses',
+      message:
+        'Helix includes software from the Bespok3d, HelixScreen, OrcaSlicer, PrusaSlicer, and u1-slicer-for-android projects. Their copyright notices, licenses, and corresponding-source directions are preserved with the app.',
+      icon: 'license',
+      actions: [
+        { text: t('Not now'), onPress: closeDialog },
+        {
+          text: 'View notices',
+          icon: 'open-in-new',
+          variant: 'primary',
+          onPress: () => {
+            closeDialog();
+            openUrl(OPEN_SOURCE_NOTICES_URL).catch(() => {});
+          },
+        },
+      ],
+    });
+  };
+
   return (
     <>
       <View style={styles.card}>
