@@ -50,6 +50,14 @@ const PRINTING_GAP_MS = 1000;
 // isn't hammered at 7 fps.
 const ERROR_GAP_MS = 1500;
 const INFO_POLL_MS = 5000;
+// Watchdog. The frame chain is driven entirely by the pending <Image>'s
+// onLoad/onError, and React Native fires NEITHER often enough to matter: a
+// dropped decode on Android leaves inFlightRef stuck true, every later
+// armFrame() returns at the guard, and the mirror is frozen on its last frame
+// until the section is unmounted. Taps look dead too, because refresh() also
+// routes through armFrame(). A capture measured ~180 ms on the AD5X, so 8 s is
+// far beyond any healthy frame and only ever fires on a genuine stall.
+const FRAME_TIMEOUT_MS = 8000;
 const SNAPSHOT_QUALITY = 60;
 const PRINT_STATES = new Set(['printing', 'paused']);
 const DEFAULT_WIDTH = 800;
@@ -89,6 +97,10 @@ export function useScreenMirror(active: boolean) {
   const boundsRef = useRef({ w: DEFAULT_WIDTH, h: DEFAULT_HEIGHT });
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const seqRef = useRef(0);
+  const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Lets the watchdog reuse the error path without armFrame having to depend on
+  // scheduleNext (which depends on armFrame).
+  const onPendingErrorRef = useRef<() => void>(() => {});
 
   activeRef.current = active;
   baseUrlRef.current = baseUrl;
@@ -105,6 +117,13 @@ export function useScreenMirror(active: boolean) {
   // the frame loop never closes over a stale cadence.
   const throttledRef = useRef(throttled);
   throttledRef.current = throttled;
+
+  const clearWatchdog = useCallback(() => {
+    if (watchdogRef.current) {
+      clearTimeout(watchdogRef.current);
+      watchdogRef.current = null;
+    }
+  }, []);
 
   const clearTimer = useCallback(() => {
     if (timerRef.current) {
@@ -125,7 +144,17 @@ export function useScreenMirror(active: boolean) {
     const uri = `${base}/api/screen/snapshot?q=${SNAPSHOT_QUALITY}&t=${Date.now()}_${seqRef.current}`;
     pendingRef.current = uri;
     setPendingUri(uri);
-  }, []);
+
+    const seq = seqRef.current;
+    clearWatchdog();
+    watchdogRef.current = setTimeout(() => {
+      watchdogRef.current = null;
+      // Only fire for the frame this watchdog was armed for, and only if it is
+      // still outstanding.
+      if (seq !== seqRef.current || !inFlightRef.current) return;
+      onPendingErrorRef.current();
+    }, FRAME_TIMEOUT_MS);
+  }, [clearWatchdog]);
 
   const scheduleNext = useCallback(() => {
     clearTimer();
@@ -141,6 +170,10 @@ export function useScreenMirror(active: boolean) {
   // (cache hit, so the swap is instantaneous and flicker-free), then arms the
   // next frame. There is always at most one frame in flight.
   const onPendingLoaded = useCallback(() => {
+    // The watchdog may already have written this frame off and re-armed; a late
+    // decode must not promote a stale URI or reset the new frame's tracking.
+    if (!inFlightRef.current) return;
+    clearWatchdog();
     const uri = pendingRef.current;
     pendingRef.current = null;
     inFlightRef.current = false;
@@ -152,16 +185,19 @@ export function useScreenMirror(active: boolean) {
     }
     setPendingUri(null);
     if (activeRef.current && baseUrlRef.current) scheduleNext();
-  }, [scheduleNext]);
+  }, [scheduleNext, clearWatchdog]);
 
   const onPendingError = useCallback(() => {
+    clearWatchdog();
     pendingRef.current = null;
     inFlightRef.current = false;
     erroredRef.current = true;
     setLoading(false);
     setPendingUri(null);
     if (activeRef.current && baseUrlRef.current) scheduleNext();
-  }, [scheduleNext]);
+  }, [scheduleNext, clearWatchdog]);
+
+  onPendingErrorRef.current = onPendingError;
 
   // Force the next frame immediately — used right after a tap so the mirror
   // reflects the result without waiting out the idle gap.
@@ -194,6 +230,7 @@ export function useScreenMirror(active: boolean) {
   useEffect(() => {
     if (!active || !baseUrl) {
       clearTimer();
+      clearWatchdog();
       inFlightRef.current = false;
       setLoading(false);
       return;
@@ -206,11 +243,12 @@ export function useScreenMirror(active: boolean) {
     const infoTimer = setInterval(fetchInfo, INFO_POLL_MS);
     return () => {
       clearTimer();
+      clearWatchdog();
       clearInterval(infoTimer);
       inFlightRef.current = false;
       setLoading(false);
     };
-  }, [active, baseUrl, armFrame, clearTimer, fetchInfo]);
+  }, [active, baseUrl, armFrame, clearTimer, clearWatchdog, fetchInfo]);
 
   const tap = useCallback(async (x: number, y: number, force = false): Promise<TapResult> => {
     const base = baseUrlRef.current;
