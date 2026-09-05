@@ -1185,24 +1185,66 @@ test('builds camera snapshot cache-bust URL and filename', () => {
   );
 });
 
-test('camera lifecycle uses continuous U1 video with a bounded snapshot fallback', () => {
+test('U1 camera streams H.264 with a bounded MJPEG and snapshot fallback', () => {
   const source = fs.readFileSync(
     path.join(REPO_ROOT, 'components', 'CameraFeed.tsx'),
+    'utf8'
+  );
+  const player = fs.readFileSync(
+    path.join(REPO_ROOT, 'components', 'h264Player.ts'),
     'utf8'
   );
   const transport = fs.readFileSync(
     path.join(REPO_ROOT, 'hooks', 'usePrinterTransport.tsx'),
     'utf8'
   );
-  assert.match(source, /Math\.max\(Date\.now\(\), previous \+ 1\)/);
-  assert.doesNotMatch(source, /tick \|\| Date\.now\(\)/);
-  assert.match(source, /const streamPaused = paused \|\| !screenFocused \|\| !appActive/);
-  assert.match(source, /LIVE_PREVIEW_TIMEOUT_MS = 4_000/);
+
+  // H.264 is the primary continuous stream on Android. The U1 serves the same
+  // 1080p30 video as MJPEG (44 Mbit/s) or H.264 (1.9 Mbit/s); MJPEG cannot fit
+  // down the printer's 2.4GHz radio, which is what made the feed stutter and
+  // added ~750ms to every other Moonraker request.
+  assert.match(source, /import \{ buildH264PlayerHtml, resolveH264Url \} from '\.\/h264Player'/);
+  assert.match(player, /parsed\.pathname = '\/webcam\/stream\.h264'/);
+  assert.match(source, /Platform\.OS === 'android' && h264FailedKey !== playerKey/);
+  assert.match(source, /h264Url\s*\?\s*\{ html: h264Html, baseUrl: origin \}/);
+
+  // MJPEG is reachable only once H.264 has reported failure, never alongside it.
+  assert.match(source, /Platform\.OS === 'android' && !h264Url/);
   assert.match(source, /parsed\.pathname = '\/webcam\/stream\.mjpg'/);
-  assert.match(source, /buildPlayerHtml\(mjpegBridgeUrl \?\? url, isSnapshot\)/);
-  assert.match(source, /readySent = true;[\s\S]*ReactNativeWebView\.postMessage/);
+
+  // The fallback must stay bounded on both ends: a capped source so the radio
+  // is not saturated, and a reader that renders only the newest complete frame
+  // so a slow phone cannot back frames up in the printer's send queue.
+  const cap = Number(/const MJPEG_BRIDGE_FPS = (\d+)/.exec(source)?.[1]);
+  assert.ok(
+    Number.isFinite(cap) && cap > 0 && cap <= 30,
+    `MJPEG fallback must stay fps-capped, got ${cap}`
+  );
+  assert.match(source, /MJPEG_BRIDGE_FPS > 0 \? `\?fps=\$\{MJPEG_BRIDGE_FPS\}` : ''/);
+  assert.match(source, /latest = buf\.slice\(soi, eoi \+ 2\)/);
+  // Handing the multipart URL to the browser's decoder is the slow-consumer
+  // path that caused the backlog; it must not come back.
+  assert.doesNotMatch(source, /img\.src = SRC;/);
+
+  // Snapshot fallback still exists and is still time-bounded.
+  assert.match(source, /LIVE_PREVIEW_TIMEOUT_MS = \d/);
   assert.match(source, /setSnapshotFallbackKey\(playerKey\)/);
   assert.match(source, /\|\| useSnapshotFallback/);
+
+  // Muxer details that silently broke playback once each.
+  // Without the skip, 00 00 00 01 matches the 4-byte pattern at i and the
+  // 3-byte pattern at i+1, yielding an empty NAL and a zero length prefix.
+  assert.match(player, /i \+= len - 1/);
+  // trun 0x000701, not 0x0f01: 0x800 would add composition-time-offsets.
+  assert.match(player, /\[0, 0x00, 0x07, 0x01\]/);
+  // tfhd 0x020000 only: 0x20 would promise default-sample-flags we never write.
+  assert.match(player, /\[0, 0x02, 0x00, 0x00\]/);
+  // Devices without MSE must fall back rather than show a dead player.
+  assert.match(player, /if \(!window\.MediaSource\)/);
+
+  // Lifecycle behaviour that keeps the feed smooth.
+  assert.match(source, /const streamPaused = paused \|\| !screenFocused \|\| !appActive/);
+  assert.match(source, /readySent = true;[\s\S]*ReactNativeWebView\.postMessage/);
   assert.match(source, /window\.addEventListener\('pagehide', stopPlayer\)/);
   assert.match(transport, /key={`moonraker:\$\{printer\?\.id \?\? 'none'\}`}/);
 });
